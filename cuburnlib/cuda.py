@@ -35,7 +35,6 @@ class LaunchContext(object):
     def __init__(self, entries, block=(1,1,1), grid=(1,1), seed=None,
                  tests=False):
         self.devinfo = pycuda.tools.DeviceData()
-        self.stream = cuda.Stream()
         self.entry_types = entries
         self.block, self.grid, self.build_tests = block, grid, tests
         self.rand = np.random.mtrand.RandomState(seed)
@@ -73,7 +72,7 @@ class LaunchContext(object):
         inst = self.ptx.instances[test_type]
         print "Running test: %s... " % inst.name
         try:
-            self.stream.synchronize()
+            cuda.Context.synchronize()
             if inst.call(self):
                 print "Test %s passed." % inst.name
             else:

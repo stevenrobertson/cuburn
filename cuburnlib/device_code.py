@@ -8,6 +8,7 @@ from cuburnlib.ptx import PTXFragment, PTXEntryPoint, PTXTest
 
 class MWCRNG(PTXFragment):
     def __init__(self):
+        self.threads_ready = 0
         if not os.path.isfile('primes.bin'):
             raise EnvironmentError('primes.bin not found')
 
@@ -57,24 +58,27 @@ class MWCRNG(PTXFragment):
     """
 
     def set_up(self, ctx):
+        if self.threads_ready >= ctx.threads:
+            return
         # Load raw big-endian u32 multipliers from primes.bin.
         with open('primes.bin') as primefp:
             dt = np.dtype(np.uint32).newbyteorder('B')
             mults = np.frombuffer(primefp.read(), dtype=dt)
+        stream = cuda.Stream()
         # Randomness in choosing multipliers is good, but larger multipliers
         # have longer periods, which is also good. This is a compromise.
-        # TODO: fix mutability, enable shuffle here
-        # TODO: prevent period-1 random generators
-        #ctx.rand.shuffle(mults[:ctx.threads*4])
+        mults = np.array(mults[:ctx.threads*4])
+        ctx.rand.shuffle(mults)
         # Copy multipliers and seeds to the device
         multdp, multl = ctx.mod.get_global('mwc_rng_mults')
-        # TODO: get async to work
-        #cuda.memcpy_htod_async(multdp, mults.tostring()[:multl], ctx.stream)
-        cuda.memcpy_htod(multdp, mults.tostring()[:multl])
+        cuda.memcpy_htod_async(multdp, mults.tostring()[:multl])
+        # Intentionally excludes both 0 and (2^32-1), as they can lead to
+        # degenerate sequences of period 0
+        states = np.array(ctx.rand.randint(1, 0xffffffff, size=2*ctx.threads),
+                          dtype=np.uint32)
         statedp, statel = ctx.mod.get_global('mwc_rng_state')
-        #cuda.memcpy_htod_async(statedp, ctx.rand.bytes(statel), ctx.stream)
-
-        cuda.memcpy_htod(statedp, ctx.rand.bytes(statel))
+        cuda.memcpy_htod_async(statedp, states.tostring())
+        self.threads_ready = ctx.threads
 
     def tests(self, ctx):
         return [MWCRNGTest]
@@ -150,5 +154,32 @@ loopstart:
             print sums
             return False
         return True
+
+class CameraCoordTransform(PTXFragment):
+    # This is here until I get the device stream packer going, or decide on
+    # how to handle C struct addressing if we go for unpacked structures
+    prelude = ".global .u32 camera_coords[8];"
+
+    def _cam_coord_xf(self, x, y, dreg):
+        """
+        Given `.f32 x, y`, a coordinate in IFS space, writes the integer
+        offset from the start of the sampling lattice into `.u32 dreg`.
+        """
+
+        return """{
+        .pred is_badval;
+        // TODO: This will change when data streaming is done
+        .reg .u32 camera_coord_address;
+        mov.u32 camera_coord_address, camera_coords;
+        // TODO: see if preloading everything hurts register count
+        .reg .f32 width_scale, width_upper_bound, height_scale, height_upper_bound;
+        ldu.v4.f32 {width_scale, width_upper_bound,
+                    height_scale, height_upper_bound},
+                   [camera_coord_address+0];
+        .reg .f32 x_xf, y_xf;
+        mad.rz.f32  x_xf,   x,  width_scale"""
+        # TODO unfinished
+
+
 
 
