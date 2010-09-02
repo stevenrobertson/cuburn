@@ -73,7 +73,7 @@ from collections import namedtuple
 
 def _softjoin(args, sep):
     """Intersperses 'sep' between 'args' without coercing to string."""
-    return reduce(lambda l, x: l + [x, sep], args, [])[:-1]
+    return [(arg, sep) for arg in args[:-1]] + args[-1:]
 
 BlockCtx = namedtuple('BlockCtx', 'locals code injectors')
 PTXStmt = namedtuple('PTXStmt', 'prefix op vars semi indent')
@@ -406,7 +406,12 @@ class Mem(object):
 
         >>> op.ld.global.v2.u32(vec(reg1, reg2), addr(areg))
         """
-        return ['{', _softjoin(args, ', '), '}']
+        assert len(args) >= 2, "vector loads make no sense with < 2 args"
+        joined = _softjoin(args, ', ')
+        # This makes a list like [('{', ('arg1', ', ')), ('argf', '}')], which
+        # when compacted comes out like ['{arg1,', 'argf}'], which lets the
+        # formatter work properly. There's no semantic value to this.
+        return [('{', joined[0])] + joined[1:-1] + [(joined[-1], '}')]
 
     @staticmethod
     def addr(areg, aoffset=''):
@@ -565,7 +570,7 @@ class PTXEntryPoint(PTXFragment):
     # List of (type, name) pairs for entry params, e.g. [('u32', 'thing')]
     entry_params = []
 
-    def entry(self, ctx):
+    def entry(self):
         """
         PTX DSL function that comprises the body of the PTX statement.
 
