@@ -10,7 +10,7 @@ import pycuda.gl.autoinit
 
 import numpy as np
 
-from cuburnlib.ptx import PTXAssembler
+from cuburnlib.ptx import PTXModule
 
 class LaunchContext(object):
     """
@@ -44,8 +44,10 @@ class LaunchContext(object):
     def threads(self):
         return reduce(lambda a, b: a*b, self.block + self.grid)
 
-    def compile(self, verbose=False):
-        self.ptx = PTXAssembler(self, self.entry_types, self.build_tests)
+    def compile(self, to_inject={}, verbose=False):
+        inj = dict(to_inject)
+        inj['ctx'] = self
+        self.ptx = PTXModule(self.entry_types, inj, self.build_tests)
         try:
             self.mod = cuda.module_from_buffer(self.ptx.source)
         except (cuda.CompileError, cuda.RuntimeError), e:
@@ -54,15 +56,16 @@ class LaunchContext(object):
                             enumerate(self.ptx.source.split('\n'))])
             raise e
         if verbose:
-            for name in self.ptx.entry_names.values():
-                func = self.mod.get_function(name)
-                print "Compiled %s: used %d regs, %d sm, %d local" % (func,
-                func.num_regs, func.shared_size_bytes, func.local_size_bytes)
+            for entry in self.ptx.entries:
+                func = self.mod.get_function(entry.entry_name)
+                print "Compiled %s: used %d regs, %d sm, %d local" % (
+                        entry.entry_name, func.num_regs,
+                        func.shared_size_bytes, func.local_size_bytes)
 
     def set_up(self):
         for inst in self.ptx.deporder(self.ptx.instances.values(),
-                                      self.ptx.instances, self):
-            inst.set_up(self)
+                                      self.ptx.instances):
+            inst.device_init(self)
 
     def run(self):
         if not self.setup_done: self.set_up()

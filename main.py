@@ -15,16 +15,16 @@ from ctypes import *
 
 import numpy as np
 
-#from cuburnlib.device_code import MWCRNGTest
-#from cuburnlib.cuda import LaunchContext
+from cuburnlib.device_code import MWCRNGTest
+from cuburnlib.cuda import LaunchContext
 from fr0stlib.pyflam3 import *
 from fr0stlib.pyflam3._flam3 import *
 from cuburnlib.render import *
 
 def main(genome_path):
-    #ctx = LaunchContext([MWCRNGTest], block=(256,1,1), grid=(64,1), tests=True)
-    #ctx.compile(True)
-    #ctx.run_tests()
+    ctx = LaunchContext([MWCRNGTest], block=(256,1,1), grid=(64,1), tests=True)
+    ctx.compile(verbose=True)
+    ctx.run_tests()
 
     with open(genome_path) as fp:
         genomes = Genome.from_string(fp.read())

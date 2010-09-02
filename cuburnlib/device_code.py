@@ -8,7 +8,7 @@ import time
 import pycuda.driver as cuda
 import numpy as np
 
-from cuburnlib.ptx import PTXFragment, PTXEntryPoint, PTXTest
+from cuburnlib.ptx import *
 
 """
 Here's the current draft of the full algorithm implementation.
@@ -113,10 +113,12 @@ class MWCRNG(PTXFragment):
         if not os.path.isfile('primes.bin'):
             raise EnvironmentError('primes.bin not found')
 
+    @ptx_func
     def module_setup(self):
         mem.global_.u32('mwc_rng_mults', ctx.threads)
-        mem.global_.u32('mwc_rng_state', ctx.threads)
+        mem.global_.u64('mwc_rng_state', ctx.threads)
 
+    @ptx_func
     def entry_setup(self):
         reg.u32('mwc_st mwc_mult mwc_car')
         with block('Load MWC multipliers and states'):
@@ -130,6 +132,7 @@ class MWCRNG(PTXFragment):
             op.mad.lo.u32(mwc_addr, mwc_off, 8, mwc_addr)
             op.ld.global_.v2.u32(vec(mwc_st, mwc_car), addr(mwc_addr))
 
+    @ptx_func
     def entry_teardown(self):
         with block('Save MWC states'):
             reg.u32('mwc_off mwc_addr')
@@ -138,15 +141,19 @@ class MWCRNG(PTXFragment):
             op.mad.lo.u32(mwc_addr, mwc_off, 8, mwc_addr)
             op.st.global_.v2.u32(addr(mwc_addr), vec(mwc_st, mwc_car))
 
+    @ptx_func
     def next_b32(self, dst_reg):
         with block('Load next random into ' + dst_reg.name):
             reg.u64('mwc_out')
             op.cvt.u64.u32(mwc_out, mwc_car)
-            mad.wide.u32(mwc_out, mwc_st)
-            mov.b64(vec(mwc_st, mwc_car), mwc_out)
-            mov.u32(dst_reg, mwc_st)
+            op.mad.wide.u32(mwc_out, mwc_st, mwc_mult, mwc_out)
+            op.mov.b64(vec(mwc_st, mwc_car), mwc_out)
+            op.mov.u32(dst_reg, mwc_st)
 
-    def set_up(self, ctx):
+    def to_inject(self):
+        return dict(mwc_next_b32=self.next_b32)
+
+    def device_init(self, ctx):
         if self.threads_ready >= ctx.threads:
             # Already set up enough random states, don't push again
             return
@@ -168,21 +175,25 @@ class MWCRNG(PTXFragment):
         states = np.array(ctx.rand.randint(1, 0xffffffff, size=2*ctx.threads),
                           dtype=np.uint32)
         statedp, statel = ctx.mod.get_global('mwc_rng_state')
+        print states, len(states.tostring())
         cuda.memcpy_htod_async(statedp, states.tostring())
         self.threads_ready = ctx.threads
 
-    def tests(self, ctx):
+    def tests(self):
         return [MWCRNGTest]
 
 class MWCRNGTest(PTXTest):
     name = "MWC RNG sum-of-threads"
-    deps = [MWCRNG]
     rounds = 10000
     entry_name = 'MWC_RNG_test'
     entry_params = ''
 
+    def deps(self):
+        return [MWCRNG]
+
+    @ptx_func
     def module_setup(self):
-        mem.global_.u64(mwc_rng_test_sums, ctx.threads)
+        mem.global_.u64('mwc_rng_test_sums', ctx.threads)
 
     @ptx_func
     def entry(self):
@@ -191,7 +202,7 @@ class MWCRNGTest(PTXTest):
         op.mov.u64(sum, 0)
         with block('Sum next %d random numbers' % self.rounds):
             reg.u32('loopct')
-            pred('p')
+            reg.pred('p')
             op.mov.u32(loopct, self.rounds)
             label('loopstart')
             mwc_next_b32(addend)
@@ -206,7 +217,7 @@ class MWCRNGTest(PTXTest):
             get_gtid(offset)
             op.mov.u32(adr, mwc_rng_test_sums)
             op.mad.lo.u32(adr, offset, 8, adr)
-            st.global_.u64(addr(adr), sum)
+            op.st.global_.u64(addr(adr), sum)
 
     def call(self, ctx):
         # Get current multipliers and seeds from the device
