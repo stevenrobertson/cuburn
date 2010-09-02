@@ -453,6 +453,13 @@ class _LabelFactory(object):
         self.block.inject(name, Label(name))
         self.block.code(prefix='%s:' % name, semi=False)
 
+class Comment(object):
+    """Add a single-line comment to the PTX output."""
+    def __init__(self, block):
+        self.block = block
+    def __call__(self, comment):
+        self.block.code(op=['// ', comment], semi=False)
+
 class PTXFragment(object):
     """
     An object containing PTX DSL functions.
@@ -627,6 +634,7 @@ class _PTXStdLib(PTXFragment):
             addr=Mem.addr,
             vec=Mem.vec,
             label=_LabelFactory(self.block),
+            comment=Comment(self.block),
             get_gtid=self._get_gtid)
 
 class PTXModule(object):
