@@ -51,7 +51,7 @@ from collections import namedtuple
 #       reg.u32('hooray_reg')
 #       load_zero(hooray_reg)
 #
-# But using blocks alone to track names, it would turn in to this ugliness::
+# But using blocks alone to track names, it would turn in to this mess::
 #
 #   def load_zero(block, dest_reg):
 #       block.op.mov.u32(block.op.dest_reg, 0)
@@ -229,9 +229,6 @@ class _PTXFuncWrapper(object):
         func = types.FunctionType(self.func.func_code, newglobals,
                                   self.func.func_name, self.func.func_defaults,
                                   self.func.func_closure)
-        # TODO: if we generate a new dict every time, we can kill the
-        # _BlockInjector and move BI.inject() back to _Block, but I don't want
-        # to delete working code just yet
         with block.injector(func.func_globals):
             func(*args, **kwargs)
 
@@ -348,37 +345,6 @@ class _RegFactory(_CallChain):
         self.block.code(op='.reg .' + type, vars=_softjoin(names, ', '))
         [self.block.inject(r.name, r) for r in regs]
 
-# Pending resolution of the op(regs, guard=x) debate
-#class Pred(object):
-    #"""
-    #Allows for predicated execution of operations.
-
-    #>>> pred('p_some_test p_another_test')
-    #>>> op.setp.eq.u32(p_some_test, reg1, reg2)
-    #>>> op.setp.and.eq.u32(p_another_test, reg1, reg2, p_some_test)
-    #>>> with p_some_test.is_set():
-    #>>>     op.ld.global.u32(reg1, addr(areg))
-
-    #Predication supports nested function calls, and will cover all code
-    #generated inside the predicate block:
-
-    #>>> with p_another_test.is_unset():
-    #>>>     some_ptxdsl_function(reg2)
-    #>>>     op.st.global.u32(addr(areg), reg2)
-
-    #It is a syntax error to declare registers,
-    #However, multiple predicate blocks cannot be nested. Doing so is a syntax
-    #error.
-
-    #>>> with p_some_test.is_set():
-    #>>>     with p_another_test.is_unset():
-    #>>>         pass
-    #SyntaxError: ...
-    #"""
-    #def __init__(self, name):
-        #self.name = name
-    #def is_set(self, isnot=False):
-
 class Op(_CallChain):
     """
     Performs an operation.
@@ -470,7 +436,7 @@ class _MemFactory(_CallChain):
 
 class Label(object):
     """
-    Specifies the target for a branch. Scoped in PTX? TODO: test that it is.
+    Specifies the target for a branch.
 
     >>> label('infinite_loop')
     >>> op.bra.uni('label')
@@ -704,7 +670,6 @@ class PTXModule(object):
             self.__needs_recompilation = False
             self.assemble(block, all_deps, entry_deps)
         self.instances.pop(_PTXStdLib)
-        print self.instances
 
         if not formatter:
             formatter = PTXFormatter()

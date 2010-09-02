@@ -175,7 +175,6 @@ class MWCRNG(PTXFragment):
         states = np.array(ctx.rand.randint(1, 0xffffffff, size=2*ctx.threads),
                           dtype=np.uint32)
         statedp, statel = ctx.mod.get_global('mwc_rng_state')
-        print states, len(states.tostring())
         cuda.memcpy_htod_async(statedp, states.tostring())
         self.threads_ready = ctx.threads
 
@@ -184,7 +183,7 @@ class MWCRNG(PTXFragment):
 
 class MWCRNGTest(PTXTest):
     name = "MWC RNG sum-of-threads"
-    rounds = 10000
+    rounds = 5000
     entry_name = 'MWC_RNG_test'
     entry_params = ''
 
@@ -227,7 +226,7 @@ class MWCRNGTest(PTXTest):
         fullstates = cuda.from_device(statedp, ctx.threads, np.uint64)
         sums = np.zeros(ctx.threads, np.uint64)
 
-        print "Running states forward %d rounds" % self.rounds
+        print "Running %d states forward %d rounds" % (len(mults), self.rounds)
         ctime = time.time()
         for i in range(self.rounds):
             states = fullstates & 0xffffffff
@@ -241,7 +240,6 @@ class MWCRNGTest(PTXTest):
         dtime = func(block=ctx.block, grid=ctx.grid, time_kernel=True)
         print "Done on device, took %g seconds (%gx)" % (dtime, ctime/dtime)
         dfullstates = cuda.from_device(statedp, ctx.threads, np.uint64)
-        print dfullstates, fullstates
         if not (dfullstates == fullstates).all():
             print "State discrepancy"
             print dfullstates
@@ -250,7 +248,6 @@ class MWCRNGTest(PTXTest):
 
         sumdp, suml = ctx.mod.get_global('mwc_rng_test_sums')
         dsums = cuda.from_device(sumdp, ctx.threads, np.uint64)
-        print dsums, sums
         if not (dsums == sums).all():
             print "Sum discrepancy"
             print dsums
@@ -259,30 +256,7 @@ class MWCRNGTest(PTXTest):
         return True
 
 class CameraCoordTransform(PTXFragment):
-    # This is here until I get the device stream packer going, or decide on
-    # how to handle C struct addressing if we go for unpacked structures
-    prelude = ".global .u32 camera_coords[8];"
-
-    def _cam_coord_xf(self, x, y, dreg):
-        """
-        Given `.f32 x, y`, a coordinate in IFS space, writes the integer
-        offset from the start of the sampling lattice into `.u32 dreg`.
-        """
-
-        return """{
-        .pred is_badval;
-        // TODO: This will change when data streaming is done
-        .reg .u32 camera_coord_address;
-        mov.u32 camera_coord_address, camera_coords;
-        // TODO: see if preloading everything hurts register count
-        .reg .f32 width_scale, width_upper_bound, height_scale, height_upper_bound;
-        ldu.v4.f32 {width_scale, width_upper_bound,
-                    height_scale, height_upper_bound},
-                   [camera_coord_address+0];
-        .reg .f32 x_xf, y_xf;
-        mad.rz.f32  x_xf,   x,  width_scale"""
-        # TODO unfinished
-
-
+    # TODO finish
+    pass
 
 
