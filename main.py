@@ -31,8 +31,8 @@ def main(args):
 
     with open(args[-1]) as fp:
         genomes = Genome.from_string(fp.read())
-    render = Render(genomes)
-    render.render_frame()
+    anim = Animation(genomes)
+    anim.render_frame()
 
     #genome.width, genome.height = 512, 512
     #genome.sample_density = 1000
