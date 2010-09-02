@@ -12,6 +12,7 @@ easier to maintain using this system.
 import inspect
 import types
 import traceback
+from cStringIO import StringIO
 from collections import namedtuple
 
 # Okay, so here's what's going on.
@@ -814,4 +815,202 @@ class PTXFormatter(object):
                 indent += self.indent_amt * indent_change
         return '\n'.join(out)
 
+_TExp = namedtuple('_TExp', 'type exprlist')
+_DataCell = namedtuple('_DataCell', 'offset size texp')
+
+class DataStream(object):
+    """
+    Simple interface between Python and PTX, designed to create and tightly
+    pack control structs.
+
+    (In the original implementation, this actually used a stack with
+    variable positions determined at runtime. The resulting structure had to be
+    read strictly sequentially to be parsed, hence the name "stream".)
+
+    Subclass this and give it a prefix, then depend on the subclass in your PTX
+    fragments.
+
+    >>> class ExampleDataStream(DataStream):
+    >>>     prefix = 'ex'
+
+    Inside DSL functions, you can "retrieve" arbitrary Python expressions from
+    the data stream.
+
+    >>> @ptx_func
+    >>> def example_func():
+    >>>     reg.u32('reg1 reg2 regA')
+    >>>     op.mov.u32(regA, some_device_allocation_base_address)
+    >>>     # From the structure at the base address in 'regA', load the value
+    >>>     # of 'ctx.nthreads' into reg1
+    >>>     ex_stream_get(regA, reg1, 'ctx.nthreads')
+
+    The expressions will be stored as strings and mapped to particular
+    positions in the struct. Later, the expressions will be evaluated and
+    coerced into a type matching the destination register:
+
+    >>> # Fish the instance holding the data stream from the compiled module
+    >>> ex_stream = launch_context.ptx.instances[ExampleDataStream]
+    >>> # Evaluate the expressions in the current namespace, augmented with the
+    >>> # supplied objects
+    >>> data = ex_stream.pack(ctx=launch_context)
+
+    Expressions will be aligned and may be reused in such a way as to minimize
+    access times when taking device caching into account. This also implies
+    that the evaluated expressions should not modify any state, but that should
+    be obvious, no?
+
+    >>> @ptx_func
+    >>> def example_func_2():
+    >>>     reg.u32('reg1 reg2')
+    >>>     reg.f32('regf')
+    >>>     ex_stream_get(regA, reg1, 'ctx.nthreads * 2')
+    >>>     # Same expression, so load comes from same memory location
+    >>>     ex_stream_get(regA, reg2, 'ctx.nthreads * 2')
+    >>>     # Vector loads are pre-coerced, so you can mix types
+    >>>     ex_stream_get_v2(regA, reg1, '4', regf, '5.5')
+
+    You can even do device allocations in the file, using the post-finalized
+    variable '[prefix]_stream_size'. It's a StrVar, so if you do any operations
+    to it make sure you write them as a list of strings for PTX to handle (I
+    know, it's a drag; it might be fixed later):
+
+    >>> class Whatever(PTXFragment):
+    >>>     @ptx_func
+    >>>     def module_setup(self):
+    >>>         mem.global_.u32('ex_streams', [1000, '*', ex_stream_size])
+    """
+    # Must be at least as large as the largest load (.v4.u32 = 16)
+    alignment = 16
+    prefix = 'Subclass this'
+
+    def __init__(self):
+        self.texp_map = {}
+        self.cells = []
+        self.stream_size = 0
+        self.free = {}
+        self.size_strvar = StrVar("not_yet_determined")
+
+    _types = dict(s8='b', u8='B', s16='h', u16='H', s32='i', u32='I', f32='f',
+                  s64='l', u64='L', f64='d')
+    def _get_type(self, *regs):
+        size = int(regs[0].type[1:])
+        for r in regs:
+            if reg.type not in self._types:
+                raise TypeError("Register %s of type %s not supported" %
+                                (reg.name, reg.type))
+            if int(r.type[1:]) != size:
+                raise TypeError("Can't vector-load different size regs")
+        return size, ''.join([self._types.get(r.type) for r in regs])
+
+    def _alloc(self, vsize, texp):
+        # A really crappy allocator. May later include optimizations for
+        # keeping common variables on the same cache line, etc.
+        alloc = vsize
+        idx = self.free.get(alloc)
+        while idx is None and alloc < self.alignment:
+            alloc *= 2
+            idx = self.free.get(alloc)
+        if idx is None:
+            # No aligned free cells, allocate a new `align`-byte free cell
+            assert alloc not in self.free
+            self.free[alloc] = idx = len(self.stream_size)
+            self.cells.append(_DataCell(self.stream_size, alloc, None))
+            self.stream_size += alloc
+        # Overwrite the free cell at `idx` with texp
+        assert self.cells[idx].texp is None
+        offset = self.cells[idx].offset
+        self.cells[idx] = _DataCell(offset, vsize, texp)
+        # Now reinsert the fragmented free cells.
+        fragments = alloc - vsize
+        foffset = offset + vsize
+        fsize = 1
+        fidx = idx
+        while fsize <= self.alignment:
+            if fragments & fsize:
+                assert fsize not in self.free
+                fidx += 1
+                self.cells.insert(fidx, _DataCell(foffset, fsize, None))
+                foffset += fsize
+                self.free[fsize] = fidx
+        # Adjust indexes. This is ugly, but evidently unavoidable
+        if fidx-idx:
+            for k, v in filter(lambda k, v: v > idx, self.free.items()):
+                self.free[k] = v+(fidx-idx)
+        return self.offset
+
+    @ptx_func
+    def _stream_get_internal(self, areg, dregs, exprs):
+        size, type = self._get_type(dregs)
+        vsize = size * len(dregs)
+        texp = _TExp(type, [expr])
+        if texp in self.expr_map:
+            offset = self.texp_map[texp]
+        else:
+            offset = self._alloc(vsize, texp)
+            self.texp_map[texp] = offset
+        vtype = {1: '', 2: '.v2', 4: '.v4'}.get(len(dregs))
+        if len(dregs) > 0:
+            dregs = vec(dregs)
+        op._call('ldu%s.b%d' % (vtype, size), dregs, addr(areg+off))
+
+    @ptx_func
+    def _stream_get(self, areg, dreg, expr):
+        self._stream_get_internal(areg, [dreg], [expr])
+
+    @ptx_func
+    def _stream_get_v2(self, areg, dreg1, expr1, dreg2, expr2):
+        self._stream_get_internal(areg, [dreg1, dreg2], [expr1, expr2])
+
+    @ptx_func
+    def _stream_get_v2(self, areg, d1, e1, d2, e2, d3, e3, d4, e4):
+        self._stream_get_internal(areg, [d1, d2, d3, d4], [e1, e2, e3, e4])
+
+    def _stream_size(self):
+        return self.size_strvar
+
+    def finalize_code(self):
+        self.size_strvar.val = str(self.stream_size)
+
+    def to_inject(self):
+        return {self.prefix + '_stream_get': self._stream_get,
+                self.prefix + '_stream_get_v2': self._stream_get_v2,
+                self.prefix + '_stream_get_v4': self._stream_get_v4,
+                self.prefix + '_stream_size': self._stream_size}
+
+    def pack(self, _out_file_ = None, **kwargs):
+        """
+        Evaluates all statements in the context of **kwargs. Take this code,
+        presumably inside a PTX func::
+
+        >>> ex_stream_get(regA, reg1, 'sum([x+frob for x in xyz.things])')
+
+        To pack this into a struct, call this method on an instance:
+
+        >>> ex_stream = launch_context.ptx.instances[ExampleDataStream]
+        >>> data = ex_stream.pack(frob=4, xyz=xyz)
+
+        This evaluates each Python expression from the stream with the provided
+        arguments as locals, coerces it to the appropriate type, and returns
+        the resulting structure as a string.
+        """
+        out = StringIO()
+        self.pack_into(out, kwargs)
+        return out.read()
+
+    def pack_into(self, outfile, **kwargs):
+        """
+        Like pack(), but write data to a file-like object at the file's current
+        offset instead of returning it as a string.
+
+        >>> ex_stream.pack_into(strio_inst, frob=4, xyz=thing)
+        >>> ex_stream.pack_into(strio_inst, frob=6, xyz=another_thing)
+        """
+        for offset, size, texp in self.cells:
+            if texp:
+                type = texp.type
+                vals = [eval(e, globals(), kwargs) for e in texp.expr_list]
+            else:
+                type = 'x'*size # Padding bytes
+                vals = []
+            out.write(struct.pack(type, *vals))
 
