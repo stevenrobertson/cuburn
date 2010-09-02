@@ -35,7 +35,7 @@ from collections import namedtuple
 #
 # The scope of the class instance is unrelated to the normal scope of names in
 # Python. In fact, a function call frequently declares a register that may be
-# needed by the parent function. So where to store the information regarding
+# later siblings in the call stack. So where to store the information regarding
 # the register that was declared at the top of the file (name, type, etc)?
 # Well, once declared, a variable remains in scope in PTX until the closing
 # brace of the block (curly-braces segment) it was declared in. The natural
@@ -609,6 +609,11 @@ class _PTXStdLib(PTXFragment):
 
     @ptx_func
     def _get_gtid(self, dst):
+        """
+        Get the global thread ID (the position of this thread in a grid of
+        blocks of threads). Notably, this assumes that both grid and block are
+        one-dimensional, which in most cases is true.
+        """
         with block("Load GTID into %s" % str(dst)):
             reg.u16('tmp')
             reg.u32('cta ncta tid gtid')
