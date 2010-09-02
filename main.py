@@ -21,12 +21,15 @@ from fr0stlib.pyflam3 import *
 from fr0stlib.pyflam3._flam3 import *
 from cuburnlib.render import *
 
-def main(genome_path):
+def main(args):
+    verbose = 1
+    if '-d' in args:
+        verbose = 3
     ctx = LaunchContext([MWCRNGTest], block=(256,1,1), grid=(64,1), tests=True)
-    ctx.compile(verbose=True)
+    ctx.compile(verbose=verbose)
     ctx.run_tests()
 
-    with open(genome_path) as fp:
+    with open(args[-1]) as fp:
         genomes = Genome.from_string(fp.read())
     render = Render(genomes)
     render.render_frame()
@@ -52,8 +55,8 @@ def main(genome_path):
     #pyglet.app.run()
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2 or not os.path.isfile(sys.argv[1]):
-        print "First argument must be a path to a genome file"
+    if len(sys.argv) < 2 or not os.path.isfile(sys.argv[-1]):
+        print "Last argument must be a path to a genome file"
         sys.exit(1)
-    main(sys.argv[1])
+    main(sys.argv)
 

@@ -43,6 +43,10 @@ class LaunchContext(object):
     def threads(self):
         return reduce(lambda a, b: a*b, self.block + self.grid)
 
+    def print_source(self):
+        print '\n'.join(["%03d %s" % (i+1, l) for (i, l) in
+                        enumerate(self.ptx.source.split('\n'))])
+
     def compile(self, to_inject={}, verbose=False):
         inj = dict(to_inject)
         inj['ctx'] = self
@@ -51,10 +55,11 @@ class LaunchContext(object):
             self.mod = cuda.module_from_buffer(self.ptx.source)
         except (cuda.CompileError, cuda.RuntimeError), e:
             print "Aww, dang, compile error. Here's the source:"
-            print '\n'.join(["%03d %s" % (i+1, l) for (i, l) in
-                            enumerate(self.ptx.source.split('\n'))])
+            self.print_source()
             raise e
         if verbose:
+            if verbose >= 3:
+                self.print_source()
             for entry in self.ptx.entries:
                 func = self.mod.get_function(entry.entry_name)
                 print "Compiled %s: used %d regs, %d sm, %d local" % (
