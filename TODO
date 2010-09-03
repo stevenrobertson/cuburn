@@ -1,0 +1,44 @@
+Status: currently broken (syntax errors, incomplete sections)
+
+Current goals:
+- Test DeviceStream, and get it working. Bugs are expected.
+    - Test allocator
+    - Test statement evaluator
+    - Test packing correctly
+    - Test that device instructions get injected correctly
+    - Test in working implementation
+- Load a set of genomes and calculate a bare minimum `Feature` set (no xforms,
+  no filters, no oversample)
+- Get frames loaded for rendering
+- Get IterThread running in device kernel
+    - For now, implement as `PTXTest`
+    - For each frame, loop for FUSE times, then loop through expected number of
+      points for each CP. Keep a count of number of times looped, and number of
+      stores that would be done. Verify against expected counts.
+
+
+Things to do (rather severely incomplete):
+- LaunchContext thread distribution based on generated code register count and
+  shared memory size
+- qlocal storage
+    - Performance implications of different state spaces
+    - Shared / cache projected usage and its effect on above
+    - Implement qlocal storage, and hide the complexity
+- The `Feature` class
+    - Transform count and per-transform code layout
+    - Filter size, oversample, final buffer size
+- Palette storage
+    - Performance implications of different state spaces
+    - Performance and quality of 2D texture interpolation
+- Buffer allocation, clearing, reading from device
+- Preview window
+    - When/how to sample?
+    - OpenGL interop worth it?
+    - Implement
+- Implement xforms
+- Shuffle
+    - State space implications, you know the drill
+    - Implement
+    - Test effects on quality by masking off writes on all but one lane and
+      boosting the sample density to compensate (muuuuuch later on)
+
