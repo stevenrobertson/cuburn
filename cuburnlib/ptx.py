@@ -634,6 +634,16 @@ class _PTXStdLib(PTXFragment):
             op.add.u32(gtid, gtid, tid)
             op.mov.b32(dst, gtid)
 
+    @ptx_func
+    def _store_per_thread(self, base, val):
+        """Store b32 at `base+gtid*4`. Super-common debug pattern."""
+        with block("Per-thread store of %s" % str(val)):
+            reg.u32('spt_base spt_offset')
+            op.mov.u32(spt_base, base)
+            get_gtid(spt_offset)
+            op.mad.lo.u32(spt_base, spt_offset, 4, spt_base)
+            op.st.b32(addr(spt_base), val)
+
     def to_inject(self):
         return dict(
             _block=self.block,
@@ -645,7 +655,8 @@ class _PTXStdLib(PTXFragment):
             vec=Mem.vec,
             label=_LabelFactory(self.block),
             comment=Comment(self.block),
-            get_gtid=self._get_gtid)
+            get_gtid=self._get_gtid,
+            store_per_thread=self._store_per_thread)
 
 class PTXModule(object):
     """
@@ -747,7 +758,7 @@ class PTXModule(object):
                         if test not in tests:
                             tests.add(test)
                             if test not in instances:
-                                unvisisted_entries.append(tests)
+                                unvisited_entries.append(test)
             # For this entry, store insts of all dependencies in order.
             entry_deps[ent] = self.deporder(map(instances.get, seen),
                                             instances)
@@ -954,7 +965,7 @@ class DataStream(object):
         return self.offset
 
     @ptx_func
-    def _stream_get_internal(self, areg, dregs, exprs):
+    def _stream_get_internal(self, areg, dregs, exprs, ifp, ifnotp):
         size, type = self._get_type(dregs)
         vsize = size * len(dregs)
         texp = _TExp(type, [expr])
@@ -966,19 +977,24 @@ class DataStream(object):
         vtype = {1: '', 2: '.v2', 4: '.v4'}.get(len(dregs))
         if len(dregs) > 0:
             dregs = vec(dregs)
-        op._call('ldu%s.b%d' % (vtype, size), dregs, addr(areg+off))
+        op._call('ldu%s.b%d' % (vtype, size), dregs, addr(areg+off),
+                 ifp=ifp, ifnotp=ifnotp)
 
     @ptx_func
-    def _stream_get(self, areg, dreg, expr):
-        self._stream_get_internal(areg, [dreg], [expr])
+    def _stream_get(self, areg, dreg, expr, ifp=None, ifnotp=None):
+        self._stream_get_internal(areg, [dreg], [expr], ifp, ifnotp)
 
     @ptx_func
-    def _stream_get_v2(self, areg, dreg1, expr1, dreg2, expr2):
-        self._stream_get_internal(areg, [dreg1, dreg2], [expr1, expr2])
+    def _stream_get_v2(self, areg, dreg1, expr1, dreg2, expr2,
+                       ifp=None, ifnotp=None):
+        self._stream_get_internal(areg, [dreg1, dreg2], [expr1, expr2],
+                                  ifp, ifnotp)
 
     @ptx_func
-    def _stream_get_v2(self, areg, d1, e1, d2, e2, d3, e3, d4, e4):
-        self._stream_get_internal(areg, [d1, d2, d3, d4], [e1, e2, e3, e4])
+    def _stream_get_v2(self, areg, d1, e1, d2, e2, d3, e3, d4, e4,
+                       ifp=None, ifnotp=None):
+        self._stream_get_internal(areg, [d1, d2, d3, d4], [e1, e2, e3, e4],
+                                  ifp, ifnotp)
 
     def _stream_size(self):
         return self.size_strvar
