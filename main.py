@@ -15,7 +15,7 @@ from ctypes import *
 
 import numpy as np
 
-from cuburnlib.device_code import MWCRNGTest
+from cuburnlib.device_code import IterThread
 from cuburnlib.cuda import LaunchContext
 from fr0stlib.pyflam3 import *
 from fr0stlib.pyflam3._flam3 import *
@@ -25,7 +25,7 @@ def main(args):
     verbose = 1
     if '-d' in args:
         verbose = 3
-    ctx = LaunchContext([MWCRNGTest], block=(256,1,1), grid=(64,1), tests=True)
+    ctx = LaunchContext([IterThread], block=(256,1,1), grid=(64,1), tests=True)
     ctx.compile(verbose=verbose)
     ctx.run_tests()
 

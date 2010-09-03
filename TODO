@@ -41,4 +41,8 @@ Things to do (rather severely incomplete):
     - Implement
     - Test effects on quality by masking off writes on all but one lane and
       boosting the sample density to compensate (muuuuuch later on)
-
+- MWC RNG output types
+    - float in range [0, 1]
+- Debug statements
+    - Some code can't be tested separately (notably IterThread). Make a debug
+      flag which embeds extra tests into the kernel

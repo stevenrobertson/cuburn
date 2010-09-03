@@ -107,6 +107,124 @@ SHUFFLE:
     stop being "opaque" and become simply "dynamic".
 """
 
+class IterThread(PTXTest):
+    entry_name = 'iter_thread'
+    entry_params = []
+    def deps(self):
+        return [MWCRNG, CPDataStream]
+
+    @ptx_func
+    def module_setup(self):
+        mem.global_.u32('g_cp_array',
+                [features.max_ntemporal_samples,'*',cp_stream_size])
+        mem.global_.u32('g_num_cps')
+        # TODO move into debug statement
+        mem.global_.u32('g_num_rounds', ctx.threads)
+        mem.global_.u32('g_num_writes', ctx.threads)
+
+    @ptx_func
+    def entry():
+        reg.f32('x_coord y_coord color_coord alpha_coord')
+
+        # TODO: temporary, for testing
+        reg.u32('num_rounds num_writes')
+        op.mov.u32(num_rounds, 0)
+        op.mov.u32(num_writes, 0)
+
+        # TODO: MWC float output types
+        #mwc_next_f32_01(x_coord)
+        #mwc_next_f32_01(y_coord)
+        #mwc_next_f32_01(color_coord)
+        #mwc_next_f32_01(alpha_coord)
+
+        # Registers are hard to come by. To avoid having to track both the count
+        # of samples processed and the number of samples to generate,
+        # 'num_samples' counts *down* from the CP's desired sample count.
+        # When it hits 0, we move on to the next CP.
+        #
+        # FUSE complicates things. To track it, we store the *negative* number
+        # of points we have left to fuse before we start to store the results.
+        # When it hits -1, we're done fusing, and can move on to the real
+        # thread. The execution flow between 'cp_loop', 'fuse_start', and
+        # 'iter_loop_start' is therefore tricky, and bears close inspection.
+        #
+        # In summary:
+        #   num_samples == 0: Load next CP, set num_samples from that
+        #   num_samples >  0: Iterate, store the result, decrement num_samples
+        #   num_samples < -1: Iterate, don't store, increment num_samples
+        #   num_samples == -1: Done fusing, enter normal flow
+        # TODO: move this to qlocal storage
+        reg.s32('num_samples')
+        op.mov.s32(num_samples, -(features.num_fuse_samples+1))
+
+        # TODO: Move cp_num to qlocal storage (or spill it, rarely accessed)
+        reg.u32('cp_num cpA')
+        mov.u32(cp_num, 0)
+
+        label('cp_loop_start')
+        op.bar.sync(0)
+
+        with block('Check to see if this is the last CP'):
+            reg.u32('num_cps')
+            reg.pred('p_last_cp')
+            op.ldu.u32(num_cps, addr(g_num_cps))
+            op.setp.lt.u32(p_last_cp, cp_num, num_cps)
+            op.bra.uni('all_cps_done', ifp=p_last_cp)
+
+        with block('Load CP address'):
+            op.mov.u32(cpA, g_cp_array)
+            op.mad.lo.u32(cpA, cp_num, cp_stream_size, cpA)
+
+        with block('Increment CP number, load num_samples (unless in fuse)'):
+            reg.pred('p_in_fuse')
+            op.setp.lt.s32(p_in_fuse, num_samples, 0)
+            op.add.u32(cp_num, cp_num, 1, ifp=p_in_fuse)
+            cp_stream_get(cpA, num_samples, 'cp.samples_per_thread',
+                          ifp=p_in_fuse)
+
+        label('fuse_loop_start')
+        with block('FUSE-specific stuff'):
+            reg.pred('p_fuse')
+            comment('If num_samples == -1, set it to 0 and jump back up')
+            comment('This will start the normal CP loading machinery')
+            op.setp.eq.s32(p_fuse, num_samples, -1)
+            op.mov.s32(p_fuse, 0, ifp=p_fuse)
+            op.bra.uni(cp_loop_start, ifp=p_fuse)
+
+            comment('If num_samples < -1, still fusing, so increment')
+            op.setp.lt.s32(p_fuse, num_samples, -1)
+            op.add.s32(num_samples, num_samples, 1, ifp=p_fuse)
+
+        label('iter_loop_start')
+
+        comment('Do... well, most of everything')
+
+        op.add.u32(num_rounds, num_rounds, 1)
+
+        with block("Test if we're still in FUSE"):
+            reg.pred('p_in_fuse')
+            op.setp.lt.s32(p_in_fuse, num_samples, 0)
+            op.bra.uni(fuse_start, ifp=p_in_fuse)
+
+        with block("Ordinarily, we'd write the result here"):
+            op.add.u32(num_writes, num_writes, 1)
+
+        with block("Check to see if we're done with this CP"):
+            reg.pred('p_cp_done')
+            op.setp.eq.s32(p_cp_done, num_samples, 0)
+            op.bra.uni(cp_loop_start, ifp=p_cp_done)
+
+        op.bra.uni(iter_loop_start)
+
+
+        # TODO this is for testing, move it to a debug statement
+        store_per_thread(g_num_rounds, num_rounds)
+        store_per_thread(g_num_writes, num_writes)
+
+    def call(self, ctx):
+        raise HorribleDeathError("Okay I'm going to bed now")
+
+
 class MWCRNG(PTXFragment):
     def __init__(self):
         self.threads_ready = 0
@@ -256,10 +374,9 @@ class MWCRNGTest(PTXTest):
         return True
 
 class CameraCoordTransform(PTXFragment):
-    # TODO finish
     pass
 
 class CPDataStream(PTXFragment):
-    """
-    DataStream which stores
+    """DataStream which stores the control points."""
+    prefix = 'cp'
 
