@@ -15,7 +15,8 @@ from cuburnlib.ptx import PTXModule
 class LaunchContext(object):
     """
     Context collecting the information needed to create, run, and gather the
-    results of a device computation.
+    results of a device computation. This may eventually also include an actual
+    CUDA context, but for now it just uses the global one.
 
     To create the fastest device code across multiple device families, this
     context may decide to iteratively refine the final PTX by regenerating
@@ -32,34 +33,27 @@ class LaunchContext(object):
         `mod`:      Final compiled module. Unavailable during assembly.
 
     """
-    def __init__(self, entries, block=(1,1,1), grid=(1,1), seed=None,
-                 tests=False):
+    def __init__(self, entries, block=(1,1,1), grid=(1,1), tests=False):
         self.entry_types = entries
         self.block, self.grid, self.build_tests = block, grid, tests
-        self.rand = np.random.mtrand.RandomState(seed)
         self.setup_done = False
 
     @property
     def threads(self):
         return reduce(lambda a, b: a*b, self.block + self.grid)
 
-    def print_source(self):
-        print '\n'.join(["%03d %s" % (i+1, l) for (i, l) in
-                        enumerate(self.ptx.source.split('\n'))])
-
-    def compile(self, to_inject={}, verbose=False):
-        inj = dict(to_inject)
-        inj['ctx'] = self
-        self.ptx = PTXModule(self.entry_types, inj, self.build_tests)
+    def compile(self, verbose=False, **kwargs):
+        kwargs['ctx'] = self
+        self.ptx = PTXModule(self.entry_types, kwargs, self.build_tests)
         try:
             self.mod = cuda.module_from_buffer(self.ptx.source)
         except (cuda.CompileError, cuda.RuntimeError), e:
             print "Aww, dang, compile error. Here's the source:"
-            self.print_source()
+            self.ptx.print_source()
             raise e
         if verbose:
             if verbose >= 3:
-                self.print_source()
+                self.ptx.print_source()
             for entry in self.ptx.entries:
                 func = self.mod.get_function(entry.entry_name)
                 print "Compiled %s: used %d regs, %d sm, %d local" % (

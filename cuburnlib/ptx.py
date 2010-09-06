@@ -11,7 +11,7 @@ easier to maintain using this system.
 # If you see 'import inspect', you know you're in for a good time
 import inspect
 import types
-import traceback
+import struct
 from cStringIO import StringIO
 from collections import namedtuple
 
@@ -116,6 +116,8 @@ class _BlockInjector(object):
         self.dead = False
         map(self.inject, self.to_inject.items())
     def __exit__(self, exc_type, exc_val, tb):
+        # Do some real exceptorin'
+        if exc_type is not None: return
         for k in self.injected:
             del self.inject_into[k]
         self.dead = True
@@ -137,17 +139,27 @@ class _Block(object):
         inj = self.stack[-1].injectors
         [inj.remove(i) for i in inj if i.dead]
     def push_ctx(self):
-        # Move most recent active injector to new context
         self.clean_injectors()
-        last_inj = self.stack[-1].injectors.pop()
-        self.stack.append(BlockCtx(dict(self.stack[-1].locals), [],
-                          [last_inj]))
+        self.stack.append(BlockCtx(dict(self.stack[-1].locals), [], []))
+        # The only reason we should have no injectors in the previous block is
+        # if we are hitting a new ptx_func entry point or global declaration at
+        # PTX module scope, which means the stack only contains the outer
+        # context and the current one (i.e. len(stack) == 2)
+        if len(self.stack[-2].injectors) == 0:
+            assert len(self.stack) == 2, "Empty injector list too early!"
+        # Otherwise, the active injector in the previous block is the one for
+        # the Python function which is currently creating a new PTX block, and
+        # and it needs to be promoted to the current block
+        else:
+            self.stack[-1].injectors.append(self.stack[-2].injectors.pop())
     def pop_ctx(self):
         self.clean_injectors()
         bs = self.stack.pop()
+        # TODO: figure out why this next line is needed
+        [bs.injectors.remove(i) for i in bs.injectors if i.dead]
         self.stack[-1].code.extend(bs.code)
         if len(self.stack) == 1:
-            # We're on outer_ctx, so all injectors should be gone
+            # We're on outer_ctx, so all injectors should be gone.
             assert len(bs.injectors) == 0, "Injector/context mismatch"
             return
         # The only injector should be the one added in push_ctx
@@ -186,7 +198,7 @@ class _Block(object):
         spacing. To keep things simple, nested lists and tuples will be reduced
         in this manner (but not other iterable types). Coercion will not happen
         until after the entire DSL call tree has been walked. This allows a
-        class to submit a mutable type (e.g. the trivial `StrVar`) when first
+        class to submit a mutable type (e.g. ``DelayVar``) when first
         walked with an undefined value, then substitute the correct value on
         being finalized.
 
@@ -196,14 +208,23 @@ class _Block(object):
         """
         self.stack[-1].code.append(PTXStmt(prefix, op, vars, semi, indent))
 
-class StrVar(object):
+class DelayVar(object):
     """
     Trivial wrapper to allow deferred variable substitution.
     """
     def __init__(self, val=None):
         self.val = val
     def __str__(self):
-        return str(val)
+        return str(self.val)
+    def __mul__(self, other):
+        # Oh this is truly egregious
+        return DelayVarProxy(self, "self.other.val*" + str(other))
+
+class DelayVarProxy(object):
+    def __init__(self, other, expr):
+        self.other, self.expr = other, expr
+    def __str__(self):
+        return str(eval(self.expr))
 
 class _PTXFuncWrapper(object):
     """Enables ptx_func"""
@@ -298,6 +319,9 @@ class Block(object):
             self.block.code(op=['// ', self.comment], semi=False)
         self.comment = None
     def __exit__(self, exc_type, exc_value, tb):
+        # Allow exceptions to be propagated; things get really messy if we try
+        # to pop the stack if things aren't ordered correctly
+        if exc_type is not None: return
         self.block.code(indent=-1)
         self.block.code(op='}', semi=False)
         self.block.pop_ctx()
@@ -370,12 +394,14 @@ class Op(_CallChain):
     """
     def _call(self, op, *args, **kwargs):
         pred = ''
-        if 'ifp' in kwargs:
-            if 'ifnotp' in kwargs:
+        ifp = kwargs.get('ifp')
+        ifnotp = kwargs.get('ifnotp')
+        if ifp:
+            if ifnotp:
                 raise SyntaxError("can't use both, fool")
-            pred = ['@', kwargs['ifp']]
-        if 'ifnotp' in kwargs:
-            pred = ['@!', kwargs['ifnotp']]
+            pred = ['@', ifp]
+        if ifnotp:
+            pred = ['@!', ifnotp]
         self.block.code(pred, '.'.join(op), _softjoin(args, ','))
 
 class Mem(object):
@@ -421,7 +447,7 @@ class Mem(object):
         >>> op.st.global.v2.u32(addr(areg), vec(reg1, reg2))
         >>> op.ld.global.v2.u32(vec(reg1, reg2), addr(areg, 8))
         """
-        return ['[', areg, aoffset and '+' or '', aoffset, ']']
+        return ['[', areg, aoffset is not '' and '+' or '', aoffset, ']']
 
 class _MemFactory(_CallChain):
     """Actual `mem` object"""
@@ -538,8 +564,8 @@ class PTXFragment(object):
         """
         Called after running all PTX DSL functions, but before code generation,
         to allow fragments which postponed variable evaluation (e.g. using
-        `StrVar`) to fill in the resulting values. Most fragments should not
-        use this.
+        ``DelayVar``) to fill in the resulting values. Most fragments should
+        not use this.
 
         If implemented, this function *may* use an @ptx_func decorator to
         access the global DSL scope, but pretty please don't emit any code
@@ -796,6 +822,13 @@ class PTXModule(object):
                 raise ValueError("Too many recompiles scheduled!")
             self.__needs_recompilation = True
 
+    def print_source(self):
+        if not hasattr(self, 'source'):
+            raise ValueError("Not assembled yet!")
+        print '\n'.join(["%03d %s" % (i+1, l) for (i, l) in
+                        enumerate(self.source.split('\n'))])
+
+
 def _flatten(val):
     if isinstance(val, (list, tuple)):
         return ''.join(map(_flatten, val))
@@ -806,7 +839,7 @@ class PTXFormatter(object):
     Formats PTXStmt items into beautiful code. Well, the beautiful part is
     postponed for now.
     """
-    def __init__(self, indent_amt=2, oplen_max=20, varlen_max=12):
+    def __init__(self, indent_amt=4, oplen_max=20, varlen_max=12):
         self.idamt, self.opm, self.vm = indent_amt, oplen_max, varlen_max
     def format(self, code):
         out = []
@@ -844,7 +877,7 @@ class PTXFormatter(object):
 _TExp = namedtuple('_TExp', 'type exprlist')
 _DataCell = namedtuple('_DataCell', 'offset size texp')
 
-class DataStream(object):
+class DataStream(PTXFragment):
     """
     Simple interface between Python and PTX, designed to create and tightly
     pack control structs.
@@ -914,19 +947,19 @@ class DataStream(object):
         self.cells = []
         self.stream_size = 0
         self.free = {}
-        self.size_strvar = StrVar("not_yet_determined")
+        self.size_delayvars = []
 
     _types = dict(s8='b', u8='B', s16='h', u16='H', s32='i', u32='I', f32='f',
                   s64='l', u64='L', f64='d')
-    def _get_type(self, *regs):
+    def _get_type(self, regs):
         size = int(regs[0].type[1:])
-        for r in regs:
+        for reg in regs:
             if reg.type not in self._types:
                 raise TypeError("Register %s of type %s not supported" %
                                 (reg.name, reg.type))
-            if int(r.type[1:]) != size:
+            if int(reg.type[1:]) != size:
                 raise TypeError("Can't vector-load different size regs")
-        return size, ''.join([self._types.get(r.type) for r in regs])
+        return size/8, ''.join([self._types.get(r.type) for r in regs])
 
     def _alloc(self, vsize, texp):
         # A really crappy allocator. May later include optimizations for
@@ -939,7 +972,7 @@ class DataStream(object):
         if idx is None:
             # No aligned free cells, allocate a new `align`-byte free cell
             assert alloc not in self.free
-            self.free[alloc] = idx = len(self.stream_size)
+            self.free[alloc] = idx = len(self.cells)
             self.cells.append(_DataCell(self.stream_size, alloc, None))
             self.stream_size += alloc
         # Overwrite the free cell at `idx` with texp
@@ -958,27 +991,28 @@ class DataStream(object):
                 self.cells.insert(fidx, _DataCell(foffset, fsize, None))
                 foffset += fsize
                 self.free[fsize] = fidx
+            fsize *= 2
         # Adjust indexes. This is ugly, but evidently unavoidable
         if fidx-idx:
-            for k, v in filter(lambda k, v: v > idx, self.free.items()):
+            for k, v in filter(lambda (k, v): v > idx, self.free.items()):
                 self.free[k] = v+(fidx-idx)
-        return self.offset
+        return offset
 
     @ptx_func
     def _stream_get_internal(self, areg, dregs, exprs, ifp, ifnotp):
         size, type = self._get_type(dregs)
         vsize = size * len(dregs)
-        texp = _TExp(type, [expr])
-        if texp in self.expr_map:
+        texp = _TExp(type, tuple(exprs))
+        if texp in self.texp_map:
             offset = self.texp_map[texp]
         else:
             offset = self._alloc(vsize, texp)
             self.texp_map[texp] = offset
-        vtype = {1: '', 2: '.v2', 4: '.v4'}.get(len(dregs))
-        if len(dregs) > 0:
+        opname = ['ldu', 'b%d' % (size*8)]
+        if len(dregs) > 1:
+            opname.insert(1, 'v%d' % len(dregs))
             dregs = vec(dregs)
-        op._call('ldu%s.b%d' % (vtype, size), dregs, addr(areg+off),
-                 ifp=ifp, ifnotp=ifnotp)
+        op._call(opname, dregs, addr(areg, offset), ifp=ifp, ifnotp=ifnotp)
 
     @ptx_func
     def _stream_get(self, areg, dreg, expr, ifp=None, ifnotp=None):
@@ -991,16 +1025,20 @@ class DataStream(object):
                                   ifp, ifnotp)
 
     @ptx_func
-    def _stream_get_v2(self, areg, d1, e1, d2, e2, d3, e3, d4, e4,
+    def _stream_get_v4(self, areg, d1, e1, d2, e2, d3, e3, d4, e4,
                        ifp=None, ifnotp=None):
         self._stream_get_internal(areg, [d1, d2, d3, d4], [e1, e2, e3, e4],
                                   ifp, ifnotp)
 
+    @property
     def _stream_size(self):
-        return self.size_strvar
+        x = DelayVar("not_yet_determined")
+        self.size_delayvars.append(x)
+        return x
 
     def finalize_code(self):
-        self.size_strvar.val = str(self.stream_size)
+        for dv in self.size_delayvars:
+            dv.val = self.stream_size
 
     def to_inject(self):
         return {self.prefix + '_stream_get': self._stream_get,
@@ -1039,9 +1077,20 @@ class DataStream(object):
         for offset, size, texp in self.cells:
             if texp:
                 type = texp.type
-                vals = [eval(e, globals(), kwargs) for e in texp.expr_list]
+                vals = [eval(e, globals(), kwargs) for e in texp.exprlist]
             else:
                 type = 'x'*size # Padding bytes
                 vals = []
-            out.write(struct.pack(type, *vals))
+            outfile.write(struct.pack(type, *vals))
+
+    def print_record(self):
+        for cell in self.cells:
+            if cell.texp is None:
+                print '%3d %2d --' % (cell.offset, cell.size)
+                continue
+            print '%3d %2d %4s %s' % (cell.offset, cell.size, cell.texp.type,
+                                      cell.texp.exprlist[0])
+            for exp in cell.texp.exprlist[1:]:
+                print '%12s %s' % ('', exp)
+
 

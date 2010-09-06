@@ -25,14 +25,13 @@ def main(args):
     verbose = 1
     if '-d' in args:
         verbose = 3
-    ctx = LaunchContext([IterThread], block=(256,1,1), grid=(64,1), tests=True)
-    ctx.compile(verbose=verbose)
-    ctx.run_tests()
 
     with open(args[-1]) as fp:
         genomes = Genome.from_string(fp.read())
     anim = Animation(genomes)
+    anim.compile()
     anim.render_frame()
+
 
     #genome.width, genome.height = 512, 512
     #genome.sample_density = 1000

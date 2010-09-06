@@ -1,11 +1,61 @@
-
 from ctypes import *
+from cStringIO import StringIO
 import numpy as np
-from fr0stlib.pyflam3 import Genome, Frame
+
+from fr0stlib import pyflam3
 from fr0stlib.pyflam3._flam3 import *
 from fr0stlib.pyflam3.constants import *
 
+from cuburnlib.cuda import LaunchContext
+from cuburnlib.device_code import IterThread, CPDataStream
+
 Point = lambda x, y: np.array([x, y], dtype=np.double)
+
+class Genome(pyflam3.Genome):
+    pass
+
+class Frame(pyflam3.Frame):
+    def interpolate(self, time, cp):
+        flam3_interpolate(self.genomes, self.ngenomes, time, 0, byref(cp))
+
+    def pack_stream(self, ctx, time):
+        """
+        Pack and return the control point data stream to render this frame.
+        """
+        # Get the central control point, and calculate parameters that change
+        # once per frame
+        cp = BaseGenome()
+        self.interpolate(time, cp)
+        self.filt = Filters(self, cp)
+        rw = cp.spatial_oversample * cp.width  + 2 * self.filt.gutter
+        rh = cp.spatial_oversample * cp.height + 2 * self.filt.gutter
+
+        # Interpolate each time step, calculate per-step variables, and pack
+        # into the stream
+        cp_streamer = ctx.ptx.instances[CPDataStream]
+        stream = StringIO()
+        print "Data stream contents:"
+        cp_streamer.print_record()
+        tcp = BaseGenome()
+        for batch_idx in range(cp.nbatches):
+            for time_idx in range(cp.ntemporal_samples):
+                idx = time_idx + batch_idx * cp.nbatches
+                cp_time = time + self.filt.temporal_deltas[idx]
+                self.interpolate(time, tcp)
+                tcp.camera = Camera(self, tcp, self.filt)
+
+                # TODO: figure out which object to pack this into
+                nsamples = ((tcp.camera.sample_density * cp.width * cp.height) /
+                            (cp.nbatches * cp.ntemporal_samples))
+                samples_per_thread = nsamples / ctx.threads + 15
+
+                cp_streamer.pack_into(stream,
+                        frame=self,
+                        cp=tcp,
+                        cp_idx=idx,
+                        samples_per_thread=samples_per_thread)
+        stream.seek(0)
+        return (stream.read(), cp.nbatches * cp.ntemporal_samples)
 
 class Animation(object):
     """
@@ -31,46 +81,46 @@ class Animation(object):
             memmove(byref(self.genomes[i]), byref(genomes[i]),
                     sizeof(BaseGenome))
 
-        self._frame = Frame()
-        self._frame.genomes = cast(self.genomes, POINTER(BaseGenome))
-        self._frame.ngenomes = len(genomes)
+        self.features = Features(genomes)
+        self.frame = Frame()
+        self.frame.genomes = cast(self.genomes, POINTER(BaseGenome))
+        self.frame.ngenomes = len(genomes)
+
+        self.ctx = None
+
+    def compile(self):
+        """
+        Create a PTX kernel optimized for this animation, compile it, and
+        attach it to a LaunchContext with a thread distribution optimized for
+        the active device.
+        """
+        # TODO: user-configurable test control
+        self.ctx = LaunchContext([IterThread], block=(256,1,1), grid=(54,1),
+                                 tests=True)
+        # TODO: user-configurable verbosity control
+        self.ctx.compile(verbose=3, anim=self, features=self.features)
+        # TODO: automatic optimization of block parameters
 
     def render_frame(self, time=0):
         # TODO: support more nuanced frame control than just 'time'
         # TODO: reuse more information between frames
         # TODO: allow animation-long override of certain parameters (size, etc)
+        cp_stream, num_cps = self.frame.pack_stream(self.ctx, time)
+        iter_thread = self.ctx.ptx.instances[IterThread]
+        iter_thread.upload_cp_stream(self.ctx, cp_stream, num_cps)
+        iter_thread.call(self.ctx)
 
-        cp = BaseGenome()
-        flam3_interpolate(self.frame.genomes, len(self.genomes), time, 0,
-                          byref(cp))
-        filt = Filters(self.frame, cp)
-        rw = cp.spatial_oversample * cp.width  + 2 * filt.gutter
-        rh = cp.spatial_oversample * cp.height + 2 * filt.gutter
+class Features(object):
+    """
+    Determine features and constants required to render a particular set of
+    genomes. The values of this class are fixed before compilation begins.
+    """
+    # Constant; number of rounds spent fusing points on first CP of a frame
+    num_fuse_samples = 25
 
-        # Allocate buckets, accumulator
-        # Loop over all batches:
-        #   [density estimation]
-        #   Loop over all temporal samples:
-        #     Color scalar = temporal filter at index
-        #     Interpolate and get control point
-        #     Precalculate
-        #     Prepare xforms
-        #     Compute colormap
-        #     Run iterations
-        #     Accumulate vibrancy, gamma, background
-        #   Calculate k1, k2
-        #   If not DE, then do log filtering to accumulator
-        #   Else, [density estimation]
-        # Do final clip and filter
-
-        # For now:
-        # Loop over all batches:
-        #   Loop over all temporal samples:
-        #     Interpolate and get control point
-        #     Read the
-        #     Dump noise into buckets
-        #   Do log filtering to accumulator
-        # Do simplified final clip
+    def __init__(self, genomes):
+        self.max_ntemporal_samples = max(
+                [cp.nbatches * cp.ntemporal_samples for cp in genomes]) + 1
 
 class Filters(object):
     def __init__(self, frame, cp):
@@ -115,7 +165,7 @@ class Camera(object):
         scale = 2.0 ** cp.zoom
         self.sample_density = cp.sample_density * scale * scale
 
-        center = Point(cp.center[0], cp.center[1])
+        center = Point(cp._center[0], cp._center[1])
         size = Point(cp.width, cp.height)
         # pix per unit, where 'unit' is '1.0' in IFS space
         self.ppu = Point(
@@ -128,5 +178,4 @@ class Camera(object):
         self.upper_bounds = cornerLL + (size / self.ppu) + gutter
         self.ifs_space_size = 1.0 / (self.upper_bounds - self.lower_bounds)
         # TODO: coordinate transforms in concert with GPU (rotation, size)
-
 
