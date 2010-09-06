@@ -24,7 +24,7 @@ class IterThread(PTXTest):
     @ptx_func
     def module_setup(self):
         mem.global_.u32('g_cp_array',
-                        cp_stream_size*features.max_ntemporal_samples)
+                        cp.stream_size*features.max_ntemporal_samples)
         mem.global_.u32('g_num_cps')
         # TODO move into debug statement
         mem.global_.u32('g_num_rounds', ctx.threads)
@@ -40,10 +40,10 @@ class IterThread(PTXTest):
         op.mov.u32(num_writes, 0)
 
         # TODO: MWC float output types
-        mwc_next_f32_01(x_coord)
-        mwc_next_f32_01(y_coord)
-        mwc_next_f32_01(color_coord)
-        mwc_next_f32_01(alpha_coord)
+        mwc.next_f32_01(x_coord)
+        mwc.next_f32_01(y_coord)
+        mwc.next_f32_01(color_coord)
+        mwc.next_f32_01(alpha_coord)
 
         # Registers are hard to come by. To avoid having to track both the count
         # of samples processed and the number of samples to generate,
@@ -81,13 +81,13 @@ class IterThread(PTXTest):
 
         with block('Load CP address'):
             op.mov.u32(cpA, g_cp_array)
-            op.mad.lo.u32(cpA, cp_idx, cp_stream_size, cpA)
+            op.mad.lo.u32(cpA, cp_idx, cp.stream_size, cpA)
 
         with block('Increment CP index, load num_samples (unless in fuse)'):
             reg.pred('p_not_in_fuse')
             op.setp.ge.s32(p_not_in_fuse, num_samples, 0)
             op.add.u32(cp_idx, cp_idx, 1, ifp=p_not_in_fuse)
-            cp_stream_get(cpA, num_samples, 'samples_per_thread',
+            cp.get(cpA, num_samples, 'samples_per_thread',
                           ifp=p_not_in_fuse)
 
         label('fuse_loop_start')
@@ -127,8 +127,8 @@ class IterThread(PTXTest):
 
         label('all_cps_done')
         # TODO this is for testing, move it to a debug statement
-        store_per_thread(g_num_rounds, num_rounds)
-        store_per_thread(g_num_writes, num_writes)
+        std.store_per_thread(g_num_rounds, num_rounds)
+        std.store_per_thread(g_num_writes, num_writes)
 
     def upload_cp_stream(self, ctx, cp_stream, num_cps):
         cp_array_dp, cp_array_l = ctx.mod.get_global('g_cp_array')
@@ -152,6 +152,8 @@ class IterThread(PTXTest):
         print "Writes:", writes
 
 class MWCRNG(PTXFragment):
+    shortname = "mwc"
+
     def __init__(self):
         self.rand = np.random
         self.threads_ready = 0
@@ -171,7 +173,7 @@ class MWCRNG(PTXFragment):
         reg.u32('mwc_st mwc_mult mwc_car')
         with block('Load MWC multipliers and states'):
             reg.u32('mwc_off mwc_addr')
-            get_gtid(mwc_off)
+            std.get_gtid(mwc_off)
             op.mov.u32(mwc_addr, mwc_rng_mults)
             op.mad.lo.u32(mwc_addr, mwc_off, 4, mwc_addr)
             op.ld.global_.u32(mwc_mult, addr(mwc_addr))
@@ -184,7 +186,7 @@ class MWCRNG(PTXFragment):
     def entry_teardown(self):
         with block('Save MWC states'):
             reg.u32('mwc_off mwc_addr')
-            get_gtid(mwc_off)
+            std.get_gtid(mwc_off)
             op.mov.u32(mwc_addr, mwc_rng_state)
             op.mad.lo.u32(mwc_addr, mwc_off, 8, mwc_addr)
             op.st.global_.v2.u32(addr(mwc_addr), vec(mwc_st, mwc_car))
@@ -218,11 +220,6 @@ class MWCRNG(PTXFragment):
             self._next()
             op.cvt.rn.f32.s32(dst_reg, mwc_st)
             op.mul.lo.f32(dst_reg, dst_reg, '0f00000030') # 1./(1<<31)
-
-    def to_inject(self):
-        return dict(mwc_next_b32=self.next_b32,
-                    mwc_next_f32_01=self.next_f32_01,
-                    mwc_next_f32_11=self.next_f32_11)
 
     def device_init(self, ctx):
         if self.threads_ready >= ctx.threads:
@@ -275,7 +272,7 @@ class MWCRNGTest(PTXTest):
             reg.pred('p')
             op.mov.u32(loopct, self.rounds)
             label('loopstart')
-            mwc_next_b32(addend)
+            mwc.next_b32(addend)
             op.cvt.u64.u32(addl, addend)
             op.add.u64(sum, sum, addl)
             op.sub.u32(loopct, loopct, 1)
@@ -284,7 +281,7 @@ class MWCRNGTest(PTXTest):
 
         with block('Store sum and state'):
             reg.u32('adr offset')
-            get_gtid(offset)
+            std.get_gtid(offset)
             op.mov.u32(adr, mwc_rng_test_sums)
             op.mad.lo.u32(adr, offset, 8, adr)
             op.st.global_.u64(addr(adr), sum)
@@ -331,5 +328,5 @@ class CameraCoordTransform(PTXFragment):
 
 class CPDataStream(DataStream):
     """DataStream which stores the control points."""
-    prefix = 'cp'
+    shortname = 'cp'
 

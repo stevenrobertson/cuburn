@@ -39,6 +39,7 @@ Things to do (rather severely incomplete):
     - Test effects on quality by masking off writes on all but one lane and
       boosting the sample density to compensate (muuuuuch later on)
 - DE
+- Clean up code (particularly DSL stuff incl. injector)
 
 Things to test:
 
