@@ -1,23 +1,23 @@
-Status: currently broken (syntax errors, incomplete sections)
+Status: passes rudimentary tests
 
 Current goals:
-- Test DeviceStream, and get it working. Bugs are expected.
-    - Test allocator
-    - Test statement evaluator
-    - Test packing correctly
-    - Test that device instructions get injected correctly
-    - Test in working implementation
-- Load a set of genomes and calculate a bare minimum `Feature` set (no xforms,
-  no filters, no oversample)
-- Get frames loaded for rendering
-- Get IterThread running in device kernel
-    - For now, implement as `PTXTest`
-    - For each frame, loop for FUSE times, then loop through expected number of
-      points for each CP. Keep a count of number of times looped, and number of
-      stores that would be done. Verify against expected counts.
 
+- Draw some dang points!
+    - Allocate buffer (can it be pre-allocated?)
+    - Direct scatter linear points by GTID from flame number
+    - Re-enable preview window
+    - Execute frame, update texture, repeat
+- Writeback of points to the buffer
+    - Define writeback class, args
+    - Do camera rotation across frameset
+    - Postpone other kinds of testing and address clamping for now
+- Start xforms
+    - At first, fixed Sierpinski triangle or something
+    - xform selection, pre- and post-transform in xform
+    - first of the variations
 
 Things to do (rather severely incomplete):
+
 - LaunchContext thread distribution based on generated code register count and
   shared memory size
 - qlocal storage
@@ -27,9 +27,6 @@ Things to do (rather severely incomplete):
 - The `Feature` class
     - Transform count and per-transform code layout
     - Filter size, oversample, final buffer size
-- Palette storage
-    - Performance implications of different state spaces
-    - Performance and quality of 2D texture interpolation
 - Buffer allocation, clearing, reading from device
 - Preview window
     - When/how to sample?
@@ -41,8 +38,24 @@ Things to do (rather severely incomplete):
     - Implement
     - Test effects on quality by masking off writes on all but one lane and
       boosting the sample density to compensate (muuuuuch later on)
-- MWC RNG output types
-    - float in range [0, 1]
-- Debug statements
-    - Some code can't be tested separately (notably IterThread). Make a debug
-      flag which embeds extra tests into the kernel
+- DE
+
+Things to test:
+
+- DeviceStream allocator and proper handling of corner cases
+- Debug flag/dict/whatever for entire project in general
+    - Iteration counters for IterThread
+
+Things to benchmark:
+
+- Kernel invocation and/or interrupt times (will high load freeze X?)
+- 1D/2D texture load+interpolation speeds vs constant memory loading
+    - Must test under high SFU load
+    - Tex uses separate cache? Has lower bandwidth penalty for gather?
+- MWC float conversion
+- The entire scatter process
+    - Radix sort of writeback coordinates
+    - Log-copy-histogram approach
+    - Direct reductions
+    - Surface loads, stores, reductions
+
