@@ -333,8 +333,9 @@ class _CallChain(object):
         self.__chain = []
     def __call__(self, *args, **kwargs):
         assert(self.__chain)
-        self._call(self.__chain, *args, **kwargs)
+        r = self._call(self.__chain, *args, **kwargs)
         self.__chain = []
+        return r
     def __getattr__(self, name):
         if name == 'global_':
             name = 'global'
@@ -371,6 +372,9 @@ class _RegFactory(_CallChain):
         regs = map(lambda n: Reg(type, n), names)
         self.block.code(op='.reg .' + type, vars=_softjoin(names, ','))
         [self.block.inject(r.name, r) for r in regs]
+        if len(regs) == 1:
+            return regs[0]
+        return regs
 
 class Op(_CallChain):
     """
