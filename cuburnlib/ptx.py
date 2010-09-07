@@ -650,6 +650,16 @@ class _PTXStdLib(PTXFragment):
             op.mad.lo.u32(spt_base, spt_offset, 4, spt_base)
             op.st.b32(addr(spt_base), val)
 
+    @ptx_func
+    def set_is_first_thread(self, p_dst):
+        with block("Set %s if this is thread 0 in the CTA" % p_dst.name):
+            reg.u32('tid')
+            op.mov.u32(tid, '%tid.x')
+            op.setp.eq.u32(p_dst, tid, 0)
+
+    def not_(self, pred):
+        return ['!', pred]
+
     def to_inject(self):
         # Set up the initial namespace
         return dict(

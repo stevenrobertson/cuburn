@@ -30,6 +30,9 @@ class Frame(pyflam3.Frame):
         rw = cp.spatial_oversample * cp.width  + 2 * self.filt.gutter
         rh = cp.spatial_oversample * cp.height + 2 * self.filt.gutter
 
+        if cp.nbatches * cp.ntemporal_samples < ctx.ctas:
+            raise NotImplementedError(
+                "Distribution of a CP across multiple CTAs not yet done")
         # Interpolate each time step, calculate per-step variables, and pack
         # into the stream
         cp_streamer = ctx.ptx.instances[CPDataStream]
@@ -44,16 +47,14 @@ class Frame(pyflam3.Frame):
                 self.interpolate(time, tcp)
                 tcp.camera = Camera(self, tcp, self.filt)
 
-                # TODO: figure out which object to pack this into
-                nsamples = ((tcp.camera.sample_density * cp.width * cp.height) /
-                            (cp.nbatches * cp.ntemporal_samples))
-                samples_per_thread = nsamples / ctx.threads + 15
+                tcp.nsamples = (tcp.camera.sample_density *
+                                cp.width * cp.height) / (
+                                cp.nbatches * cp.ntemporal_samples)
 
                 cp_streamer.pack_into(stream,
                         frame=self,
                         cp=tcp,
-                        cp_idx=idx,
-                        samples_per_thread=samples_per_thread)
+                        cp_idx=idx)
         stream.seek(0)
         return (stream.read(), cp.nbatches * cp.ntemporal_samples)
 
