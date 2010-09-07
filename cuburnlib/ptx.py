@@ -337,8 +337,8 @@ class _CallChain(object):
         self.__chain = []
         return r
     def __getattr__(self, name):
-        if name == 'global_':
-            name = 'global'
+        if name.endswith('_'):
+            name = name[:-1]
         self.__chain.append(name)
         # Another great crime against the universe:
         return self
@@ -630,23 +630,15 @@ class _PTXStdLib(PTXFragment):
     def get_gtid(self, dst):
         """
         Get the global thread ID (the position of this thread in a grid of
-        blocks of threads). Notably, this assumes that both grid and block are
-        one-dimensional, which in most cases is true.
+        blocks of threads). This assumes that both grid and block are
+        one-dimensional! (This is always true for cuburn.)
         """
         with block("Load GTID into %s" % str(dst)):
-            reg.u16('tmp')
-            reg.u32('cta ncta tid gtid')
-
-            op.mov.u16(tmp, '%ctaid.x')
-            op.cvt.u32.u16(cta, tmp)
-            op.mov.u16(tmp, '%ntid.x')
-            op.cvt.u32.u16(ncta, tmp)
-            op.mul.lo.u32(gtid, cta, ncta)
-
-            op.mov.u16(tmp, '%tid.x')
-            op.cvt.u32.u16(tid, tmp)
-            op.add.u32(gtid, gtid, tid)
-            op.mov.b32(dst, gtid)
+            reg.u32('cta ncta tid')
+            op.mov.u32(cta, '%ctaid.x')
+            op.mov.u32(ncta, '%ntid.x')
+            op.mov.u32(tid, '%tid.x')
+            op.mad.lo.u32(dst, cta, ncta, tid)
 
     @ptx_func
     def store_per_thread(self, base, val):
@@ -792,7 +784,8 @@ class PTXModule(object):
             params = [Reg('.param.' + str(type), name)
                       for (type, name) in ent.entry_params]
             _block.code(op='.entry %s ' % ent.entry_name, semi=False,
-                vars=['(', ['%s %s' % (r.type, r.name) for r in params], ')'])
+                vars=['(', ', '.join(['%s %s' % (r.type, r.name)
+                                      for r in params]), ')'])
             with Block(_block):
                 [_block.inject(r.name, r) for r in params]
                 for dep in insts:

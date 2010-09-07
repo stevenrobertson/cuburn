@@ -42,6 +42,10 @@ class LaunchContext(object):
     def threads(self):
         return reduce(lambda a, b: a*b, self.block + self.grid)
 
+    @property
+    def ctas(self):
+        return self.grid[0] * self.grid[1]
+
     def compile(self, verbose=False, **kwargs):
         kwargs['ctx'] = self
         self.ptx = PTXModule(self.entry_types, kwargs, self.build_tests)
