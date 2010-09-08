@@ -130,6 +130,7 @@ class IterThread(PTXTest):
         std.store_per_thread(g_num_rounds, num_rounds)
         std.store_per_thread(g_num_writes, num_writes)
 
+    @instmethod
     def upload_cp_stream(self, ctx, cp_stream, num_cps):
         cp_array_dp, cp_array_l = ctx.mod.get_global('g_cp_array')
         assert len(cp_stream) <= cp_array_l, "Stream too big!"
@@ -139,6 +140,7 @@ class IterThread(PTXTest):
         cuda.memset_d32(num_cps_dp, num_cps, 1)
         self.cps_uploaded = True
 
+    @instmethod
     def call(self, ctx):
         if not self.cps_uploaded:
             raise Error("Cannot call IterThread before uploading CPs")

@@ -35,10 +35,9 @@ class Frame(pyflam3.Frame):
                 "Distribution of a CP across multiple CTAs not yet done")
         # Interpolate each time step, calculate per-step variables, and pack
         # into the stream
-        cp_streamer = ctx.ptx.instances[CPDataStream]
         stream = StringIO()
         print "Data stream contents:"
-        cp_streamer.print_record()
+        CPDataStream.print_record(ctx)
         tcp = BaseGenome()
         for batch_idx in range(cp.nbatches):
             for time_idx in range(cp.ntemporal_samples):
@@ -51,10 +50,8 @@ class Frame(pyflam3.Frame):
                                 cp.width * cp.height) / (
                                 cp.nbatches * cp.ntemporal_samples)
 
-                cp_streamer.pack_into(stream,
-                        frame=self,
-                        cp=tcp,
-                        cp_idx=idx)
+                CPDataStream.pack_into(ctx, stream,
+                        frame=self, cp=tcp, cp_idx=idx)
         stream.seek(0)
         return (stream.read(), cp.nbatches * cp.ntemporal_samples)
 
@@ -108,8 +105,8 @@ class Animation(object):
         # TODO: allow animation-long override of certain parameters (size, etc)
         cp_stream, num_cps = self.frame.pack_stream(self.ctx, time)
         iter_thread = self.ctx.ptx.instances[IterThread]
-        iter_thread.upload_cp_stream(self.ctx, cp_stream, num_cps)
-        iter_thread.call(self.ctx)
+        IterThread.upload_cp_stream(self.ctx, cp_stream, num_cps)
+        IterThread.call(self.ctx)
 
 class Features(object):
     """

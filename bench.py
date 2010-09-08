@@ -7,7 +7,7 @@ Various micro-benchmarks and other experiments.
 import numpy as np
 import pycuda.autoinit
 import pycuda.driver as cuda
-from cuburnlib.ptx import PTXFragment, PTXTest, ptx_func
+from cuburnlib.ptx import PTXFragment, PTXTest, ptx_func, instmethod
 from cuburnlib.cuda import LaunchContext
 from cuburnlib.device_code import MWCRNG
 
@@ -104,7 +104,7 @@ class L2WriteCombining(PTXTest):
         op.setp.ge.u32(p_done, x, 2)
         op.bra.uni(l2_restart, ifnotp=p_done)
 
-
+    @instmethod
     def call(self, ctx):
         scratch = np.zeros(self.block_size*ctx.ctas/4, np.uint64)
         times_bytes = np.zeros((4, ctx.threads), np.uint64, 'F')
@@ -137,7 +137,7 @@ def main():
     ctx = LaunchContext([L2WriteCombining], block=(128,1,1), grid=(7*8,1),
                         tests=True)
     ctx.compile(verbose=3)
-    ctx.ptx.instances[L2WriteCombining].call(ctx)
+    L2WriteCombining.call(ctx)
 
 if __name__ == "__main__":
     main()

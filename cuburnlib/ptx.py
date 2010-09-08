@@ -500,6 +500,9 @@ class PTXFragment(object):
     An object containing PTX DSL functions. The object, and all its
     dependencies, will be instantiated by a PTX module. Each object will be
     bound to the name given by ``shortname`` in the DSL namespace.
+
+    Because of the instantiation weirdness, use the instmethod decorator on
+    instance methods that will be called from regular Python code.
     """
 
     # Name under which to make this code available in ptx_funcs
@@ -575,6 +578,17 @@ class PTXFragment(object):
         """
         pass
 
+def instmethod(func):
+    """
+    Wrapper to allow instances to be retrieved from an active context. Use it
+    on methods which depend on state created during a compilation phase, but
+    are intended to be called from normal Python code.
+    """
+    def wrap(cls, ctx, *args, **kwargs):
+        inst = ctx.ptx.instances[cls]
+        func(inst, ctx, *args, **kwargs)
+    return classmethod(wrap)
+
 class PTXEntryPoint(PTXFragment):
     # Human-readable entry point name
     name = ""
@@ -591,6 +605,7 @@ class PTXEntryPoint(PTXFragment):
         """
         raise NotImplementedError
 
+    @instmethod
     def call(self, ctx):
         """
         Calls the entry point on the device. Haven't worked out the details
@@ -819,7 +834,6 @@ class PTXModule(object):
         print '\n'.join(["%03d %s" % (i+1, l) for (i, l) in
                         enumerate(self.source.split('\n'))])
 
-
 def _flatten(val):
     if isinstance(val, (list, tuple)):
         return ''.join(map(_flatten, val))
@@ -883,7 +897,7 @@ class DataStream(PTXFragment):
     >>> class ExampleDataStream(DataStream):
     >>>     shortname = "ex"
 
-    Inside DSL functions, you can "retrieve" arbitrary Python expressions from
+    Inside DSL functions, you can retrieve arbitrary Python expressions from
     the data stream.
 
     >>> @ptx_func
@@ -892,22 +906,17 @@ class DataStream(PTXFragment):
     >>>     op.mov.u32(regA, some_device_allocation_base_address)
     >>>     # From the structure at the base address in 'regA', load the value
     >>>     # of 'ctx.nthreads' into reg1
-    >>>     ex.get(regA, reg1, 'ctx.nthreads')
+    >>>     ex.get(regA, reg1, 'ctx.nthreads+padding')
 
     The expressions will be stored as strings and mapped to particular
     positions in the struct. Later, the expressions will be evaluated and
     coerced into a type matching the destination register:
 
-    >>> # Fish the instance holding the data stream from the compiled module
-    >>> ex_stream = launch_context.ptx.instances[ExampleDataStream]
-    >>> # Evaluate the expressions in the current namespace, augmented with the
-    >>> # supplied objects
-    >>> data = ex_stream.pack(ctx=launch_context)
+    >>> data = ExampleDataStream.pack(ctx, padding=4)
 
     Expressions will be aligned and may be reused in such a way as to minimize
     access times when taking device caching into account. This also implies
-    that the evaluated expressions should not modify any state, but that should
-    be obvious, no?
+    that the evaluated expressions should not modify any state.
 
     >>> @ptx_func
     >>> def example_func_2():
@@ -1034,7 +1043,8 @@ class DataStream(PTXFragment):
         for dv in self.size_delayvars:
             dv.val = self._size
 
-    def pack(self, _out_file_ = None, **kwargs):
+    @instmethod
+    def pack(self, ctx, _out_file_ = None, **kwargs):
         """
         Evaluates all statements in the context of **kwargs. Take this code,
         presumably inside a PTX func::
@@ -1043,25 +1053,31 @@ class DataStream(PTXFragment):
 
         To pack this into a struct, call this method on an instance:
 
-        >>> ex_stream = launch_context.ptx.instances[ExampleDataStream]
-        >>> data = ex_stream.pack(frob=4, xyz=xyz)
+        >>> data = ExampleDataStream.pack(ctx, frob=4, xyz=xyz)
 
         This evaluates each Python expression from the stream with the provided
         arguments as locals, coerces it to the appropriate type, and returns
         the resulting structure as a string.
+
+        The supplied LaunchContext is added to the namespace as ``ctx`` by
+        default. To supress, this, override ``ctx`` in the keyword arguments:
+
+        >>> data = ExampleDataStream.pack(ctx, frob=5, xyz=xyz, ctx=None)
         """
         out = StringIO()
-        self.pack_into(out, kwargs)
+        cls.pack_into(out, kwargs)
         return out.read()
 
-    def pack_into(self, outfile, **kwargs):
+    @instmethod
+    def pack_into(self, ctx, outfile, **kwargs):
         """
         Like pack(), but write data to a file-like object at the file's current
         offset instead of returning it as a string.
 
-        >>> ex_stream.pack_into(strio_inst, frob=4, xyz=thing)
-        >>> ex_stream.pack_into(strio_inst, frob=6, xyz=another_thing)
+        >>> ex_stream.pack_into(ctx, strio_inst, frob=4, xyz=thing)
+        >>> ex_stream.pack_into(ctx, strio_inst, frob=6, xyz=another_thing)
         """
+        kwargs.setdefault('ctx', ctx)
         for offset, size, texp in self.cells:
             if texp:
                 type = texp.type
@@ -1071,7 +1087,8 @@ class DataStream(PTXFragment):
                 vals = []
             outfile.write(struct.pack(type, *vals))
 
-    def print_record(self):
+    @instmethod
+    def print_record(self, ctx):
         for cell in self.cells:
             if cell.texp is None:
                 print '%3d %2d --' % (cell.offset, cell.size)
