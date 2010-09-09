@@ -1,3 +1,4 @@
+import math
 from ctypes import *
 from cStringIO import StringIO
 import numpy as np
@@ -7,53 +8,80 @@ from fr0stlib.pyflam3._flam3 import *
 from fr0stlib.pyflam3.constants import *
 
 from cuburnlib.cuda import LaunchContext
-from cuburnlib.device_code import IterThread, CPDataStream
+from cuburnlib.device_code import *
 
 Point = lambda x, y: np.array([x, y], dtype=np.double)
 
 class Genome(pyflam3.Genome):
     pass
 
-class Frame(pyflam3.Frame):
-    def interpolate(self, time, cp):
-        flam3_interpolate(self.genomes, self.ngenomes, time, 0, byref(cp))
+class _Frame(pyflam3.Frame):
+    """
+    ctypes flam3_frame object used for genome interpolation and
+    spatial filter creation
+    """
+    def __init__(self, genomes, *args, **kwargs):
+        pyflam3.Frame.__init__(self, *args, **kwargs)
+        self.genomes = (BaseGenome * len(genomes))()
+        for i in range(len(genomes)):
+            memmove(byref(self.genomes[i]), byref(genomes[i]),
+                    sizeof(BaseGenome))
+        self.ngenomes = len(genomes)
 
-    def pack_stream(self, ctx, time):
-        """
-        Pack and return the control point data stream to render this frame.
-        """
-        # Get the central control point, and calculate parameters that change
-        # once per frame
-        cp = BaseGenome()
-        self.interpolate(time, cp)
-        self.filt = Filters(self, cp)
-        rw = cp.spatial_oversample * cp.width  + 2 * self.filt.gutter
-        rh = cp.spatial_oversample * cp.height + 2 * self.filt.gutter
+        # TODO: do this here?
+        self.pixel_aspect_ratio = float(genomes[0].height) / genomes[0].width
 
-        if cp.nbatches * cp.ntemporal_samples < ctx.ctas:
+    def interpolate(self, time, stagger=0, cp=None):
+        cp = cp or BaseGenome()
+        flam3_interpolate(self.genomes, self.ngenomes, time,
+                          stagger, byref(cp))
+        return cp
+
+class Frame(object):
+    """
+    Handler for a single frame of a rendered genome.
+    """
+    def __init__(self, _frame, time):
+        self._frame = _frame
+        self.center_cp = self._frame.interpolate(time)
+
+    def upload_data(self, ctx, filters, time):
+        """
+        Prepare and upload the data needed to render this frame to the device.
+        """
+        center = self.center_cp
+        ncps = center.nbatches * center.ntemporal_samples
+
+        if ncps < ctx.ctas:
             raise NotImplementedError(
                 "Distribution of a CP across multiple CTAs not yet done")
-        # Interpolate each time step, calculate per-step variables, and pack
-        # into the stream
+
+        # TODO: isn't this leaking ctypes xforms all over the place?
         stream = StringIO()
-        print "Data stream contents:"
-        CPDataStream.print_record(ctx)
-        tcp = BaseGenome()
-        for batch_idx in range(cp.nbatches):
-            for time_idx in range(cp.ntemporal_samples):
-                idx = time_idx + batch_idx * cp.nbatches
-                cp_time = time + self.filt.temporal_deltas[idx]
-                self.interpolate(time, tcp)
-                tcp.camera = Camera(self, tcp, self.filt)
+        cp_list = []
 
-                tcp.nsamples = (tcp.camera.sample_density *
-                                cp.width * cp.height) / (
-                                cp.nbatches * cp.ntemporal_samples)
+        for batch_idx in range(center.nbatches):
+            for time_idx in range(center.ntemporal_samples):
+                idx = time_idx + batch_idx * center.nbatches
+                time = time + filters.temporal_deltas[idx]
+                cp = self._frame.interpolate(time)
+                cp_list.append(cp)
 
-                CPDataStream.pack_into(ctx, stream,
-                        frame=self, cp=tcp, cp_idx=idx)
+                cp.camera = Camera(self._frame, cp, filters)
+                cp.nsamples = (cp.camera.sample_density *
+                               center.width * center.height) / ncps
+
+        print "Expected writes:", (
+                cp.camera.sample_density * center.width * center.height)
+        min_time = min(filters.temporal_deltas)
+        max_time = max(filters.temporal_deltas)
+        for i, cp in enumerate(cp_list):
+            cp.norm_time = (filters.temporal_deltas[i] - min_time) / (
+                            max_time - min_time)
+            CPDataStream.pack_into(ctx, stream, frame=self, cp=cp, cp_idx=idx)
+        PaletteLookup.upload_palette(ctx, self, cp_list)
         stream.seek(0)
-        return (stream.read(), cp.nbatches * cp.ntemporal_samples)
+        IterThread.upload_cp_stream(ctx, stream.read(), ncps)
 
 class Animation(object):
     """
@@ -74,15 +102,12 @@ class Animation(object):
     interpolated sequence between one or two genomes.
     """
     def __init__(self, genomes):
-        self.genomes = (Genome * len(genomes))()
-        for i in range(len(genomes)):
-            memmove(byref(self.genomes[i]), byref(genomes[i]),
-                    sizeof(BaseGenome))
+        # _frame is the ctypes frame object used only for interpolation
+        self._frame = _Frame(genomes)
 
-        self.features = Features(genomes)
-        self.frame = Frame()
-        self.frame.genomes = cast(self.genomes, POINTER(BaseGenome))
-        self.frame.ngenomes = len(genomes)
+        # Use the same set of filters throughout the anim, a la flam3
+        self.filters = Filters(self._frame, genomes[0])
+        self.features = Features(genomes, self.filters)
 
         self.ctx = None
 
@@ -103,25 +128,17 @@ class Animation(object):
         # TODO: support more nuanced frame control than just 'time'
         # TODO: reuse more information between frames
         # TODO: allow animation-long override of certain parameters (size, etc)
-        cp_stream, num_cps = self.frame.pack_stream(self.ctx, time)
-        iter_thread = self.ctx.ptx.instances[IterThread]
-        IterThread.upload_cp_stream(self.ctx, cp_stream, num_cps)
+        frame = Frame(self._frame, time)
+        frame.upload_data(self.ctx, self.filters, time)
+        self.ctx.set_up()
         IterThread.call(self.ctx)
-
-class Features(object):
-    """
-    Determine features and constants required to render a particular set of
-    genomes. The values of this class are fixed before compilation begins.
-    """
-    # Constant; number of rounds spent fusing points on first CP of a frame
-    num_fuse_samples = 25
-
-    def __init__(self, genomes):
-        self.max_ntemporal_samples = max(
-                [cp.nbatches * cp.ntemporal_samples for cp in genomes]) + 1
+        return HistScatter.get_bins(self.ctx, self.features)
 
 class Filters(object):
     def __init__(self, frame, cp):
+        # Use one oversample per filter set, even over multiple timesteps
+        self.oversample = frame.genomes[0].spatial_oversample
+
         # Ugh. I'd really like to replace this mess
         spa_filt_ptr = POINTER(c_double)()
         spa_width = flam3_create_spatial_filter(byref(frame),
@@ -152,7 +169,32 @@ class Filters(object):
         flam3_free(tmp_deltas_ptr)
 
         # TODO: density estimation
-        self.gutter = (spa_width - cp.spatial_oversample) / 2
+        self.gutter = (spa_width - self.oversample) / 2
+
+class Features(object):
+    """
+    Determine features and constants required to render a particular set of
+    genomes. The values of this class are fixed before compilation begins.
+    """
+    # Constant; number of rounds spent fusing points on first CP of a frame
+    num_fuse_samples = 25
+
+    def __init__(self, genomes, flt):
+        any = lambda l: bool(filter(None, map(l, genomes)))
+        self.max_ntemporal_samples = max(
+                [cp.nbatches * cp.ntemporal_samples for cp in genomes])
+        self.camera_rotation = any(lambda cp: cp.rotate)
+        self.non_box_temporal_filter = genomes[0].temporal_filter_type
+        self.palette_mode = genomes[0].palette_mode and "linear" or "nearest"
+
+        # Histogram (and log-density copy) width and height
+        self.hist_width  = flt.oversample * genomes[0].width  + 2 * flt.gutter
+        self.hist_height = flt.oversample * genomes[0].height + 2 * flt.gutter
+        # Histogram stride, for better filtering. This code assumes the
+        # 128-byte L1 cache line width of Fermi devices, and a 16-byte
+        # histogram bucket size. TODO: detect these things programmatically,
+        # particularly the histogram bucket size, which may be split soon
+        self.hist_stride = 8 * int(math.ceil(self.hist_width / 8.0))
 
 class Camera(object):
     """Viewport and exposure."""
@@ -165,6 +207,7 @@ class Camera(object):
 
         center = Point(cp._center[0], cp._center[1])
         size = Point(cp.width, cp.height)
+
         # pix per unit, where 'unit' is '1.0' in IFS space
         self.ppu = Point(
             cp.pixels_per_unit * scale / frame.pixel_aspect_ratio,
@@ -174,6 +217,8 @@ class Camera(object):
         cornerLL = center - (size / (2 * self.ppu))
         self.lower_bounds = cornerLL - gutter
         self.upper_bounds = cornerLL + (size / self.ppu) + gutter
-        self.ifs_space_size = 1.0 / (self.upper_bounds - self.lower_bounds)
-        # TODO: coordinate transforms in concert with GPU (rotation, size)
+        self.norm_scale = 1.0 / (self.upper_bounds - self.lower_bounds)
+        self.norm_offset = -self.norm_scale * self.lower_bounds
+        self.idx_scale = size * self.norm_scale
+        self.idx_offset = size * self.norm_offset
 

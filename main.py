@@ -21,6 +21,14 @@ from fr0stlib.pyflam3 import *
 from fr0stlib.pyflam3._flam3 import *
 from cuburnlib.render import *
 
+import pyglet
+
+def dump_3d(nda):
+    with open('/tmp/data.txt', 'w') as f:
+        for row in nda:
+            f.write('  |  '.join([' '.join(
+                ['%4.1g\t' % x for x in pt]) for pt in row]) + '\n')
+
 def main(args):
     verbose = 1
     if '-d' in args:
@@ -30,28 +38,37 @@ def main(args):
         genomes = Genome.from_string(fp.read())
     anim = Animation(genomes)
     anim.compile()
-    anim.render_frame()
+    bins = anim.render_frame()
+    #dump_3d(bins)
+    bins /= ((np.mean(bins)+1e-9)/128.)
+    bins.astype(np.uint8)
 
 
-    #genome.width, genome.height = 512, 512
-    #genome.sample_density = 1000
-    #obuf, stats, frame = genome.render(estimator=3)
-    #gc.collect()
+    if '-g' not in args:
+        return
 
-        ##q.put(str(obuf))
-    ##p = Process(target=render, args=(q, genome_path))
-    ##p.start()
+    print anim.features.hist_width
+    print anim.features.hist_height
+    print anim.features.hist_stride
+    window = pyglet.window.Window(800, 600)
+    image = pyglet.image.ImageData(anim.features.hist_width,
+                                   anim.features.hist_height,
+                                   'RGBA',
+                                   bins.tostring(),
+                                   anim.features.hist_stride*4)
+    tex = image.texture
 
-    #window = pyglet.window.Window()
-    #image = pyglet.image.ImageData(genome.width, genome.height, 'RGB', obuf)
-    #tex = image.texture
+    @window.event
+    def on_draw():
+        window.clear()
+        tex.blit(0, 0)
 
-    #@window.event
-    #def on_draw():
-        #window.clear()
-        #tex.blit(0, 0)
+    @window.event
+    def on_key_press(sym, mod):
+        if sym == pyglet.window.key.Q:
+            pyglet.app.exit()
 
-    #pyglet.app.run()
+    pyglet.app.run()
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or not os.path.isfile(sys.argv[-1]):

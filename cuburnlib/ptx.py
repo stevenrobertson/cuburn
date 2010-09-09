@@ -14,6 +14,7 @@ import types
 import struct
 from cStringIO import StringIO
 from collections import namedtuple
+from math import *
 
 # Okay, so here's what's going on.
 #
@@ -137,7 +138,7 @@ class _Block(object):
         self.stack = [self.outer_ctx]
     def clean_injectors(self):
         inj = self.stack[-1].injectors
-        [inj.remove(i) for i in inj if i.dead]
+        [inj.remove(i) for i in list(inj) if i.dead]
     def push_ctx(self):
         self.clean_injectors()
         self.stack.append(BlockCtx(dict(self.stack[-1].locals), [], []))
@@ -155,8 +156,6 @@ class _Block(object):
     def pop_ctx(self):
         self.clean_injectors()
         bs = self.stack.pop()
-        # TODO: figure out why this next line is needed
-        [bs.injectors.remove(i) for i in bs.injectors if i.dead]
         self.stack[-1].code.extend(bs.code)
         if len(self.stack) == 1:
             # We're on outer_ctx, so all injectors should be gone.
@@ -337,8 +336,8 @@ class _CallChain(object):
         self.__chain = []
         return r
     def __getattr__(self, name):
-        if name.endswith('_'):
-            name = name[:-1]
+        # Work around keword conflicts between python and ptx
+        name = name.strip('_')
         self.__chain.append(name)
         # Another great crime against the universe:
         return self
@@ -455,19 +454,29 @@ class Mem(object):
 
 class _MemFactory(_CallChain):
     """Actual `mem` object"""
-    def _call(self, type, name, array=False, initializer=None):
+    def _call(self, type, name, array=False, init=None):
         assert len(type) == 2
-        memobj = Mem(type, name, array, initializer)
+        memobj = Mem(type, name, array, init)
         if array is True:
             array = ['[]']
         elif array:
             array = ['[', array, ']']
         else:
             array = []
-        if initializer:
-            array += [' = ', initializer]
+        if init:
+            array += [' = ', init]
         self.block.code(op=['.%s.%s ' % (type[0], type[1]), name, array])
         self.block.inject(name, memobj)
+
+    # TODO: move vec, addr here, or make this public
+    @staticmethod
+    def initializer(*args, **kwargs):
+        if args and kwargs:
+            raise ValueError("Cannot initialize in both list and struct style")
+        if args:
+            return ['{', _softjoin(args, ','), '}']
+        jkws = _softjoin([[k, ' = ', v] for k, v in kwargs.items()], ', ')
+        return ['{', jkws, '}']
 
 class Label(object):
     """
@@ -586,7 +595,7 @@ def instmethod(func):
     """
     def wrap(cls, ctx, *args, **kwargs):
         inst = ctx.ptx.instances[cls]
-        func(inst, ctx, *args, **kwargs)
+        return func(inst, ctx, *args, **kwargs)
     return classmethod(wrap)
 
 class PTXEntryPoint(PTXFragment):
@@ -979,23 +988,22 @@ class DataStream(PTXFragment):
         assert self.cells[idx].texp is None
         offset = self.cells[idx].offset
         self.cells[idx] = _DataCell(offset, vsize, texp)
+        self.free.pop(alloc)
         # Now reinsert the fragmented free cells.
         fragments = alloc - vsize
         foffset = offset + vsize
         fsize = 1
         fidx = idx
-        while fsize <= self.alignment:
+        while fsize < self.alignment:
             if fragments & fsize:
                 assert fsize not in self.free
                 fidx += 1
                 self.cells.insert(fidx, _DataCell(foffset, fsize, None))
                 foffset += fsize
+                for k, v in filter(lambda (k, v): v >= fidx, self.free.items()):
+                    self.free[k] = v+1
                 self.free[fsize] = fidx
             fsize *= 2
-        # Adjust indexes. This is ugly, but evidently unavoidable
-        if fidx-idx:
-            for k, v in filter(lambda (k, v): v > idx, self.free.items()):
-                self.free[k] = v+(fidx-idx)
         return offset
 
     @ptx_func
@@ -1011,7 +1019,7 @@ class DataStream(PTXFragment):
         opname = ['ldu', 'b%d' % (size*8)]
         if len(dregs) > 1:
             opname.insert(1, 'v%d' % len(dregs))
-            dregs = vec(dregs)
+            dregs = vec(*dregs)
         op._call(opname, dregs, addr(areg, offset), ifp=ifp, ifnotp=ifnotp)
 
     @ptx_func
@@ -1042,6 +1050,8 @@ class DataStream(PTXFragment):
         self.finalized = True
         for dv in self.size_delayvars:
             dv.val = self._size
+        print "Finalized stream:"
+        self._print_format()
 
     @instmethod
     def pack(self, ctx, _out_file_ = None, **kwargs):
@@ -1087,8 +1097,7 @@ class DataStream(PTXFragment):
                 vals = []
             outfile.write(struct.pack(type, *vals))
 
-    @instmethod
-    def print_record(self, ctx):
+    def _print_format(self, ctx=None, stream=None):
         for cell in self.cells:
             if cell.texp is None:
                 print '%3d %2d --' % (cell.offset, cell.size)
@@ -1096,5 +1105,24 @@ class DataStream(PTXFragment):
             print '%3d %2d %4s %s' % (cell.offset, cell.size, cell.texp.type,
                                       cell.texp.exprlist[0])
             for exp in cell.texp.exprlist[1:]:
-                print '%12s %s' % ('', exp)
+                print '%11s %s' % ('', exp)
+    print_format = instmethod(_print_format)
+
+    @instmethod
+    def print_record(self, ctx, stream, limit=None):
+        for i in range(0, len(stream), self._size):
+            for cell in self.cells:
+                if cell.texp is None:
+                    print '%3d %2d --' % (cell.offset, cell.size)
+                    continue
+                print '%3d %2d %4s %s' % (cell.offset, cell.size,
+                        cell.texp.type,
+                        struct.unpack(cell.texp.type,
+                            stream[cell.offset:cell.offset+cell.size]))
+                for exp in cell.texp.exprlist:
+                    print '%11s %s' % ('', exp)
+            print '\n----\n'
+            if limit is not None:
+                limit -= 1
+                if limit <= 0: break
 

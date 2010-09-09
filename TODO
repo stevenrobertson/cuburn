@@ -2,17 +2,7 @@ Status: passes rudimentary tests
 
 Current goals:
 
-- Draw some dang points!
-    - Allocate buffer (can it be pre-allocated?)
-    - Direct scatter linear points by GTID from flame number
-    - Re-enable preview window
-    - Execute frame, update texture, repeat
-- Writeback of points to the buffer
-    - Define writeback class, args
-    - Do camera rotation across frameset
-    - Postpone other kinds of testing and address clamping for now
 - Start xforms
-    - At first, fixed Sierpinski triangle or something
     - xform selection, pre- and post-transform in xform
     - first of the variations
 
@@ -43,16 +33,12 @@ Things to do (rather severely incomplete):
 
 Things to test:
 
-- DeviceStream allocator and proper handling of corner cases
 - Debug flag/dict/whatever for entire project in general
     - Iteration counters for IterThread
 
 Things to benchmark:
 
 - Kernel invocation and/or interrupt times (will high load freeze X?)
-- 1D/2D texture load+interpolation speeds vs constant memory loading
-    - Must test under high SFU load
-    - Tex uses separate cache? Has lower bandwidth penalty for gather?
 - MWC float conversion
 - The entire scatter process
     - Radix sort of writeback coordinates
