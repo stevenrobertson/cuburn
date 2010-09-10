@@ -673,6 +673,10 @@ class _PTXStdLib(PTXFragment):
             op.mov.u32(spt_base, base)
             self.get_gtid(spt_offset)
             op.mad.lo.u32(spt_base, spt_offset, 4, spt_base)
+            if isinstance(val, float):
+                # Turn a constant float into the big-endian PTX binary float
+                # representation, 0fXXXXXXXX (where XX is hex byte)
+                val = '0f%x%x%x%x' % reversed(map(ord, struct.pack('f', val)))
             op.st.b32(addr(spt_base), val)
 
     @ptx_func
