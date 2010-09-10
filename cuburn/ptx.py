@@ -628,7 +628,7 @@ class PTXEntryPoint(PTXFragment):
         Override this if you need to change how a function is called.
         """
         # TODO: global debugging / verbosity
-        print "Invoking PTX function '%s' on device" % self.entry_name
+        print "\nInvoking PTX function '%s' on device" % self.entry_name
         kwargs.setdefault('block', ctx.block)
         kwargs.setdefault('grid', ctx.grid)
         dtime = func(time_kernel=True, *args, **kwargs)
@@ -653,8 +653,7 @@ class PTXTest(PTXEntryPoint):
 
     * The active context will be synchronized before each call,
     * call_teardown() should raise ``PTXTestFailure`` if a test failed.
-      This exception will be caught and cleanup will be completed
-      (unless another exception is raised).
+      This exception will be caught and cleanup will be completed.
     """
     pass
 
@@ -673,7 +672,7 @@ class _PTXStdLib(PTXFragment):
         # TODO: make this modular, maybe? of course, we'd have to support
         # multiple devices first, which we definitely do not yet do
         self.block.code(prefix='.version 2.1', semi=False)
-        self.block.code(prefix='.target sm_20', semi=False)
+        self.block.code(prefix='.target sm_21', semi=False)
 
     @ptx_func
     def get_gtid(self, dst):
