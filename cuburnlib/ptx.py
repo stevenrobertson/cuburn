@@ -578,13 +578,23 @@ class PTXFragment(object):
         """
         return []
 
-    def device_init(self, ctx):
+    def call_setup(self, ctx):
         """
         Do stuff on the host to prepare the device for execution. 'ctx' is a
         LaunchContext or similar. This will get called (in dependency order, of
-        course) *either* before any entry point invocation, or before *each*
-        invocation, I'm not sure which yet. (For now it's "each".)
+        course) before each function invocation.
         """
+        # I haven't found a good way to get outside context in for this method.
+        # As a result, this is usually just a check to see if some other
+        # necessary method has been called before trying to launch.
+        pass
+
+    def call_teardown(self, ctx):
+        """
+        As with ``call_setup``, but after a call and in reverse order.
+        """
+        # Exceptions raised here will propagate from the invocation in Python,
+        # so this is a good place to do error checking.
         pass
 
 def instmethod(func):
@@ -599,8 +609,6 @@ def instmethod(func):
     return classmethod(wrap)
 
 class PTXEntryPoint(PTXFragment):
-    # Human-readable entry point name
-    name = ""
     # Device code entry name
     entry_name = ""
     # List of (type, name) pairs for entry params, e.g. [('u32', 'thing')]
@@ -615,28 +623,44 @@ class PTXEntryPoint(PTXFragment):
         """
         raise NotImplementedError
 
+    def _call(self, ctx, func, *args, **kwargs):
+        """
+        Override this if you need to change how a function is called.
+        """
+        # TODO: global debugging / verbosity
+        print "Invoking PTX function '%s' on device" % self.entry_name
+        kwargs.setdefault('block', ctx.block)
+        kwargs.setdefault('grid', ctx.grid)
+        dtime = func(time_kernel=True, *args, **kwargs)
+        print "'%s' completed in %gs" % (self.entry_name, dtime)
+
     @instmethod
-    def call(self, ctx):
+    def call(self, ctx, *args, **kwargs):
         """
-        Calls the entry point on the device. Haven't worked out the details
-        of this one yet.
+        Calls the entry point on the device, performing any setup and teardown
+        needed.
         """
-        pass
+        ctx.call_setup(self)
+        func = ctx.mod.get_function(self.entry_name)
+        self._call(ctx, func, *args, **kwargs)
+        return ctx.call_teardown(self)
+
+class PTXTestFailure(Exception): pass
 
 class PTXTest(PTXEntryPoint):
-    """PTXTests are semantically equivalent to PTXEntryPoints, but they
-    differ slightly in use. In particular:
+    """PTXTests are semantically equivalent to PTXEntryPoints, but they differ
+    slightly in the way they are invoked:
 
-    * The "name" property should describe the test being performed,
-    * ctx.stream will be synchronized before 'call' is run, and should be
-      synchronized afterwards (i.e. sync it yourself or don't use it),
-    * call() should return True to indicate that a test passed, or
-      False (or raise an exception) if it failed.
+    * The active context will be synchronized before each call,
+    * call_teardown() should raise ``PTXTestFailure`` if a test failed.
+      This exception will be caught and cleanup will be completed
+      (unless another exception is raised).
     """
     pass
 
 class _PTXStdLib(PTXFragment):
     shortname = "std"
+
     def __init__(self, block):
         # Only module that gets the privilege of seeing 'block' directly.
         self.block = block
@@ -728,6 +752,7 @@ class PTXModule(object):
         insts, tests, all_deps, entry_deps = (
                 self.deptrace(block, entries, build_tests))
         self.instances = insts
+        self.entry_deps = entry_deps
         self.tests = tests
 
         inject = dict(inject)

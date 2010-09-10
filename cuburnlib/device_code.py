@@ -148,18 +148,19 @@ class IterThread(PTXEntryPoint):
         CPDataStream.print_record(ctx, cp_stream, 5)
         self.cps_uploaded = True
 
-    @instmethod
-    def call(self, ctx):
+    def call_setup(self, ctx):
         if not self.cps_uploaded:
             raise Error("Cannot call IterThread before uploading CPs")
         num_cps_st_dp, num_cps_st_l = ctx.mod.get_global('g_num_cps_started')
         cuda.memset_d32(num_cps_st_dp, 0, 1)
 
-        func = ctx.mod.get_function('iter_thread')
+    def _call(self, ctx, func):
+        # Get texture reference from the Palette
+        # TODO: more elegant method than reaching into ctx.ptx?
         tr = ctx.ptx.instances[PaletteLookup].texref
-        dtime = func(block=ctx.block, grid=ctx.grid, time_kernel=True,
-                     texrefs=[tr])
+        super(IterThread, self)._call(ctx, func, texrefs=[tr])
 
+    def call_teardown(self, ctx):
         shape = (ctx.grid[0], ctx.block[0]/32, 32)
         num_rounds_dp, num_rounds_l = ctx.mod.get_global('g_num_rounds')
         num_writes_dp, num_writes_l = ctx.mod.get_global('g_num_writes')
@@ -325,7 +326,7 @@ class PaletteLookup(PTXFragment):
         self.texref.set_address_mode(1, cuda.address_mode.CLAMP)
         self.texref.set_array(dev_array)
 
-    def device_init(self, ctx):
+    def call_setup(self, ctx):
         assert self.texref, "Must upload palette texture before launch!"
 
 class HistScatter(PTXFragment):
@@ -368,7 +369,7 @@ class HistScatter(PTXFragment):
             op.red.add.f32(addr(hist_bin_addr,12), a)
 
 
-    def device_init(self, ctx):
+    def call_setup(self, ctx):
         hist_bins_dp, hist_bins_l = ctx.mod.get_global('g_hist_bins')
         cuda.memset_d32(hist_bins_dp, 0, hist_bins_l/4)
 
@@ -383,13 +384,9 @@ class MWCRNG(PTXFragment):
     shortname = "mwc"
 
     def __init__(self):
-        self.rand = np.random
         self.threads_ready = 0
         if not os.path.isfile('primes.bin'):
             raise EnvironmentError('primes.bin not found')
-
-    def set_seed(self, seed):
-        self.rand = np.random.mtrand.RandomState(seed)
 
     @ptx_func
     def module_setup(self):
@@ -450,11 +447,12 @@ class MWCRNG(PTXFragment):
             op.cvt.rn.f32.s32(dst_reg, mwc_st)
             op.mul.f32(dst_reg, dst_reg, '0f30000000') # 1./(1<<31)
 
-    def device_init(self, ctx):
-        if self.threads_ready >= ctx.threads:
-            # Already set up enough random states, don't push again
-            return
-
+    @instmethod
+    def seed(self, ctx, rand=np.random):
+        """
+        Seed the random number generators with values taken from a
+        ``np.random`` instance.
+        """
         # Load raw big-endian u32 multipliers from primes.bin.
         with open('primes.bin') as primefp:
             dt = np.dtype(np.uint32).newbyteorder('B')
@@ -463,17 +461,21 @@ class MWCRNG(PTXFragment):
         # Randomness in choosing multipliers is good, but larger multipliers
         # have longer periods, which is also good. This is a compromise.
         mults = np.array(mults[:ctx.threads*4])
-        self.rand.shuffle(mults)
+        rand.shuffle(mults)
         # Copy multipliers and seeds to the device
         multdp, multl = ctx.mod.get_global('mwc_rng_mults')
         cuda.memcpy_htod_async(multdp, mults.tostring()[:multl])
         # Intentionally excludes both 0 and (2^32-1), as they can lead to
         # degenerate sequences of period 0
-        states = np.array(self.rand.randint(1, 0xffffffff, size=2*ctx.threads),
+        states = np.array(rand.randint(1, 0xffffffff, size=2*ctx.threads),
                           dtype=np.uint32)
         statedp, statel = ctx.mod.get_global('mwc_rng_state')
         cuda.memcpy_htod_async(statedp, states.tostring())
         self.threads_ready = ctx.threads
+
+    def call_setup(self, ctx):
+        if self.threads_ready < ctx.threads:
+            self.seed(ctx)
 
     def tests(self):
         return [MWCRNGTest]
@@ -515,7 +517,7 @@ class MWCRNGTest(PTXTest):
             op.mad.lo.u32(adr, offset, 8, adr)
             op.st.global_.u64(addr(adr), sum)
 
-    def call(self, ctx):
+    def call_setup(self, ctx):
         # Get current multipliers and seeds from the device
         multdp, multl = ctx.mod.get_global('mwc_rng_mults')
         mults = cuda.from_device(multdp, ctx.threads, np.uint32)
@@ -533,15 +535,13 @@ class MWCRNGTest(PTXTest):
         ctime = time.time() - ctime
         print "Done on host, took %g seconds" % ctime
 
-        func = ctx.mod.get_function('MWC_RNG_test')
-        dtime = func(block=ctx.block, grid=ctx.grid, time_kernel=True)
-        print "Done on device, took %g seconds (%gx)" % (dtime, ctime/dtime)
+    def call_teardown(self, ctx):
         dfullstates = cuda.from_device(statedp, ctx.threads, np.uint64)
         if not (dfullstates == fullstates).all():
             print "State discrepancy"
             print dfullstates
             print fullstates
-            return False
+            raise PTXTestFailure("MWC RNG state discrepancy")
 
         sumdp, suml = ctx.mod.get_global('mwc_rng_test_sums')
         dsums = cuda.from_device(sumdp, ctx.threads, np.uint64)
@@ -549,11 +549,7 @@ class MWCRNGTest(PTXTest):
             print "Sum discrepancy"
             print dsums
             print sums
-            return False
-        return True
-
-class CameraCoordTransform(PTXFragment):
-    pass
+            raise PTXTestFailure("MWC RNG sum discrepancy")
 
 class CPDataStream(DataStream):
     """DataStream which stores the control points."""

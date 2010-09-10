@@ -9,7 +9,7 @@ import pycuda.autoinit
 import pycuda.driver as cuda
 from cuburnlib.ptx import PTXFragment, PTXTest, ptx_func, instmethod
 from cuburnlib.cuda import LaunchContext
-from cuburnlib.device_code import MWCRNG
+from cuburnlib.device_code import MWCRNG, MWCRNGTest
 
 class L2WriteCombining(PTXTest):
     """
@@ -104,26 +104,18 @@ class L2WriteCombining(PTXTest):
         op.setp.ge.u32(p_done, x, 2)
         op.bra.uni(l2_restart, ifnotp=p_done)
 
-    @instmethod
-    def call(self, ctx):
-        scratch = np.zeros(self.block_size*ctx.ctas/4, np.uint64)
-        times_bytes = np.zeros((4, ctx.threads), np.uint64, 'F')
-        func = ctx.mod.get_function(self.entry_name)
-        dtime = func(cuda.InOut(times_bytes), cuda.InOut(scratch),
-                     block=ctx.block, grid=ctx.grid, time_kernel=True)
+    def _call(self, ctx, func):
+        self.scratch = np.zeros(self.block_size*ctx.ctas/4, np.uint64)
+        self.times_bytes = np.zeros((4, ctx.threads), np.uint64, 'F')
+        super(L2WriteCombining, self)._call(ctx, func,
+                cuda.InOut(self.scratch), cuda.InOut(self.times_bytes))
 
-        #printover(times_bytes[0], 6, 32)
-        #printover(times_bytes[1], 6)
-        #printover(times_bytes[2], 6, 32)
-        #printover(times_bytes[3], 6)
-        #printover(scratch[i:i+16], 8)
-
-        print "\nTotal time was %g seconds" % dtime
+    def call_teardown(self, ctx):
         pm = lambda a: (np.mean(a), np.std(a) / np.sqrt(len(a)))
-        print "Clks for coa was %g ± %g" % pm(times_bytes[0])
-        print "Bytes for coa was %g ± %g" % pm(times_bytes[1])
-        print "Clks for uncoa was %g ± %g" % pm(times_bytes[2])
-        print "Bytes for uncoa was %g ± %g" % pm(times_bytes[3])
+        print "Clks for coa was %g ± %g" % pm(self.times_bytes[0])
+        print "Bytes for coa was %g ± %g" % pm(self.times_bytes[1])
+        print "Clks for uncoa was %g ± %g" % pm(self.times_bytes[2])
+        print "Bytes for uncoa was %g ± %g" % pm(self.times_bytes[3])
         print ''
 
 def printover(a, r, s=1):
@@ -134,9 +126,10 @@ def printover(a, r, s=1):
 
 def main():
     # TODO: block/grid auto-optimization
-    ctx = LaunchContext([L2WriteCombining], block=(128,1,1), grid=(7*8,1),
-                        tests=True)
+    ctx = LaunchContext([L2WriteCombining, MWCRNGTest],
+                        block=(128,1,1), grid=(7*8,1), tests=True)
     ctx.compile(verbose=3)
+    ctx.run_tests()
     L2WriteCombining.call(ctx)
 
 if __name__ == "__main__":

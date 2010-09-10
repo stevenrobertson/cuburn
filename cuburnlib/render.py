@@ -130,7 +130,6 @@ class Animation(object):
         # TODO: allow animation-long override of certain parameters (size, etc)
         frame = Frame(self._frame, time)
         frame.upload_data(self.ctx, self.filters, time)
-        self.ctx.set_up()
         IterThread.call(self.ctx)
         return HistScatter.get_bins(self.ctx, self.features)
 

@@ -10,7 +10,7 @@ import pycuda.gl.autoinit
 
 import numpy as np
 
-from cuburnlib.ptx import PTXModule
+from cuburnlib.ptx import PTXModule, PTXTest, PTXTestFailure
 
 class LaunchContext(object):
     """
@@ -72,29 +72,34 @@ class LaunchContext(object):
                         entry.entry_name, func.num_regs,
                         func.shared_size_bytes, func.local_size_bytes)
 
-    def set_up(self):
-        for inst in self.ptx.deporder(self.ptx.instances.values(),
-                                      self.ptx.instances):
-            inst.device_init(self)
+    def call_setup(self, entry_inst):
+        for inst in self.ptx.entry_deps[type(entry_inst)]:
+            inst.call_setup(self)
 
-    def run(self):
-        if not self.setup_done: self.set_up()
-
-    def run_test(self, test_type):
-        if not self.setup_done: self.set_up()
-        inst = self.ptx.instances[test_type]
-        print "Running test: %s... " % inst.name
-        try:
-            cuda.Context.synchronize()
-            if inst.call(self):
-                print "Test %s passed." % inst.name
+    def call_teardown(self, entry_inst):
+        okay = True
+        for inst in reversed(self.ptx.entry_deps[type(entry_inst)]):
+            if inst is entry_inst and isinstance(entry_inst, PTXTest):
+                try:
+                    inst.call_teardown(self)
+                except PTXTestFailure, e:
+                    print "PTX Test %s failed!" % inst.entry_name, e
+                    okay = False
             else:
-                print "Test %s FAILED." % inst.name
-        except Exception, e:
-            print "Test %s FAILED (exception thrown)." % inst.name
-            raise e
+                inst.call_teardown(self)
+        return okay
 
     def run_tests(self):
-        map(self.run_test, self.ptx.tests)
-
+        if not self.ptx.tests:
+            print "No tests to run."
+            return True
+        all_okay = True
+        for test in self.ptx.tests:
+            cuda.Context.synchronize()
+            if test.call(self):
+                print "Test %s passed." % test.entry_name
+            else:
+                print "Test %s FAILED." % test.entry_name
+            all_okay = False
+        return all_okay
 
