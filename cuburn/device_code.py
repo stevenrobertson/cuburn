@@ -132,8 +132,8 @@ class IterThread(PTXEntryPoint):
 
         label('all_cps_done')
         # TODO this is for testing, move it to a debug statement
-        std.store_per_thread(g_num_rounds, num_rounds)
-        std.store_per_thread(g_num_writes, num_writes)
+        std.store_per_thread(g_num_rounds, num_rounds,
+                             g_num_writes, num_writes)
 
     @instmethod
     def upload_cp_stream(self, ctx, cp_stream, num_cps):
