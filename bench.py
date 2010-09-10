@@ -7,9 +7,9 @@ Various micro-benchmarks and other experiments.
 import numpy as np
 import pycuda.autoinit
 import pycuda.driver as cuda
-from cuburnlib.ptx import PTXFragment, PTXTest, ptx_func, instmethod
-from cuburnlib.cuda import LaunchContext
-from cuburnlib.device_code import MWCRNG, MWCRNGTest
+from cuburn.ptx import PTXFragment, PTXTest, ptx_func, instmethod
+from cuburn.cuda import LaunchContext
+from cuburn.device_code import MWCRNG, MWCRNGTest
 
 class L2WriteCombining(PTXTest):
     """

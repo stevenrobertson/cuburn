@@ -9,7 +9,7 @@ import struct
 import pycuda.driver as cuda
 import numpy as np
 
-from cuburnlib.ptx import *
+from cuburn.ptx import *
 
 class IterThread(PTXEntryPoint):
     entry_name = 'iter_thread'

@@ -15,11 +15,11 @@ from ctypes import *
 
 import numpy as np
 
-from cuburnlib.device_code import IterThread
-from cuburnlib.cuda import LaunchContext
+from cuburn.device_code import IterThread
+from cuburn.cuda import LaunchContext
 from fr0stlib.pyflam3 import *
 from fr0stlib.pyflam3._flam3 import *
-from cuburnlib.render import *
+from cuburn.render import *
 
 import pyglet
 

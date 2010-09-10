@@ -10,7 +10,7 @@ import pycuda.gl.autoinit
 
 import numpy as np
 
-from cuburnlib.ptx import PTXModule, PTXTest, PTXTestFailure
+from cuburn.ptx import PTXModule, PTXTest, PTXTestFailure
 
 class LaunchContext(object):
     """
