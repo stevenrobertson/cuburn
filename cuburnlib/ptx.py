@@ -1118,12 +1118,12 @@ class DataStream(PTXFragment):
                 if cell.texp is None:
                     print '%3d %2d --' % (cell.offset, cell.size)
                     continue
-                print '%3d %2d %4s %s' % (cell.offset, cell.size,
-                        cell.texp.type,
-                        struct.unpack(cell.texp.type,
-                            stream[cell.offset:cell.offset+cell.size]))
-                for exp in cell.texp.exprlist:
-                    print '%11s %s' % ('', exp)
+                s = '%3d %2d %4s' % (cell.offset, cell.size, cell.texp.type)
+                vals = struct.unpack(cell.texp.type,
+                                     stream[cell.offset:cell.offset+cell.size])
+                for val, exp in zip(vals, cell.texp.exprlist):
+                    print '%11s %-20s %s' % (s, val, exp)
+                    s = ''
             print '\n----\n'
             if limit is not None:
                 limit -= 1
