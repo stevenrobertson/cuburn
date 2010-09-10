@@ -116,7 +116,7 @@ class L2WriteCombining(PTXTest):
         print "Bytes for coa was %g ± %g" % pm(self.times_bytes[1])
         print "Clks for uncoa was %g ± %g" % pm(self.times_bytes[2])
         print "Bytes for uncoa was %g ± %g" % pm(self.times_bytes[3])
-        print ''
+        print
 
 def printover(a, r, s=1):
     for i in range(0, len(a), r*s):

@@ -104,7 +104,7 @@ class LaunchContext(object):
         for test in self.ptx.tests:
             cuda.Context.synchronize()
             if test.call(self):
-                print "Test %s passed." % test.entry_name
+                print "Test %s passed.\n" % test.entry_name
             else:
                 all_okay = False
         return all_okay
