@@ -50,6 +50,10 @@ class LaunchContext(object):
     def threads_per_cta(self):
         return self.block[0] * self.block[1] * self.block[2]
 
+    @property
+    def warps_per_cta(self):
+        return self.threads_per_cta / 32
+
     def compile(self, verbose=False, **kwargs):
         kwargs['ctx'] = self
         self.ptx = PTXModule(self.entry_types, kwargs, self.build_tests)
