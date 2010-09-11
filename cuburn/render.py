@@ -1,4 +1,6 @@
+import sys
 import math
+import re
 from ctypes import *
 from cStringIO import StringIO
 import numpy as np
@@ -9,11 +11,44 @@ from fr0stlib.pyflam3.constants import *
 
 from cuburn.cuda import LaunchContext
 from cuburn.device_code import *
+from cuburn.variations import Variations
 
 Point = lambda x, y: np.array([x, y], dtype=np.double)
 
 class Genome(pyflam3.Genome):
     pass
+
+class XForm(object):
+    """
+    A Python structure (*not* a ctypes wrapper) storing an xform. There are
+    a few differences between the meaning of properties on this object and
+    those of the C version; they are noted below.
+    """
+    def __init__(self, **kwargs):
+        read_affine = lambda c: [[c[0], c[1]], [c[2], c[3]], [c[4], c[5]]]
+        self.coefs = read_affine(map(float, kwargs.pop('coefs').split()))
+        if 'post' in kwargs:
+            self.post = read_affine(map(float, kwargs.pop('post').split()))
+        # TODO: more verification, detection of unknown variables, etc
+        for k, v in kwargs.items():
+            setattr(self, k, float(v))
+
+    # ctypes was being a pain. just parse the string.
+    @classmethod
+    def parse(cls, cp):
+        flame_str = flam3_print_to_string(byref(cp))
+        xforms = []
+        for line in flame_str.split('\n'):
+            if not line.strip().startswith('<xform'):
+                continue
+            props = dict(re.findall(r'(\w*)="([^"]*)"', line))
+            xforms.append(cls(**props))
+        # Set cumulative xform weight
+        xforms[0].cweight = xforms[0].weight
+        for i in range(1, len(xforms)):
+            xforms[i].cweight = xforms[i].weight + xforms[i-1].cweight
+        xforms[-1].cweight = 1.0
+        return xforms
 
 class _Frame(pyflam3.Frame):
     """
@@ -56,7 +91,7 @@ class Frame(object):
             raise NotImplementedError(
                 "Distribution of a CP across multiple CTAs not yet done")
 
-        # TODO: isn't this leaking ctypes xforms all over the place?
+        # TODO: isn't this leaking xforms from C all over the place?
         stream = StringIO()
         cp_list = []
 
@@ -70,6 +105,7 @@ class Frame(object):
                 cp.camera = Camera(self._frame, cp, filters)
                 cp.nsamples = (cp.camera.sample_density *
                                center.width * center.height) / ncps
+                cp.xforms = XForm.parse(cp)
 
         print "Expected writes:", (
                 cp.camera.sample_density * center.width * center.height)
@@ -170,6 +206,8 @@ class Filters(object):
         # TODO: density estimation
         self.gutter = (spa_width - self.oversample) / 2
 
+
+
 class Features(object):
     """
     Determine features and constants required to render a particular set of
@@ -186,6 +224,14 @@ class Features(object):
         self.non_box_temporal_filter = genomes[0].temporal_filter_type
         self.palette_mode = genomes[0].palette_mode and "linear" or "nearest"
 
+        xforms = [XForm.parse(cp) for cp in genomes]
+        assert len(xforms[0]) == len(xforms[-1]), ("genomes must have same "
+            "number of xforms! (try running through flam3-genome first)")
+        self.xforms = [XFormFeatures([x[i] for x in xforms], i)
+                       for i in range(len(xforms[0]))]
+        if any(lambda cp: cp.final_xform_enable):
+            raise NotImplementedError("Final xform")
+
         # Histogram (and log-density copy) width and height
         self.hist_width  = flt.oversample * genomes[0].width  + 2 * flt.gutter
         self.hist_height = flt.oversample * genomes[0].height + 2 * flt.gutter
@@ -194,6 +240,14 @@ class Features(object):
         # histogram bucket size. TODO: detect these things programmatically,
         # particularly the histogram bucket size, which may be split soon
         self.hist_stride = 8 * int(math.ceil(self.hist_width / 8.0))
+
+class XFormFeatures(object):
+    def __init__(self, xforms, xform_id):
+        self.id = xform_id
+        any = lambda l: bool(filter(None, map(l, xforms)))
+        self.has_post = any(lambda xf: getattr(xf, 'post', None))
+        self.vars = set([n for x in xforms for n in Variations.names
+                           if getattr(x, n, None)])
 
 class Camera(object):
     """Viewport and exposure."""
