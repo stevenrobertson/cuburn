@@ -579,22 +579,22 @@ class MWCRNGFloatsTest(PTXTest):
     @ptx_func
     def loop(self, kind):
         with block('Sum %d floats in %s' % (self.rounds, kind)):
-            reg.f32('loopct val sum rmin rmax')
+            reg.f32('loopct val rsum rmin rmax')
             reg.pred('p_done')
             op.mov.f32(loopct, 0.)
-            op.mov.f32(sum, 0.)
+            op.mov.f32(rsum, 0.)
             op.mov.f32(rmin, 2.)
             op.mov.f32(rmax, -2.)
             label('loopstart' + kind)
             getattr(mwc, 'next_f32_' + kind)(val)
-            op.add.f32(sum, sum, val)
+            op.add.f32(rsum, rsum, val)
             op.min.f32(rmin, rmin, val)
             op.max.f32(rmax, rmax, val)
             op.add.f32(loopct, loopct, 1.)
             op.setp.ge.f32(p_done, loopct, float(self.rounds))
             op.bra('loopstart' + kind, ifnotp=p_done)
-            op.mul.f32(sum, sum, 1./self.rounds)
-            std.store_per_thread('mwc_rng_float_%s_test_sums' % kind, sum,
+            op.mul.f32(rsum, rsum, 1./self.rounds)
+            std.store_per_thread('mwc_rng_float_%s_test_sums' % kind, rsum,
                                  'mwc_rng_float_%s_test_mins' % kind, rmin,
                                  'mwc_rng_float_%s_test_maxs' % kind, rmax)
 
