@@ -11,6 +11,7 @@
 
 import os
 import sys
+from pprint import pprint
 from ctypes import *
 
 import numpy as np
@@ -39,10 +40,12 @@ def main(args):
     anim = Animation(genomes)
     anim.compile()
     bins = anim.render_frame()
-    #dump_3d(bins)
-    bins /= ((np.mean(bins)+1e-9)/128.)
-    bins.astype(np.uint8)
-
+    #bins = np.log2(bins + 1)
+    bins *= (512./(np.mean([bins[y][x][3]
+                           for x in range(anim.features.hist_width)
+                           for y in range(anim.features.hist_height)])+1e-9))
+    bins = np.minimum(bins, 255)
+    bins = bins.astype(np.uint8)
 
     if '-g' not in args:
         return

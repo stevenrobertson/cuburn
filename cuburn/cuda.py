@@ -38,6 +38,7 @@ class LaunchContext(object):
         self.entry_types = entries
         self.block, self.grid, self.build_tests = block, grid, tests
         self.setup_done = False
+        self.stream = cuda.Stream()
 
     @property
     def threads(self):
