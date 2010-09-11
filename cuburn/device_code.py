@@ -21,7 +21,7 @@ class IterThread(PTXEntryPoint):
         self.cps_uploaded = False
 
     def deps(self):
-        return [MWCRNG, CPDataStream, HistScatter, Variations]
+        return [MWCRNG, CPDataStream, HistScatter, Variations, Timeouter]
 
     @ptx_func
     def module_setup(self):
@@ -121,8 +121,9 @@ class IterThread(PTXEntryPoint):
 
         label('iter_loop_start')
 
-        comment("I really didn't want to have to sync each loop, but it seems")
-        comment("like the highest-performance strategy right now")
+        timeout.check_time(10)
+
+        # TODO: diagram and fix syncing (can this be automated?)
         #op.bar.sync(1)
 
         with block():
@@ -206,7 +207,6 @@ class IterThread(PTXEntryPoint):
             reg.s32('num_samples num_samples_needed')
             op.ld.shared.s32(num_samples, addr(s_num_samples))
             cp.get(cpA, num_samples_needed, 'cp.nsamples')
-            std.store_per_thread(g_whatever, num_samples_needed)
             op.setp.ge.s32(p_cp_done, num_samples, num_samples_needed)
             op.bra.uni(cp_loop_start, ifp=p_cp_done)
 
@@ -747,4 +747,32 @@ class MWCRNGFloatsTest(PTXTest):
 class CPDataStream(DataStream):
     """DataStream which stores the control points."""
     shortname = 'cp'
+
+class Timeouter(PTXFragment):
+    """Time-out infinite loops so that data can still be retrieved."""
+    shortname = 'timeout'
+
+    @ptx_func
+    def entry_setup(self):
+        mem.shared.u64('s_timeouter_start_time')
+        with block("Load start time for this block"):
+            reg.u64('now')
+            op.mov.u64(now, '%clock64')
+            op.st.shared.u64(addr(s_timeouter_start_time), now)
+
+    @ptx_func
+    def check_time(self, secs):
+        """
+        Drop this into your mainloop somewhere.
+        """
+        # TODO: if debug.device_timeout_loops or whatever
+        with block("Check current time for this loop"):
+            d = cuda.Context.get_device()
+            clks = int(secs * d.clock_rate * 1000)
+            reg.u64('now then')
+            op.mov.u64(now, '%clock64')
+            op.ld.shared.u64(then, addr(s_timeouter_start_time))
+            op.sub.u64(now, now, then)
+            std.asrt("Loop timed out", 'lt.u64', now, clks)
+
 
