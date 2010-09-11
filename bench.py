@@ -108,7 +108,7 @@ class L2WriteCombining(PTXTest):
         self.scratch = np.zeros(self.block_size*ctx.ctas/4, np.uint64)
         self.times_bytes = np.zeros((4, ctx.threads), np.uint64, 'F')
         super(L2WriteCombining, self)._call(ctx, func,
-                cuda.InOut(self.scratch), cuda.InOut(self.times_bytes))
+                cuda.InOut(self.times_bytes), cuda.InOut(self.scratch))
 
     def call_teardown(self, ctx):
         pm = lambda a: (np.mean(a), np.std(a) / np.sqrt(len(a)))
