@@ -64,8 +64,9 @@ class LaunchContext(object):
         try:
             # TODO: detect/customize arch, code; verbose setting;
             # keep directory enable/disable via debug
-            self.mod = SourceModule(self.ptx.source, no_extern_c=True,
-                options=['--keep', '-v', '-G'])
+            self.mod = cuda.module_from_buffer(self.ptx.source,
+                [(cuda.jit_option.OPTIMIZATION_LEVEL, 0),
+                 (cuda.jit_option.TARGET_FROM_CUCONTEXT, 1)])
         except (cuda.CompileError, cuda.RuntimeError), e:
             # TODO: if output not written above, print different message
             print "Compile error. Source is at /tmp/cuburn.ptx"
