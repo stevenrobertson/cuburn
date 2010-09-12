@@ -40,11 +40,16 @@ def main(args):
     anim = Animation(genomes)
     anim.compile()
     bins = anim.render_frame()
-    #bins = np.log2(bins + 1)
-    alpha = [bins[y][x][3] for x in range(anim.features.hist_width)
-                           for y in range(anim.features.hist_height)]
-    print sum(alpha)
-    bins *= (512./(np.mean(alpha)+1e-9))
+
+    # Embarrassingly poor (and s-l-o-w) approximation of log filtering, because
+    # I want to keep working on performance right now
+    alpha = np.array([[bins[y][x][3] for x in range(anim.features.hist_width)]
+                                    for y in range(anim.features.hist_height)])
+    k2ish = (256./(np.mean(alpha)+1e-9))
+    lses = 20 * np.log2(1.0 + alpha * k2ish) / (alpha+1e-6)
+    for x in range(anim.features.hist_width):
+        for y in range(anim.features.hist_height):
+            bins[y][x] *= lses[y][x]
     bins = np.minimum(bins, 255)
     bins = bins.astype(np.uint8)
 
