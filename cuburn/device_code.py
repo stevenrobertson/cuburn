@@ -36,19 +36,17 @@ class IterThread(PTXEntryPoint):
 
     @ptx_func
     def entry(self):
-        # For now, we indulge in the luxury of shared memory.
         # Index number of current CP, shared across CTA
         mem.shared.u32('s_cp_idx')
 
         # Number of samples that have been generated so far in this CTA
         # If this number is negative, we're still fusing points, so this
         # behaves slightly differently (see ``fuse_loop_start``)
+        # TODO: replace (or at least simplify) this logic
         mem.shared.s32('s_num_samples')
         op.st.shared.s32(addr(s_num_samples), -(features.num_fuse_samples+1))
 
         mem.shared.f32('s_xf_sel', ctx.warps_per_cta)
-
-        #std.store_per_thread(g_whatever, 1234)
 
         # TODO: temporary, for testing
         mem.local.u32('l_num_rounds')
@@ -264,8 +262,10 @@ class IterThread(PTXEntryPoint):
             print '%s:' % s
             for i, r in enumerate(a):
                 for j in range(0,len(r),w):
-                    print '%2d\t%s' % (i,
-                        '\t'.join(['%g '%np.mean(r[k]) for k in range(j,j+w)]))
+                    print '%2d' % i,
+                    for k in range(j,j+w,8):
+                        print '\t' + ' '.join(
+                            ['%8g'%np.mean(r[l]) for l in range(k,k+8)])
 
         num_rounds_dp, num_rounds_l = ctx.mod.get_global('g_num_rounds')
         num_writes_dp, num_writes_l = ctx.mod.get_global('g_num_writes')
@@ -536,9 +536,9 @@ class ShufflePoints(PTXFragment):
     def shuffle(self, *args, **kwargs):
         """
         Shuffle the data from each register in args across threads. Keyword
-        argument ``bar`` specifies which barrier to use.
+        argument ``bar`` specifies which barrier to use (default is 2).
         """
-        bar = kwargs.pop('bar', 8)
+        bar = kwargs.pop('bar', 2)
         with block("Shuffle across threads"):
             reg.u32('shuf_read shuf_write')
             with block("Calculate read and write offsets"):

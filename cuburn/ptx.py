@@ -458,7 +458,6 @@ class Mem(object):
 class _MemFactory(_CallChain):
     """Actual `mem` object"""
     def _call(self, type, name, array=False, init=None):
-        assert len(type) == 2
         memobj = Mem(type, name, array, init)
         if array is True:
             array = ['[]']
@@ -468,7 +467,7 @@ class _MemFactory(_CallChain):
             array = []
         if init:
             array += [' = ', init]
-        self.block.code(op='.%s.%s ' % (type[0], type[1]), vars=[name, array])
+        self.block.code(op='.%s ' % ' .'.join(type), vars=[name, array])
         self.block.inject(name, memobj)
 
     # TODO: move vec, addr here, or make this public
