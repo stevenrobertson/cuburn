@@ -154,7 +154,7 @@ class Animation(object):
         the active device.
         """
         # TODO: user-configurable test control
-        self.ctx = LaunchContext([IterThread], block=(256,1,1), grid=(28,1),
+        self.ctx = LaunchContext([IterThread], block=(512,1,1), grid=(28,1),
                                  tests=True)
         # TODO: user-configurable verbosity control
         self.ctx.compile(verbose=3, anim=self, features=self.features)

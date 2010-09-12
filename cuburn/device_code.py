@@ -90,7 +90,7 @@ class IterThread(PTXEntryPoint):
             reg.pred('p_last_cp')
             op.ldu.u32(num_cps, addr(g_num_cps))
             op.setp.ge.u32(p_last_cp, cp_idx, num_cps)
-            op.bra.uni('all_cps_done', ifp=p_last_cp)
+            op.bra('all_cps_done', ifp=p_last_cp)
 
         with block('Load CP address'):
             op.mov.u32(cpA, g_cp_array)
@@ -149,7 +149,7 @@ class IterThread(PTXEntryPoint):
             for xf in features.xforms:
                 label('XFORM_%d' % xf.id)
                 variations.apply_xform(xo, yo, coloro, xi, yi, colori, xf.id)
-                op.bra.uni("xform_done")
+                op.bra("xform_done")
 
         label("xform_done")
         with block("Test if we're still in FUSE"):
@@ -161,7 +161,7 @@ class IterThread(PTXEntryPoint):
 
         reg.pred('p_point_is_valid')
         with block("Write the result"):
-            hist.scatter(xo, yo, coloro, 0, p_point_is_valid)
+            hist.scatter(xo, yo, coloro, 0, p_point_is_valid, 'ldst')
             with block():
                 reg.u32('num_writes')
                 op.ld.local.u32(num_writes, addr(l_num_writes))
@@ -212,16 +212,15 @@ class IterThread(PTXEntryPoint):
         comment('Shuffle points between threads')
         shuf.shuffle(xi, yi, colori, consec_bad)
 
-        with block("If first warp, pick new thread offset"):
-            reg.u32('warpid')
+        with block("If in first warp, pick new offset"):
+            reg.u32('tid')
             reg.pred('first_warp')
-            op.mov.u32(warpid, '%tid.x')
-            op.shr.b32(warpid, warpid, 5)
-            op.setp.eq.u32(first_warp, warpid, 0)
-            #std.asrt("Looks like we're not the first warp", notp=first_warp,
-                    #ret=True)
-            op.bra.uni(iter_loop_choose_xform, ifp=first_warp)
-        op.bra.uni(iter_loop_start)
+            op.mov.u32(tid, '%tid.x')
+            assert ctx.warps_per_cta <= 32, \
+                   "Special-case for CTAs with >1024 threads not implemented"
+            op.setp.lo.u32(first_warp, tid, 32)
+            op.bra(iter_loop_choose_xform, ifp=first_warp)
+        op.bra(iter_loop_start)
 
         label('all_cps_done')
         # TODO this is for testing, move it to a debug statement
@@ -258,14 +257,15 @@ class IterThread(PTXEntryPoint):
         super(IterThread, self)._call(ctx, func, texrefs=[tr])
 
     def call_teardown(self, ctx):
-        shape = (ctx.grid[0], ctx.block[0]/32, 32)
+        w = ctx.warps_per_cta
+        shape = (ctx.grid[0], w, 32)
 
         def print_thing(s, a):
             print '%s:' % s
             for i, r in enumerate(a):
-                for j in range(0,len(r),8):
+                for j in range(0,len(r),w):
                     print '%2d\t%s' % (i,
-                        '\t'.join(['%g '%np.mean(r[k]) for k in range(j,j+8)]))
+                        '\t'.join(['%g '%np.mean(r[k]) for k in range(j,j+w)]))
 
         num_rounds_dp, num_rounds_l = ctx.mod.get_global('g_num_rounds')
         num_writes_dp, num_writes_l = ctx.mod.get_global('g_num_writes')
@@ -483,6 +483,11 @@ class HistScatter(PTXFragment):
             reg.u32('hist_bin_addr')
             op.mov.u32(hist_bin_addr, g_hist_bins)
             op.mad.lo.u32(hist_bin_addr, hist_index, 16, hist_bin_addr)
+
+            if type == 'fake_notex':
+                op.st.local.u32(addr(l_scatter_fake_adr), hist_bin_addr)
+                op.st.local.f32(addr(l_scatter_fake_alpha), color)
+                return
 
             reg.f32('r g b a norm_time')
             cp.get(cpA, norm_time, 'cp.norm_time')

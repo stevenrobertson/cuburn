@@ -280,6 +280,21 @@ def shuf_better(a):
 
 print '    With better shuffle: %g' % monte(make(), shuf_better, 1000, 32)
 
+print 'For 32*16:'
+t = 512
+print '    With no shuffle:     %g' % monte(make(), shuf_none, 1000, 32)
+print '    With full shuffle:   %g' % monte(make(), shuf_all, 1000, 32)
+print '    With simple shuffle: %g' % monte(make(), shuf_simple, 1000, 32)
+print '    With better shuffle: %g' % monte(make(), shuf_better, 1000, 32)
+print 'For 32*32:'
+t = 1024
+print '    With no shuffle:     %g' % monte(make(), shuf_none, 1000, 32)
+print '    With full shuffle:   %g' % monte(make(), shuf_all, 1000, 32)
+print '    With simple shuffle: %g' % monte(make(), shuf_simple, 1000, 32)
+print '    With better shuffle: %g' % monte(make(), shuf_better, 1000, 32)
+
+
+
 print """
 Okay I actually intended this to be a blog post but I started writing before
 having done any of the math. Actually the simple shuffle looks like it's
