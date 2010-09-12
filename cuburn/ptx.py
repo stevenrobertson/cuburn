@@ -468,7 +468,7 @@ class _MemFactory(_CallChain):
             array = []
         if init:
             array += [' = ', init]
-        self.block.code(op=['.%s.%s ' % (type[0], type[1]), name, array])
+        self.block.code(op='.%s.%s ' % (type[0], type[1]), vars=[name, array])
         self.block.inject(name, memobj)
 
     # TODO: move vec, addr here, or make this public
