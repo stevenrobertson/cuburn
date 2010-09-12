@@ -87,7 +87,7 @@ class Frame(object):
         center = self.center_cp
         ncps = center.nbatches * center.ntemporal_samples
 
-        if ncps < ctx.ctas:
+        if ncps < ctx.nctas:
             raise NotImplementedError(
                 "Distribution of a CP across multiple CTAs not yet done")
 

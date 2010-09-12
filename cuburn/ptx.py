@@ -696,21 +696,28 @@ class _PTXStdLib(PTXFragment):
 
     @ptx_func
     def store_per_thread(self, *args):
-        """Store b32 at `base+gtid*4`. Super-common debug pattern."""
+        """For each pair of arguments ``addr, val``, write ``val`` to the
+        address given by ``addr+sizeof(val)*gtid``. If ``val`` is not a
+        register, size will be taken from ``addr``; if ``addr`` is not a Mem
+        instance, size defaults to 4."""
         with block("Per-thread storing values"):
             reg.u32('spt_base spt_offset')
             self.get_gtid(spt_offset)
-            op.mul.lo.u32(spt_offset, spt_offset, 4)
             for i in range(0, len(args), 2):
                 base, val = args[i], args[i+1]
+                width = 4
+                if isinstance(base, Mem):
+                    width = int(base.type[-1][-2:])/8
+                if isinstance(val, Reg):
+                    width = int(val.type[-2:])/8
                 op.mov.u32(spt_base, base)
-                op.add.u32(spt_base, spt_base, spt_offset)
+                op.mad.lo.u32(spt_base, spt_offset, width, spt_base)
                 if isinstance(val, float):
                     # Turn a constant float into the big-endian PTX binary f32
                     # representation, 0fXXXXXXXX (where XX is hex byte)
                     val = '0f%x%x%x%x' % reversed(map(ord,
                                                       struct.pack('f', val)))
-                op.st.b32(addr(spt_base), val)
+                op._call(['st', 'b%d' % (width*4)], addr(spt_base), val)
 
     @ptx_func
     def set_is_first_thread(self, p_dst):
