@@ -16,7 +16,7 @@ from ctypes import *
 
 import numpy as np
 
-from cuburn.device_code import IterThread
+from cuburn.device_code import *
 from cuburn.cuda import LaunchContext
 from fr0stlib.pyflam3 import *
 from fr0stlib.pyflam3._flam3 import *
@@ -67,10 +67,14 @@ def main(args):
                                    anim.features.hist_stride*4)
     tex = image.texture
 
+    pal = (anim.ctx.ptx.instances[PaletteLookup].pal * 255.).astype(np.uint8)
+    image2 = pyglet.image.ImageData(256, 16, 'RGBA', pal.tostring())
+
     @window.event
     def on_draw():
         window.clear()
         tex.blit(0, 0)
+        image2.blit(0, 0)
 
     @window.event
     def on_key_press(sym, mod):

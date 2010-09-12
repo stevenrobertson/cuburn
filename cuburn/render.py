@@ -98,8 +98,8 @@ class Frame(object):
         for batch_idx in range(center.nbatches):
             for time_idx in range(center.ntemporal_samples):
                 idx = time_idx + batch_idx * center.nbatches
-                time = time + filters.temporal_deltas[idx]
-                cp = self._frame.interpolate(time)
+                interp_time = time + filters.temporal_deltas[idx]
+                cp = self._frame.interpolate(interp_time)
                 cp_list.append(cp)
 
                 cp.camera = Camera(self._frame, cp, filters)

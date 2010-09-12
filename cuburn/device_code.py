@@ -429,6 +429,7 @@ class PaletteLookup(PTXFragment):
         self.texref.set_address_mode(0, cuda.address_mode.CLAMP)
         self.texref.set_address_mode(1, cuda.address_mode.CLAMP)
         self.texref.set_array(dev_array)
+        self.pal = pal
 
     def call_setup(self, ctx):
         assert self.texref, "Must upload palette texture before launch!"
