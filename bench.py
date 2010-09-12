@@ -104,9 +104,11 @@ class L2WriteCombining(PTXTest):
         op.setp.ge.u32(p_done, x, 2)
         op.bra.uni(l2_restart, ifnotp=p_done)
 
+    def call_setup(self, ctx):
+        self.scratch = np.zeros(self.block_size*ctx.nctas/4, np.uint64)
+        self.times_bytes = np.zeros((4, ctx.nthreads), np.uint64, 'F')
+
     def _call(self, ctx, func):
-        self.scratch = np.zeros(self.block_size*ctx.ctas/4, np.uint64)
-        self.times_bytes = np.zeros((4, ctx.threads), np.uint64, 'F')
         super(L2WriteCombining, self)._call(ctx, func,
                 cuda.InOut(self.times_bytes), cuda.InOut(self.scratch))
 
@@ -118,6 +120,102 @@ class L2WriteCombining(PTXTest):
         print "Bytes for uncoa was %g ± %g" % pm(self.times_bytes[3])
         print
 
+class SimulOccupancy(PTXTest):
+    """
+    Test to discover whether Fermi GPUs will launch multiple entry points
+    in the same kernel on the same CTA simultaneously.
+    """
+    entry_name = 'simul1'
+    # Only has to be big enough to hold the kernel on the device for a while
+    rounds = 1000000
+
+    def deps(self):
+        return [MWCRNG]
+
+    @ptx_func
+    def module_setup(self):
+        n = self.entry_name + '_'
+        mem.global_.u64(n+'start', ctx.nthreads)
+        mem.global_.u64(n+'end', ctx.nthreads)
+        mem.global_.u32(n+'smid', ctx.nthreads)
+        mem.global_.u32(n+'warpid_start', ctx.nthreads)
+        mem.global_.u32(n+'warpid_end', ctx.nthreads)
+
+    @ptx_func
+    def entry(self):
+        n = self.entry_name + '_'
+        reg.u64('now')
+        reg.u32('warpid')
+        op.mov.u64(now, '%clock64')
+        op.mov.u32(warpid, '%warpid')
+        std.store_per_thread(n+'start', now,
+                             n+'warpid_start', warpid)
+
+        reg.u32('loopct rnd')
+        reg.pred('p_done')
+        op.mov.u32(loopct, self.rounds)
+        label('loopstart')
+        mwc.next_b32(rnd)
+        std.store_per_thread(n+'smid', rnd)
+        op.sub.u32(loopct, loopct, 1)
+        op.setp.eq.u32(p_done, loopct, 0)
+        op.bra.uni(loopstart, ifnotp=p_done)
+
+        reg.u32('smid')
+        op.mov.u32(smid, '%smid')
+        op.mov.u32(warpid, '%warpid')
+        op.mov.u64(now, '%clock64')
+        std.store_per_thread(n+'end', now,
+                             n+'smid', smid,
+                             n+'warpid_end', warpid)
+
+    def _call(self, ctx, func):
+        stream1, stream2 = cuda.Stream(), cuda.Stream()
+        self._call2(ctx, stream1)
+        _SimulOccupancy._call2(ctx, stream2)
+        stream2.synchronize()
+        stream1.synchronize()
+
+    @instmethod
+    def _call2(self, ctx, stream):
+        func = ctx.mod.get_function(self.entry_name)
+        func.prepare([], ctx.block)
+        # TODO: load number of SMs from ctx
+        func.launch_grid_async(7, 1, stream)
+
+    def call_teardown(self, ctx):
+        sm_log = [[] for i in range(7)]
+        self._teardown(ctx, sm_log)
+        _SimulOccupancy._teardown(ctx, sm_log)
+        for sm in range(len(sm_log)):
+            print "\nPrinting log for SM %d" % sm
+            for t, ev in sorted(sm_log[sm]):
+                print '%6d %s' % (t/1000, ev)
+
+    @instmethod
+    def _teardown(self, ctx, sm_log):
+        # For this method, the GPU is intentionally underloaded; trim results
+        th = 7 * ctx.threads_per_cta
+        n = self.entry_name + '_'
+        start = ctx.get_per_thread(n+'start', np.uint64)[:th]
+        end = ctx.get_per_thread(n+'end', np.uint64)[:th]
+        smid = ctx.get_per_thread(n+'smid', np.uint32)[:th]
+        warpid_start = ctx.get_per_thread(n+'warpid_start', np.uint32)[:th]
+        warpid_end = ctx.get_per_thread(n+'warpid_end', np.uint32)[:th]
+        for i in range(0, th, 32):
+            sm_log[smid[i]].append((start[i], "%s%4d entered SM" % (n, i/32)))
+            sm_log[smid[i]].append((end[i],   "%s%4d left SM" % (n, i/32)))
+        if not np.alltrue(np.equal(warpid_start, warpid_end)):
+            print "Warp IDs changed. Do further research."
+
+class _SimulOccupancy(SimulOccupancy):
+    # Don't call this one
+    entry_name = 'simul2'
+    def call(self, ctx):
+        pass
+    def call_teardown(self, ctx):
+        pass
+
 def printover(a, r, s=1):
     for i in range(0, len(a), r*s):
         for j in range(i, i+r*s, s):
@@ -126,10 +224,11 @@ def printover(a, r, s=1):
 
 def main():
     # TODO: block/grid auto-optimization
-    ctx = LaunchContext([L2WriteCombining, MWCRNGTest],
+    ctx = LaunchContext([L2WriteCombining, SimulOccupancy, _SimulOccupancy],
                         block=(128,1,1), grid=(7*8,1), tests=True)
     ctx.compile(verbose=3)
     ctx.run_tests()
+    SimulOccupancy.call(ctx)
     L2WriteCombining.call(ctx)
 
 if __name__ == "__main__":
