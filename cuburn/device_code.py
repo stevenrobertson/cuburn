@@ -120,10 +120,7 @@ class IterThread(PTXEntryPoint):
 
         label('iter_loop_start')
 
-        timeout.check_time(10)
-
-        # TODO: diagram and fix syncing (can this be automated?)
-        #op.bar.sync(1)
+        #timeout.check_time(10)
 
         with block():
             reg.u32('num_rounds')
@@ -453,13 +450,26 @@ class HistScatter(PTXFragment):
     def module_setup(self):
         mem.global_.f32('g_hist_bins',
                         features.hist_height * features.hist_stride * 4)
+        comment("Target to ensure fake local values get written")
+        mem.global_.f32('g_hist_dummy')
 
     @ptx_func
     def entry_setup(self):
-        comment("For now, assume histogram bins have been cleared by host")
+        comment("Fake bins for fake scatter")
+        mem.local.f32('l_scatter_fake_adr')
+        mem.local.f32('l_scatter_fake_alpha')
 
     @ptx_func
-    def scatter(self, x, y, color, xf_idx, p_valid=None):
+    def entry_teardown(self):
+        with block("Store fake histogram bins to dummy global"):
+            reg.b32('hist_dummy')
+            op.ld.local.b32(hist_dummy, addr(l_scatter_fake_adr))
+            op.st.volatile.b32(addr(g_hist_dummy), hist_dummy)
+            op.ld.local.b32(hist_dummy, addr(l_scatter_fake_alpha))
+            op.st.volatile.b32(addr(g_hist_dummy), hist_dummy)
+
+    @ptx_func
+    def scatter(self, x, y, color, xf_idx, p_valid=None, type='ldst'):
         """
         Scatter the given point directly to the histogram bins. I think this
         technique has the worst performance of all of 'em. Accesses ``cpA``
@@ -479,14 +489,20 @@ class HistScatter(PTXFragment):
             palette.look_up(r, g, b, a, color, norm_time)
             # TODO: look up, scale by xform visibility
             # TODO: Make this more performant
-            reg.f32('gr gg gb ga')
-            op.ld.v4.f32(vec(gr, gg, gb, ga), addr(hist_bin_addr))
-            op.add.f32(gr, gr, r)
-            op.add.f32(gg, gg, g)
-            op.add.f32(gb, gb, b)
-            op.add.f32(ga, ga, a)
-            op.st.v4.f32(addr(hist_bin_addr), vec(gr, gg, gb, ga))
-            #op.red.add.f32(addr(hist_bin_addr,4*i), val)
+            if type == 'ldst':
+                reg.f32('gr gg gb ga')
+                op.ld.v4.f32(vec(gr, gg, gb, ga), addr(hist_bin_addr))
+                op.add.f32(gr, gr, r)
+                op.add.f32(gg, gg, g)
+                op.add.f32(gb, gb, b)
+                op.add.f32(ga, ga, a)
+                op.st.v4.f32(addr(hist_bin_addr), vec(gr, gg, gb, ga))
+            elif type == 'red':
+                for i, val in enumerate([r, g, b, a]):
+                    op.red.add.f32(addr(hist_bin_addr,4*i), val)
+            elif type == 'fake':
+                op.st.local.u32(addr(l_scatter_fake_adr), hist_bin_addr)
+                op.st.local.f32(addr(l_scatter_fake_alpha), a)
 
     def call_setup(self, ctx):
         hist_bins_dp, hist_bins_l = ctx.mod.get_global('g_hist_bins')
