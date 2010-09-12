@@ -106,6 +106,7 @@ class IterThread(PTXEntryPoint):
 
         label('iter_loop_choose_xform')
         with block("Choose the xform for each warp"):
+            timeout.check_time(5)
             comment("On subsequent runs, only warp 0 will hit this code")
             reg.u32('x_addr x_offset')
             reg.f32('xf_sel')

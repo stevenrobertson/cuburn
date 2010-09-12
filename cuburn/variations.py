@@ -110,7 +110,7 @@ class Variations(PTXFragment):
     @ptx_func
     def linear(self, xo, yo, xi, yi, wgt):
         op.fma.rn.ftz.f32(xo, xi, wgt, xo)
-        op.fma.rn.ftz.f32(yo, yi, wgt, xo)
+        op.fma.rn.ftz.f32(yo, yi, wgt, yo)
 
     @ptx_func
     def sinusoidal(self, xo, yo, xi, yi, wgt):
