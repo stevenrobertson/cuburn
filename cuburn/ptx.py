@@ -415,7 +415,7 @@ class Mem(object):
     Reserve memory, optionally with an array size attached.
 
     >>> mem.global_.u32('global_scalar')
-    >>> mem.local.u32('context_sized_local_array', ctx.threads*4)
+    >>> mem.local.u32('context_sized_local_array', ctx.nthreads*4)
     >>> mem.shared.u32('shared_array', 12)
     >>> mem.const.u32('const_array_of_unknown_length', True)
 
@@ -678,7 +678,7 @@ class _PTXStdLib(PTXFragment):
         # multiple devices first, which we definitely do not yet do
         self.block.code(prefix='.version 2.1', semi=False)
         self.block.code(prefix='.target sm_21', semi=False)
-        mem.global_.u32('g_std_exit_err', ctx.threads)
+        mem.global_.u32('g_std_exit_err', ctx.nthreads)
 
     @ptx_func
     def get_gtid(self, dst):
@@ -812,7 +812,7 @@ class _PTXStdLib(PTXFragment):
         at the start of your entry. Yes, it's a hacky solution.
         """
         dp, l = ctx.mod.get_global('g_std_exit_err')
-        errs = cuda.from_device(dp, ctx.threads, np.uint32)
+        errs = cuda.from_device(dp, ctx.nthreads, np.uint32)
         if np.sum(errs) != 0:
             print "Some threads terminated unsuccessfully."
             for i, msg in enumerate(self.asserts):

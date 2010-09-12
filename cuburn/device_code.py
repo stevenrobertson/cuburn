@@ -30,9 +30,9 @@ class IterThread(PTXEntryPoint):
         mem.global_.u32('g_num_cps')
         mem.global_.u32('g_num_cps_started')
         # TODO move into debug statement
-        mem.global_.u32('g_num_rounds', ctx.threads)
-        mem.global_.u32('g_num_writes', ctx.threads)
-        mem.global_.b32('g_whatever', ctx.threads)
+        mem.global_.u32('g_num_rounds', ctx.nthreads)
+        mem.global_.u32('g_num_writes', ctx.nthreads)
+        mem.global_.b32('g_whatever', ctx.nthreads)
 
     @ptx_func
     def entry(self):
@@ -567,8 +567,8 @@ class MWCRNG(PTXFragment):
 
     @ptx_func
     def module_setup(self):
-        mem.global_.u32('mwc_rng_mults', ctx.threads)
-        mem.global_.u64('mwc_rng_state', ctx.threads)
+        mem.global_.u32('mwc_rng_mults', ctx.nthreads)
+        mem.global_.u64('mwc_rng_state', ctx.nthreads)
 
     @ptx_func
     def entry_setup(self):
@@ -637,21 +637,21 @@ class MWCRNG(PTXFragment):
         stream = cuda.Stream()
         # Randomness in choosing multipliers is good, but larger multipliers
         # have longer periods, which is also good. This is a compromise.
-        mults = np.array(mults[:ctx.threads*4])
+        mults = np.array(mults[:ctx.nthreads*4])
         rand.shuffle(mults)
         # Copy multipliers and seeds to the device
         multdp, multl = ctx.mod.get_global('mwc_rng_mults')
         cuda.memcpy_htod_async(multdp, mults.tostring()[:multl])
         # Intentionally excludes both 0 and (2^32-1), as they can lead to
         # degenerate sequences of period 0
-        states = np.array(rand.randint(1, 0xffffffff, size=2*ctx.threads),
+        states = np.array(rand.randint(1, 0xffffffff, size=2*ctx.nthreads),
                           dtype=np.uint32)
         statedp, statel = ctx.mod.get_global('mwc_rng_state')
         cuda.memcpy_htod_async(statedp, states.tostring())
-        self.threads_ready = ctx.threads
+        self.threads_ready = ctx.nthreads
 
     def call_setup(self, ctx):
-        if self.threads_ready < ctx.threads:
+        if self.threads_ready < ctx.nthreads:
             self.seed(ctx)
 
     def tests(self):
@@ -668,7 +668,7 @@ class MWCRNGTest(PTXTest):
 
     @ptx_func
     def module_setup(self):
-        mem.global_.u64('mwc_rng_test_sums', ctx.threads)
+        mem.global_.u64('mwc_rng_test_sums', ctx.nthreads)
 
     @ptx_func
     def entry(self):
@@ -697,10 +697,10 @@ class MWCRNGTest(PTXTest):
     def call_setup(self, ctx):
         # Get current multipliers and seeds from the device
         multdp, multl = ctx.mod.get_global('mwc_rng_mults')
-        self.mults = cuda.from_device(multdp, ctx.threads, np.uint32)
+        self.mults = cuda.from_device(multdp, ctx.nthreads, np.uint32)
         statedp, statel = ctx.mod.get_global('mwc_rng_state')
-        self.fullstates = cuda.from_device(statedp, ctx.threads, np.uint64)
-        self.sums = np.zeros(ctx.threads, np.uint64)
+        self.fullstates = cuda.from_device(statedp, ctx.nthreads, np.uint64)
+        self.sums = np.zeros(ctx.nthreads, np.uint64)
 
         print "Running %d states forward %d rounds" % \
               (len(self.mults), self.rounds)
@@ -717,7 +717,7 @@ class MWCRNGTest(PTXTest):
         multdp, multl = ctx.mod.get_global('mwc_rng_mults')
         statedp, statel = ctx.mod.get_global('mwc_rng_state')
 
-        dfullstates = cuda.from_device(statedp, ctx.threads, np.uint64)
+        dfullstates = cuda.from_device(statedp, ctx.nthreads, np.uint64)
         if not (dfullstates == self.fullstates).all():
             print "State discrepancy"
             print dfullstates
@@ -725,7 +725,7 @@ class MWCRNGTest(PTXTest):
             raise PTXTestFailure("MWC RNG state discrepancy")
 
         sumdp, suml = ctx.mod.get_global('mwc_rng_test_sums')
-        dsums = cuda.from_device(sumdp, ctx.threads, np.uint64)
+        dsums = cuda.from_device(sumdp, ctx.nthreads, np.uint64)
         if not (dsums == self.sums).all():
             print "Sum discrepancy"
             print dsums
@@ -746,12 +746,12 @@ class MWCRNGFloatsTest(PTXTest):
 
     @ptx_func
     def module_setup(self):
-        mem.global_.f32('mwc_rng_float_01_test_sums', ctx.threads)
-        mem.global_.f32('mwc_rng_float_01_test_mins', ctx.threads)
-        mem.global_.f32('mwc_rng_float_01_test_maxs', ctx.threads)
-        mem.global_.f32('mwc_rng_float_11_test_sums', ctx.threads)
-        mem.global_.f32('mwc_rng_float_11_test_mins', ctx.threads)
-        mem.global_.f32('mwc_rng_float_11_test_maxs', ctx.threads)
+        mem.global_.f32('mwc_rng_float_01_test_sums', ctx.nthreads)
+        mem.global_.f32('mwc_rng_float_01_test_mins', ctx.nthreads)
+        mem.global_.f32('mwc_rng_float_01_test_maxs', ctx.nthreads)
+        mem.global_.f32('mwc_rng_float_11_test_sums', ctx.nthreads)
+        mem.global_.f32('mwc_rng_float_11_test_mins', ctx.nthreads)
+        mem.global_.f32('mwc_rng_float_11_test_maxs', ctx.nthreads)
 
     @ptx_func
     def loop(self, kind):
@@ -796,7 +796,7 @@ class MWCRNGFloatsTest(PTXTest):
         for fkind, rkind, exp, lim in tests:
             dp, l = ctx.mod.get_global(
                     'mwc_rng_float_%s_test_%s' % (fkind, rkind))
-            vals = cuda.from_device(dp, ctx.threads, np.float32)
+            vals = cuda.from_device(dp, ctx.nthreads, np.float32)
             avg = np.mean(vals)
             if np.abs(avg - exp) > tol:
                 raise PTXTestFailure("%s %s %g too far from %g" %

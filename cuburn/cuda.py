@@ -30,7 +30,7 @@ class LaunchContext(object):
 
         `block`:    3-tuple of (x,y,z); dimensions of each CTA.
         `grid`:     2-tuple of (x,y); dimensions of the grid of CTAs.
-        `threads`:  Number of active threads on device as a whole.
+        `nthreads`: Number of active threads on device as a whole.
         `mod`:      Final compiled module. Unavailable during assembly.
 
     """
@@ -41,11 +41,11 @@ class LaunchContext(object):
         self.stream = cuda.Stream()
 
     @property
-    def threads(self):
+    def nthreads(self):
         return reduce(lambda a, b: a*b, self.block + self.grid)
 
     @property
-    def ctas(self):
+    def nctas(self):
         return self.grid[0] * self.grid[1]
 
     @property
