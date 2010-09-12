@@ -647,7 +647,8 @@ class PTXEntryPoint(PTXFragment):
         try:
             self._call(ctx, func, *args, **kwargs)
         finally:
-            return ctx.call_teardown(self)
+            res = ctx.call_teardown(self)
+        return res
 
 class PTXTestFailure(Exception): pass
 
