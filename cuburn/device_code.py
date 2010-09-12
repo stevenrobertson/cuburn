@@ -474,13 +474,14 @@ class HistScatter(PTXFragment):
             palette.look_up(r, g, b, a, color, norm_time)
             # TODO: look up, scale by xform visibility
             # TODO: Make this more performant
-            reg.f32('gval')
-            for i, val in enumerate([r, g, b, a]):
-                #op.red.add.f32(addr(hist_bin_addr,4*i), val)
-                op.ld.f32(gval,addr(hist_bin_addr,4*i))
-                op.add.f32(gval, gval, val)
-                op.st.f32(addr(hist_bin_addr,4*i),gval)
-
+            reg.f32('gr gg gb ga')
+            op.ld.v4.f32(vec(gr, gg, gb, ga), addr(hist_bin_addr))
+            op.add.f32(gr, gr, r)
+            op.add.f32(gg, gg, g)
+            op.add.f32(gb, gb, b)
+            op.add.f32(ga, ga, a)
+            op.st.v4.f32(addr(hist_bin_addr), vec(gr, gg, gb, ga))
+            #op.red.add.f32(addr(hist_bin_addr,4*i), val)
 
     def call_setup(self, ctx):
         hist_bins_dp, hist_bins_l = ctx.mod.get_global('g_hist_bins')
