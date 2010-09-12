@@ -717,7 +717,7 @@ class _PTXStdLib(PTXFragment):
                     # representation, 0fXXXXXXXX (where XX is hex byte)
                     val = '0f%x%x%x%x' % reversed(map(ord,
                                                       struct.pack('f', val)))
-                op._call(['st', 'b%d' % (width*4)], addr(spt_base), val)
+                op._call(['st', 'b%d' % (width*8)], addr(spt_base), val)
 
     @ptx_func
     def set_is_first_thread(self, p_dst):
