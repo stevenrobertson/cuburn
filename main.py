@@ -41,9 +41,10 @@ def main(args):
     anim.compile()
     bins = anim.render_frame()
     #bins = np.log2(bins + 1)
-    bins *= (512./(np.mean([bins[y][x][3]
-                           for x in range(anim.features.hist_width)
-                           for y in range(anim.features.hist_height)])+1e-9))
+    alpha = [bins[y][x][3] for x in range(anim.features.hist_width)
+                           for y in range(anim.features.hist_height)]
+    print sum(alpha)
+    bins *= (512./(np.mean(alpha)+1e-9))
     bins = np.minimum(bins, 255)
     bins = bins.astype(np.uint8)
 
