@@ -40,31 +40,24 @@ def main(args):
     anim = Animation(genomes)
     anim.compile()
     bins = anim.render_frame()
-
-    # Embarrassingly poor (and s-l-o-w) approximation of log filtering, because
-    # I want to keep working on performance right now
-    alpha = np.array([[bins[y][x][3] for x in range(anim.features.hist_width)]
-                                    for y in range(anim.features.hist_height)])
+    w, h = anim.features.hist_width, anim.features.hist_height
+    bins = bins[:,:w]
+    alpha = bins[...,3]
     k2ish = (256./(np.mean(alpha)+1e-9))
     lses = 20 * np.log2(1.0 + alpha * k2ish) / (alpha+1e-6)
-    for x in range(anim.features.hist_width):
-        for y in range(anim.features.hist_height):
-            bins[y][x] *= lses[y][x]
+    bins *= lses.reshape(h,w,1).repeat(4,2)
     bins = np.minimum(bins, 255)
     bins = bins.astype(np.uint8)
 
     if '-g' not in args:
         return
 
-    print anim.features.hist_width
-    print anim.features.hist_height
-    print anim.features.hist_stride
     window = pyglet.window.Window(1600, 900)
     image = pyglet.image.ImageData(anim.features.hist_width,
                                    anim.features.hist_height,
                                    'RGBA',
-                                   bins.tostring(),
-                                   -anim.features.hist_stride*4)
+                                   bins.tostring())
+                                   #-anim.features.hist_stride*4)
     tex = image.texture
 
     pal = (anim.ctx.ptx.instances[PaletteLookup].pal * 255.).astype(np.uint8)

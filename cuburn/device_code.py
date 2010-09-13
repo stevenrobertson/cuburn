@@ -142,7 +142,7 @@ class IterThread(PTXEntryPoint):
             camera.get_index(hist_index, x, y, p_valid_pt)
             comment('if consec_bad < 0, point is fusing; treat as invalid')
             op.setp.and_.ge.f32(p_valid_pt, consec_bad, 0., p_valid_pt)
-            # TODO: save and pass correct color value here
+            # TODO: save and pass correct xform value here
             hist.scatter(hist_index, color, 0, p_valid_pt, 'ldst')
             with block():
                 reg.u32('num_writes')
