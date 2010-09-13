@@ -213,8 +213,11 @@ class Features(object):
     Determine features and constants required to render a particular set of
     genomes. The values of this class are fixed before compilation begins.
     """
-    # Constant; number of rounds spent fusing points on first CP of a frame
-    num_fuse_samples = 25
+    # Constant parameters which control handling of out-of-frame samples:
+    # Number of iterations to iterate without write after new point
+    fuse = 2
+    # Maximum consecutive out-of-frame points before picking new point
+    max_bad = 3
 
     def __init__(self, genomes, flt):
         any = lambda l: bool(filter(None, map(l, genomes)))

@@ -64,7 +64,7 @@ def main(args):
                                    anim.features.hist_height,
                                    'RGBA',
                                    bins.tostring(),
-                                   anim.features.hist_stride*4)
+                                   -anim.features.hist_stride*4)
     tex = image.texture
 
     pal = (anim.ctx.ptx.instances[PaletteLookup].pal * 255.).astype(np.uint8)

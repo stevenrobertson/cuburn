@@ -54,8 +54,8 @@ class Variations(PTXFragment):
         """
         Apply a transform.
 
-        This function makes a copy of the input variables, so it's safe to use
-        the same registers for input and output.
+        This function necessarily makes a copy of the input variables, so it's
+        safe to use the same registers for input and output.
         """
         with block("Apply xform %d" % xform_idx):
             self.xform_idx = xform_idx
@@ -123,7 +123,7 @@ class Variations(PTXFragment):
     @ptx_func
     def spherical(self, xo, yo, xi, yi, wgt):
         reg.f32('r2')
-        op.fma.rn.ftz.f32(r2, xi, xi, '1e-9')
+        op.fma.rn.ftz.f32(r2, xi, xi, '1e-30')
         op.fma.rn.ftz.f32(r2, yi, yi, r2)
         op.rcp.approx.f32(r2, r2)
         op.mul.rn.ftz.f32(r2, r2, wgt)
