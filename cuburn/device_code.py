@@ -68,12 +68,12 @@ class IterThread(PTXEntryPoint):
         with block("Claim a CP"):
             std.set_is_first_thread(reg.pred('p_is_first'))
             op.atom.add.u32(cp_idx, addr(g_num_cps_started), 1, ifp=p_is_first)
-            op.st.shared.u32(addr(s_cp_idx), cp_idx, ifp=p_is_first)
-            op.st.shared.s32(addr(s_num_samples), 0)
+            op.st.volatile.shared.u32(addr(s_cp_idx), cp_idx, ifp=p_is_first)
+            op.st.volatile.shared.s32(addr(s_num_samples), 0)
 
         comment("Load the CP index in all threads")
         op.bar.sync(0)
-        op.ld.shared.u32(cp_idx, addr(s_cp_idx))
+        op.ld.volatile.shared.u32(cp_idx, addr(s_cp_idx))
 
         with block("Check to see if this CP is valid (if not, we're done)"):
             reg.u32('num_cps')
@@ -178,7 +178,7 @@ class IterThread(PTXEntryPoint):
             reg.s32('num_samples num_samples_needed')
             comment('Sync before making decision to prevent divergence')
             op.bar.sync(3)
-            op.ld.shared.s32(num_samples, addr(s_num_samples))
+            op.ld.volatile.shared.s32(num_samples, addr(s_num_samples))
             cp.get(cpA, num_samples_needed, 'cp.nsamples')
             op.setp.ge.s32(p_cp_done, num_samples, num_samples_needed)
             op.bra.uni(cp_loop_start, ifp=p_cp_done)
@@ -519,9 +519,9 @@ class ShufflePoints(PTXFragment):
                 op.mad.lo.u32(shuf_read, shuf_off, 4, shuf_read)
             for var in args:
                 op.bar.sync(bar)
-                op.st.shared.b32(addr(shuf_write), var)
+                op.st.volatile.shared.b32(addr(shuf_write), var)
                 op.bar.sync(bar)
-                op.ld.shared.b32(var, addr(shuf_read))
+                op.ld.volatile.shared.b32(var, addr(shuf_read))
 
 class MWCRNG(PTXFragment):
     shortname = "mwc"

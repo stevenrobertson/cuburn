@@ -63,8 +63,8 @@ class _Frame(pyflam3.Frame):
                     sizeof(BaseGenome))
         self.ngenomes = len(genomes)
 
-        # TODO: do this here?
-        self.pixel_aspect_ratio = float(genomes[0].height) / genomes[0].width
+        # TODO: allow user to override this
+        self.pixel_aspect_ratio = 1.0
 
     def interpolate(self, time, stagger=0, cp=None):
         cp = cp or BaseGenome()

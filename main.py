@@ -59,7 +59,7 @@ def main(args):
     print anim.features.hist_width
     print anim.features.hist_height
     print anim.features.hist_stride
-    window = pyglet.window.Window(800, 600)
+    window = pyglet.window.Window(1600, 900)
     image = pyglet.image.ImageData(anim.features.hist_width,
                                    anim.features.hist_height,
                                    'RGBA',
