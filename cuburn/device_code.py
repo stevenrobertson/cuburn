@@ -523,175 +523,130 @@ class ShufflePoints(PTXFragment):
                 op.bar.sync(bar)
                 op.ld.volatile.shared.b32(var, addr(shuf_read))
 
-class MWCRNG(PTXFragment):
-    shortname = "mwc"
-
-    def __init__(self):
-        self.threads_ready = 0
+class MWCRNG(object):
+    def __init__(self, entry, seed=None):
+        # TODO: install this in data directory or something
         if not os.path.isfile('primes.bin'):
             raise EnvironmentError('primes.bin not found')
+        self.threads_ready = 0
+        self.mults, self.state = None, None
 
-    @ptx_func
-    def module_setup(self):
-        mem.global_.u32('mwc_rng_mults', ctx.nthreads)
-        mem.global_.u64('mwc_rng_state', ctx.nthreads)
+        self.entry = entry
+        entry.add_param('mwc_mults', entry.types.u32)
+        entry.add_param('mwc_states', entry.types.u32)
+        r, o = entry.regs, entry.ops
+        with entry.head as e:
+            #mwc_mult_addr = gtid * 4 + e.params.mwc_mults
+            gtid = o.mad.lo(e.special.ctaid_x, ctx.threads_per_cta,
+                            e.special.tid_x)
+            mwc_mult_addr = o.mad.lo.u32(gtid, 4, e.params.mwc_mults)
+            r.mwc_mult = o.load.u32(mwc_mult_addr)
+            mwc_state_addr = o.mad.lo.u32(gtid, 8, e.params.mwc_states)
+            r.mwc_state, r.mwc_carry = o.load.u64(mwc_state_addr)
+        with entry.tail as e:
+            #gtid = e.special.ctaid_x * ctx.threads_per_cta + e.special.tid_x
+            gtid = o.mad.lo(e.special.ctaid_x, ctx.threads_per_cta,
+                            e.special.tid_x)
+            mwc_state_addr = o.mad.lo.u32(gtid, 8, e.params.mwc_states)
+            o.store.v2(mwc_state_addr, (r.mwc_state, r.mwc_carry))
 
-    @ptx_func
-    def entry_setup(self):
-        reg.u32('mwc_st mwc_mult mwc_car')
-        with block('Load MWC multipliers and states'):
-            reg.u32('mwc_off mwc_addr')
-            std.get_gtid(mwc_off)
-            op.mov.u32(mwc_addr, mwc_rng_mults)
-            op.mad.lo.u32(mwc_addr, mwc_off, 4, mwc_addr)
-            op.ld.global_.u32(mwc_mult, addr(mwc_addr))
+    def next_b32(self):
+        e, r, o = self.entry, self.entry.regs, self.entry.ops
+        mwc_out = o.cvt.u64(r.mwc_carry)
+        mwc_out = o.mad.wide.u32(r.mwc_mult, r.mwc_state, mwc_out)
+        r.mwc_state, r.mwc_carry = o.mov(mwc_out)
+        return r.mwc_state
 
-            op.mov.u32(mwc_addr, mwc_rng_state)
-            op.mad.lo.u32(mwc_addr, mwc_off, 8, mwc_addr)
-            op.ld.global_.v2.u32(vec(mwc_st, mwc_car), addr(mwc_addr))
+    def next_f32_01(self):
+        e, r, o = self.entry, self.entry.regs, self.entry.ops
+        mwc_float = o.cvt.rn.f32.u32(self.next_b32())
+        # TODO: check the precision on the uploaded types here
+        return o.mul.f32(mwc_float, 1./(1<<32))
 
-    @ptx_func
-    def entry_teardown(self):
-        with block('Save MWC states'):
-            reg.u32('mwc_off mwc_addr')
-            std.get_gtid(mwc_off)
-            op.mov.u32(mwc_addr, mwc_rng_state)
-            op.mad.lo.u32(mwc_addr, mwc_off, 8, mwc_addr)
-            op.st.global_.v2.u32(addr(mwc_addr), vec(mwc_st, mwc_car))
+    def next_f32_11(self):
+        e, r, o = self.entry, self.entry.regs, self.entry.ops
+        mwc_float = o.cvt.rn.f32.s32(self.next_b32())
+        return o.mul.f32(mwc_float, 1./(1<<31))
 
-    @ptx_func
-    def _next(self):
-        # Call from inside a block!
-        reg.u64('mwc_out')
-        op.cvt.u64.u32(mwc_out, mwc_car)
-        op.mad.wide.u32(mwc_out, mwc_st, mwc_mult, mwc_out)
-        op.mov.b64(vec(mwc_st, mwc_car), mwc_out)
-
-    @ptx_func
-    def next_b32(self, dst_reg):
-        with block('Load next random u32 into ' + dst_reg.name):
-            self._next()
-            op.mov.u32(dst_reg, mwc_st)
-
-    @ptx_func
-    def next_f32_01(self, dst_reg):
-        # TODO: verify that this is the fastest-performance method
-        # TODO: verify that this actually does what I think it does
-        with block('Load random float [0,1] into ' + dst_reg.name):
-            self._next()
-            op.cvt.rn.f32.u32(dst_reg, mwc_st)
-            op.mul.f32(dst_reg, dst_reg, '0f2F800000') # 1./(1<<32)
-
-    @ptx_func
-    def next_f32_11(self, dst_reg):
-        with block('Load random float [-1,1) into ' + dst_reg.name):
-            reg.u32('mwc_to_float')
-            self._next()
-            op.cvt.rn.f32.s32(dst_reg, mwc_st)
-            op.mul.f32(dst_reg, dst_reg, '0f30000000') # 1./(1<<31)
-
-    @instmethod
-    def seed(self, ctx, rand=np.random):
+    def call_setup(self, ctx, force=False):
         """
         Seed the random number generators with values taken from a
         ``np.random`` instance.
         """
-        # Load raw big-endian u32 multipliers from primes.bin.
-        with open('primes.bin') as primefp:
-            dt = np.dtype(np.uint32).newbyteorder('B')
-            mults = np.frombuffer(primefp.read(), dtype=dt)
-        stream = cuda.Stream()
-        # Randomness in choosing multipliers is good, but larger multipliers
-        # have longer periods, which is also good. This is a compromise.
-        mults = np.array(mults[:ctx.nthreads*4])
-        rand.shuffle(mults)
-        # Copy multipliers and seeds to the device
-        multdp, multl = ctx.mod.get_global('mwc_rng_mults')
-        cuda.memcpy_htod(multdp, mults.tostring()[:multl])
-        # Intentionally excludes both 0 and (2^32-1), as they can lead to
-        # degenerate sequences of period 0
-        states = np.array(rand.randint(1, 0xffffffff, size=2*ctx.nthreads),
-                          dtype=np.uint32)
-        statedp, statel = ctx.mod.get_global('mwc_rng_state')
-        cuda.memcpy_htod(statedp, states.tostring())
-        self.threads_ready = ctx.nthreads
+        if force or self.nthreads_ready < ctx.nthreads:
+            # Load raw big-endian u32 multipliers from primes.bin.
+            with open('primes.bin') as primefp:
+                dt = np.dtype(np.uint32).newbyteorder('B')
+                mults = np.frombuffer(primefp.read(), dtype=dt)
+            # Randomness in choosing multipliers is good, but larger multipliers
+            # have longer periods, which is also good. This is a compromise.
+            mults = np.array(mults[:ctx.nthreads*4])
+            rand.shuffle(mults)
+            locked_mults = ctx.hostpool.allocate(ctx.nthreads, np.uint32)
+            locked_mults[:] = mults[ctx.nthreads]
+            self.mults = ctx.pool.allocate(4*ctx.nthreads)
+            cuda.memcpy_htod_async(self.mults, locked_mults.base, ctx.stream)
+            # Intentionally excludes both 0 and (2^32-1), as they can lead to
+            # degenerate sequences of period 0
+            states = np.array(rand.randint(1, 0xffffffff, size=2*ctx.nthreads),
+                              dtype=np.uint32)
+            locked_states = ctx.hostpool.allocate(2*ctx.nthreads, np.uint32)
+            locked_states[:] = states
+            self.states = ctx.pool.allocate(8*ctx.nthreads)
+            cuda.memcpy_htod_async(self.states, locked_states, ctx.stream)
+            self.nthreads_ready = ctx.nthreads
+        ctx.set_param('mwc_mults', self.mults)
+        ctx.set_param('mwc_states', self.states)
 
-    def call_setup(self, ctx):
-        if self.threads_ready < ctx.nthreads:
-            self.seed(ctx)
-
-    def tests(self):
-        return [MWCRNGTest, MWCRNGFloatsTest]
-
-class MWCRNGTest(PTXTest):
-    name = "MWC RNG sum-of-threads"
+class MWCRNGTest(PTXEntry):
     rounds = 5000
-    entry_name = 'MWC_RNG_test'
-    entry_params = ''
 
-    def deps(self):
-        return [MWCRNG]
+    def __init__(self, entry):
+        self.entry = entry
+        self.mwc = MWCRNG(entry)
 
-    @ptx_func
-    def module_setup(self):
-        mem.global_.u64('mwc_rng_test_sums', ctx.nthreads)
+        entry.add_param('mwc_test_sums', entry.types.u32)
+        with entry.body():
+            self.entry_body()
 
-    @ptx_func
-    def entry(self):
-        reg.u64('sum addl')
-        reg.u32('addend')
-        op.mov.u64(sum, 0)
-        with block('Sum next %d random numbers' % self.rounds):
-            reg.u32('loopct')
-            reg.pred('p')
-            op.mov.u32(loopct, self.rounds)
-            label('loopstart')
-            mwc.next_b32(addend)
-            op.cvt.u64.u32(addl, addend)
-            op.add.u64(sum, sum, addl)
-            op.sub.u32(loopct, loopct, 1)
-            op.setp.gt.u32(p, loopct, 0)
-            op.bra.uni(loopstart, ifp=p)
+    def entry_body(self):
+        e, r, o = self.entry, self.entry.regs, self.entry.ops
 
-        with block('Store sum and state'):
-            reg.u32('adr offset')
-            std.get_gtid(offset)
-            op.mov.u32(adr, mwc_rng_test_sums)
-            op.mad.lo.u32(adr, offset, 8, adr)
-            op.st.global_.u64(addr(adr), sum)
+        r.sum = 0
+        with e.std.loop(self.rounds) as mwc_rng_sum:
+            addend = o.cvt.u64.u32(self.mwc.next_b32())
+            r.sum = o.add.u64(r.sum, addend)
 
-    def call_setup(self, ctx):
-        # Get current multipliers and seeds from the device
-        self.mults = ctx.get_per_thread('mwc_rng_mults', np.uint32)
-        self.fullstates = ctx.get_per_thread('mwc_rng_state', np.uint64)
-        self.sums = np.zeros(ctx.nthreads, np.uint64)
+        e.std.store_per_thread(e.params.mwc_test_sums, r.sum)
 
-        print "Running %d states forward %d rounds" % \
-              (len(self.mults), self.rounds)
-        ctime = time.time()
-        for i in range(self.rounds):
-            states = self.fullstates & 0xffffffff
-            carries = self.fullstates >> 32
-            self.fullstates = self.mults * states + carries
-            self.sums += self.fullstates & 0xffffffff
-        ctime = time.time() - ctime
-        print "Done on host, took %g seconds" % ctime
+    def call(self, ctx):
+        # Generate current state, upload it to GPU
+        self.mwc.call_setup(ctx, force=True)
+        mults, fullstates = self.mwc.mults, self.mwc.fullstates
+        sums = np.zeros_like(fullstates)
 
-    def call_teardown(self, ctx):
-        dfullstates = ctx.get_per_thread('mwc_rng_state', np.uint64)
-        if not (dfullstates == self.fullstates).all():
-            print "State discrepancy"
-            print dfullstates
-            print self.fullstates
-            raise PTXTestFailure("MWC RNG state discrepancy")
+        # Run two trials, to ensure device state is getting saved properly
+        for trial in range(2):
+            print "Trial %d, on CPU: " % trial,
+            ctime = time.time()
+            for i in range(self.rounds):
+                states = fullstates & 0xffffffff
+                carries = fullstates >> 32
+                fullstates = self.mults * states + carries
+                sums += fullstates & 0xffffffff
+            ctime = time.time() - ctime
+            print "Took %g seconds." % ctime
 
+            print "Trial %d, on device: " % trial,
+            dsums = np.empty_like(sums)
+            ctx.set_param('mwc_test_sums', cuda.Out(dsums))
+            print "Took %g seconds." % ctx.call()
 
-        dsums = ctx.get_per_thread('mwc_rng_test_sums', np.uint64)
-        if not (dsums == self.sums).all():
-            print "Sum discrepancy"
-            print dsums
-            print self.sums
-            raise PTXTestFailure("MWC RNG sum discrepancy")
+            if not np.all(np.equal(sums, dsums)):
+                print "Sum discrepancy!"
+                print sums
+                print dsums
+                raise TODOSomeKindOfException()
 
 class MWCRNGFloatsTest(PTXTest):
     """

@@ -16,6 +16,8 @@ from ctypes import *
 
 import numpy as np
 
+np.set_printoptions(precision=5, edgeitems=20)
+
 from cuburn.device_code import *
 from cuburn.cuda import LaunchContext
 from fr0stlib.pyflam3 import *

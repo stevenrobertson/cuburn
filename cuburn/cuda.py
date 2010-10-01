@@ -1,39 +1,48 @@
 # These imports are order-sensitive!
-import pyglet
-import pyglet.gl as gl
-gl.get_current_context()
+#import pyglet
+#import pyglet.gl as gl
+#gl.get_current_context()
 
 import pycuda.driver as cuda
 from pycuda.compiler import SourceModule
 import pycuda.tools
-import pycuda.gl as cudagl
-import pycuda.gl.autoinit
+#import pycuda.gl as cudagl
+#import pycuda.gl.autoinit
+import pycuda.autoinit
 
 import numpy as np
 
-from cuburn.ptx import PTXModule, PTXTest, PTXTestFailure
+from cuburn.ptx import PTXFormatter
+
+class Module(object):
+    def __init__(self, entries):
+        self.entries = entries
+        self.source = self.compile(entries)
+        self.mod = self.assemble(self.source)
+
+    @staticmethod
+    def compile(entries):
+        formatter = PTXFormatter()
+        for entry in entries:
+            entry.format_source(formatter)
+        return formatter.get_source()
+
+    def assemble(self, src):
+        # TODO: make this a debugging option
+        with open('/tmp/cuburn.ptx', 'w') as f: f.write(src)
+        try:
+            mod = cuda.module_from_buffer(src,
+                [(cuda.jit_option.OPTIMIZATION_LEVEL, 0),
+                 (cuda.jit_option.TARGET_FROM_CUCONTEXT, 1)])
+        except (cuda.CompileError, cuda.RuntimeError), e:
+            # TODO: if output not written above, print different message
+            # TODO: read assembler output and recover Python source lines
+            print "Compile error. Source is at /tmp/cuburn.ptx"
+            print e
+            raise e
+        return mod
 
 class LaunchContext(object):
-    """
-    Context collecting the information needed to create, run, and gather the
-    results of a device computation. This may eventually also include an actual
-    CUDA context, but for now it just uses the global one.
-
-    To create the fastest device code across multiple device families, this
-    context may decide to iteratively refine the final PTX by regenerating
-    and recompiling it several times to optimize certain parameters of the
-    launch, such as the distribution of threads throughout the device.
-    The properties of this device which are tuned are listed below. Any PTX
-    fragments which use this information must emit valid PTX for any state
-    given below, but the PTX is only required to actually run with the final,
-    fixed values of all tuned parameters below.
-
-        `block`:    3-tuple of (x,y,z); dimensions of each CTA.
-        `grid`:     2-tuple of (x,y); dimensions of the grid of CTAs.
-        `nthreads`: Number of active threads on device as a whole.
-        `mod`:      Final compiled module. Unavailable during assembly.
-
-    """
     def __init__(self, entries, block=(1,1,1), grid=(1,1), tests=False):
         self.entry_types = entries
         self.block, self.grid, self.build_tests = block, grid, tests
@@ -60,18 +69,6 @@ class LaunchContext(object):
         kwargs['ctx'] = self
         self.ptx = PTXModule(self.entry_types, kwargs, self.build_tests)
         # TODO: make this optional and let user choose path
-        with open('/tmp/cuburn.ptx', 'w') as f: f.write(self.ptx.source)
-        try:
-            # TODO: detect/customize arch, code; verbose setting;
-            # keep directory enable/disable via debug
-            self.mod = cuda.module_from_buffer(self.ptx.source,
-                [(cuda.jit_option.OPTIMIZATION_LEVEL, 0),
-                 (cuda.jit_option.TARGET_FROM_CUCONTEXT, 1)])
-        except (cuda.CompileError, cuda.RuntimeError), e:
-            # TODO: if output not written above, print different message
-            print "Compile error. Source is at /tmp/cuburn.ptx"
-            print e
-            raise e
         if verbose:
             for entry in self.ptx.entries:
                 func = self.mod.get_function(entry.entry_name)
