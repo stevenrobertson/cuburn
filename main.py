@@ -15,11 +15,11 @@ from pprint import pprint
 from ctypes import *
 
 import numpy as np
-
 np.set_printoptions(precision=5, edgeitems=20)
 
+from pyptx import ptx, run
+
 from cuburn.device_code import *
-from cuburn.cuda import LaunchContext
 from fr0stlib.pyflam3 import *
 from fr0stlib.pyflam3._flam3 import *
 from cuburn.render import *
@@ -32,10 +32,33 @@ def dump_3d(nda):
             f.write('  |  '.join([' '.join(
                 ['%4.1g\t' % x for x in pt]) for pt in row]) + '\n')
 
+def disass(mod):
+    import subprocess
+    sys.stdout.flush()
+    with open('/tmp/pyptx.ptx', 'w') as fp:
+        fp.write(mod.source)
+    subprocess.check_call('ptxas -arch sm_21 /tmp/pyptx.ptx '
+                          '-o /tmp/elf.o'.split())
+    subprocess.check_call('/home/steven/code/decuda/elfToCubin.py --nouveau '
+                          '/tmp/elf.o'.split())
+
 def main(args):
-    verbose = 1
-    if '-d' in args:
-        verbose = 3
+    mwcent = ptx.Entry("mwc_test", 512)
+    mwctest = MWCRNGTest(mwcent)
+
+    # Get the source for saving and disassembly before potentially crashing
+    mod = ptx.Module([mwcent])
+    print '\n'.join(['%4d %s' % t for t in enumerate(mod.source.split('\n'))])
+    disass(mod)
+
+    mod = run.Module([mwcent])
+    mod.print_func_info()
+
+    ctx = mod.get_context('mwc_test', 14)
+    mwctest.run_test(ctx)
+
+    return
+
 
     with open(args[-1]) as fp:
         genomes = Genome.from_string(fp.read())

@@ -1,6 +1,6 @@
-from cuburn.ptx import PTXFragment, ptx_func
+from pyptx import ptx
 
-class Variations(PTXFragment):
+class Variations(object):
     """
     You know it.
     """
@@ -27,7 +27,6 @@ class Variations(PTXFragment):
         "waves2", "exp", "log", "sin", "cos", "tan", "sec", "csc", "cot",
         "sinh", "cosh", "tanh", "sech", "csch", "coth", "auger", "flux", ]
 
-    @ptx_func
     def xfg(self, dst, expr):
         """
         Convenience wrapper around cp.get which loads the given property from
@@ -37,19 +36,16 @@ class Variations(PTXFragment):
         # expression will be evaluated using each CP in stream packing.
         cp.get(cpA, dst, 'cp.xforms[%d].%s' % (self.xform_idx, expr))
 
-    @ptx_func
     def xfg_v2(self, dst1, expr1, dst2, expr2):
         cp.get_v2(cpA, dst1, 'cp.xforms[%d].%s' % (self.xform_idx, expr1),
                        dst2, 'cp.xforms[%d].%s' % (self.xform_idx, expr2))
 
-    @ptx_func
     def xfg_v4(self, d1, e1, d2, e2, d3, e3, d4, e4):
         cp.get_v4(cpA, d1, 'cp.xforms[%d].%s' % (self.xform_idx, e1),
                        d2, 'cp.xforms[%d].%s' % (self.xform_idx, e2),
                        d3, 'cp.xforms[%d].%s' % (self.xform_idx, e3),
                        d4, 'cp.xforms[%d].%s' % (self.xform_idx, e4))
 
-    @ptx_func
     def apply_xform(self, xo, yo, co, xi, yi, ci, xform_idx):
         """
         Apply a transform.
@@ -107,12 +103,10 @@ class Variations(PTXFragment):
                     op.fma.rn.ftz.f32(xo, c10, yt, xo)
                     op.fma.rn.ftz.f32(yo, c11, yt, yo)
 
-    @ptx_func
     def linear(self, xo, yo, xi, yi, wgt):
         op.fma.rn.ftz.f32(xo, xi, wgt, xo)
         op.fma.rn.ftz.f32(yo, yi, wgt, yo)
 
-    @ptx_func
     def sinusoidal(self, xo, yo, xi, yi, wgt):
         reg.f32('sinval')
         op.sin.approx.ftz.f32(sinval, xi)
@@ -120,7 +114,6 @@ class Variations(PTXFragment):
         op.sin.approx.ftz.f32(sinval, yi)
         op.fma.rn.ftz.f32(yo, sinval, wgt, yo)
 
-    @ptx_func
     def spherical(self, xo, yo, xi, yi, wgt):
         reg.f32('r2')
         op.fma.rn.ftz.f32(r2, xi, xi, '1e-30')

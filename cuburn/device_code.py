@@ -9,10 +9,10 @@ import struct
 import pycuda.driver as cuda
 import numpy as np
 
-from cuburn.ptx import *
+from pyptx import ptx, run
 from cuburn.variations import Variations
 
-class IterThread(PTXEntryPoint):
+class IterThread(object):
     entry_name = 'iter_thread'
     entry_params = []
 
@@ -23,7 +23,6 @@ class IterThread(PTXEntryPoint):
         return [MWCRNG, CPDataStream, HistScatter, Variations, ShufflePoints,
                 Timeouter]
 
-    @ptx_func
     def module_setup(self):
         mem.global_.u32('g_cp_array',
                         cp.stream_size*features.max_ntemporal_samples)
@@ -34,7 +33,6 @@ class IterThread(PTXEntryPoint):
         mem.global_.u32('g_num_writes', ctx.nthreads)
         mem.global_.b32('g_whatever', ctx.nthreads)
 
-    @ptx_func
     def entry(self):
         # Index number of current CP, shared across CTA
         mem.shared.u32('s_cp_idx')
@@ -205,7 +203,6 @@ class IterThread(PTXEntryPoint):
             std.store_per_thread(g_num_rounds, num_rounds,
                                  g_num_writes, num_writes)
 
-    @instmethod
     def upload_cp_stream(self, ctx, cp_stream, num_cps):
         cp_array_dp, cp_array_l = ctx.mod.get_global('g_cp_array')
         assert len(cp_stream) <= cp_array_l, "Stream too big!"
@@ -250,12 +247,11 @@ class IterThread(PTXEntryPoint):
         cps_started = cuda.from_device(dp, 1, np.uint32)
         print "CPs started:", cps_started
 
-class CameraTransform(PTXFragment):
+class CameraTransform(object):
     shortname = 'camera'
     def deps(self):
         return [CPDataStream]
 
-    @ptx_func
     def rotate(self, rotated_x, rotated_y, x, y):
         """
         Rotate an IFS-space coordinate as defined by the camera.
@@ -293,7 +289,6 @@ class CameraTransform(PTXFragment):
             op.mov.f32(rotated_x, x)
             op.mov.f32(rotated_y, y)
 
-    @ptx_func
     def get_norm(self, norm_x, norm_y, x, y):
         """
         Find the [0,1]-normalized floating-point histogram coordinates
@@ -309,7 +304,6 @@ class CameraTransform(PTXFragment):
                            cam_offset, 'cp.camera.norm_offset[1]')
             op.fma.f32(norm_y, norm_y, cam_scale, cam_offset)
 
-    @ptx_func
     def get_index(self, index, x, y, pred=None):
         """
         Find the histogram index (as a u32) from the IFS spatial coordinate in
@@ -349,7 +343,7 @@ class CameraTransform(PTXFragment):
             op.mad.lo.u32(index, index_y, features.hist_stride, index_x)
             op.mov.u32(index, 0xffffffff, ifnotp=pred)
 
-class PaletteLookup(PTXFragment):
+class PaletteLookup(object):
     shortname = "palette"
     # Resolution of texture on device. Bigger = more palette rez, maybe slower
     texheight = 16
@@ -360,11 +354,9 @@ class PaletteLookup(PTXFragment):
     def deps(self):
         return [CPDataStream]
 
-    @ptx_func
     def module_setup(self):
         mem.global_.texref('t_palette')
 
-    @ptx_func
     def look_up(self, r, g, b, a, color, norm_time, ifp):
         """
         Look up the values of ``r, g, b, a`` corresponding to ``color_coord``
@@ -376,7 +368,6 @@ class PaletteLookup(PTXFragment):
         if features.non_box_temporal_filter:
             raise NotImplementedError("Non-box temporal filters not supported")
 
-    @instmethod
     def upload_palette(self, ctx, frame, cp_list):
         """
         Extract the palette from the given list of interpolated CPs, and upload
@@ -409,25 +400,22 @@ class PaletteLookup(PTXFragment):
     def call_setup(self, ctx):
         assert self.texref, "Must upload palette texture before launch!"
 
-class HistScatter(PTXFragment):
+class HistScatter(object):
     shortname = "hist"
     def deps(self):
         return [CPDataStream, CameraTransform, PaletteLookup]
 
-    @ptx_func
     def module_setup(self):
         mem.global_.f32('g_hist_bins',
                         features.hist_height * features.hist_stride * 4)
         comment("Target to ensure fake local values get written")
         mem.global_.f32('g_hist_dummy')
 
-    @ptx_func
     def entry_setup(self):
         comment("Fake bins for fake scatter")
         mem.local.f32('l_scatter_fake_adr')
         mem.local.f32('l_scatter_fake_alpha')
 
-    @ptx_func
     def entry_teardown(self):
         with block("Store fake histogram bins to dummy global"):
             reg.b32('hist_dummy')
@@ -436,7 +424,6 @@ class HistScatter(PTXFragment):
             op.ld.local.b32(hist_dummy, addr(l_scatter_fake_alpha))
             op.st.volatile.b32(addr(g_hist_dummy), hist_dummy)
 
-    @ptx_func
     def scatter(self, hist_index, color, xf_idx, p_valid, type='ldst'):
         """
         Scatter the given point directly to the histogram bins. I think this
@@ -479,7 +466,6 @@ class HistScatter(PTXFragment):
         hist_bins_dp, hist_bins_l = ctx.mod.get_global('g_hist_bins')
         cuda.memset_d32(hist_bins_dp, 0, hist_bins_l/4)
 
-    @instmethod
     def get_bins(self, ctx, features):
         hist_bins_dp, hist_bins_l = ctx.mod.get_global('g_hist_bins')
         return cuda.from_device(hist_bins_dp,
@@ -487,18 +473,16 @@ class HistScatter(PTXFragment):
                 dtype=np.float32)
 
 
-class ShufflePoints(PTXFragment):
+class ShufflePoints(object):
     """
     Shuffle points in shared memory. See helpers/shuf.py for details.
     """
     shortname = "shuf"
 
-    @ptx_func
     def module_setup(self):
         # TODO: if needed, merge this shared memory block with others
         mem.shared.f32('s_shuf_data', ctx.threads_per_cta)
 
-    @ptx_func
     def shuffle(self, *args, **kwargs):
         """
         Shuffle the data from each register in args across threads. Keyword
@@ -523,57 +507,71 @@ class ShufflePoints(PTXFragment):
                 op.bar.sync(bar)
                 op.ld.volatile.shared.b32(var, addr(shuf_read))
 
+
 class MWCRNG(object):
-    def __init__(self, entry, seed=None):
+    """
+    Marsaglia multiply-with-carry random number generator. Produces very long
+    periods with sufficient statistical properties using only three 32-bit
+    state registers. Since each thread uses a separate multiplier, no two
+    threads will ever be on the same sequence, but beyond this the independence
+    of each thread's sequence was not explicitly tested.
+
+    The RNG must be seeded at least once per entry point using the ``seed``
+    method.
+    """
+    def __init__(self, entry):
         # TODO: install this in data directory or something
         if not os.path.isfile('primes.bin'):
             raise EnvironmentError('primes.bin not found')
-        self.threads_ready = 0
+        self.nthreads_ready = 0
         self.mults, self.state = None, None
 
-        self.entry = entry
-        entry.add_param('mwc_mults', entry.types.u32)
-        entry.add_param('mwc_states', entry.types.u32)
-        r, o = entry.regs, entry.ops
-        with entry.head as e:
-            #mwc_mult_addr = gtid * 4 + e.params.mwc_mults
-            gtid = o.mad.lo(e.special.ctaid_x, ctx.threads_per_cta,
-                            e.special.tid_x)
-            mwc_mult_addr = o.mad.lo.u32(gtid, 4, e.params.mwc_mults)
-            r.mwc_mult = o.load.u32(mwc_mult_addr)
-            mwc_state_addr = o.mad.lo.u32(gtid, 8, e.params.mwc_states)
-            r.mwc_state, r.mwc_carry = o.load.u64(mwc_state_addr)
-        with entry.tail as e:
-            #gtid = e.special.ctaid_x * ctx.threads_per_cta + e.special.tid_x
-            gtid = o.mad.lo(e.special.ctaid_x, ctx.threads_per_cta,
-                            e.special.tid_x)
-            mwc_state_addr = o.mad.lo.u32(gtid, 8, e.params.mwc_states)
-            o.store.v2(mwc_state_addr, (r.mwc_state, r.mwc_carry))
+        entry.add_ptr_param('mwc_mults', 'u32')
+        entry.add_ptr_param('mwc_states', 'u32')
 
-    def next_b32(self):
-        e, r, o = self.entry, self.entry.regs, self.entry.ops
-        mwc_out = o.cvt.u64(r.mwc_carry)
-        mwc_out = o.mad.wide.u32(r.mwc_mult, r.mwc_state, mwc_out)
-        r.mwc_state, r.mwc_carry = o.mov(mwc_out)
+        with entry.head():
+            self.entry_head(entry)
+        entry.tail_callback(self.entry_tail, entry)
+
+    def entry_head(self, entry):
+        e, r, o, m, p, s = entry.locals
+        gtid = s.ctaid_x * s.ntid_x + s.tid_x
+        r.mwc_mult, r.mwc_state, r.mwc_carry = r.u32(), r.u32(), r.u32()
+        r.mwc_mult = o.ld(p.mwc_mults[gtid])
+        r.mwc_state, r.mwc_carry = o.ld.v2(p.mwc_states[2*gtid])
+
+    def entry_tail(self, entry):
+        e, r, o, m, p, s = entry.locals
+        gtid = s.ctaid_x * s.ntid_x + s.tid_x
+        o.st.v2.u32(p.mwc_states[2*gtid], r.mwc_state, r.mwc_carry)
+
+    def next_b32(self, entry):
+        e, r, o, m, p, s = entry.locals
+        carry = o.cvt.u64(r.mwc_carry)
+        mwc_out = o.mad.wide(r.mwc_mult, r.mwc_state, carry)
+        r.mwc_state, r.mwc_carry = o.split.v2(mwc_out)
         return r.mwc_state
 
-    def next_f32_01(self):
-        e, r, o = self.entry, self.entry.regs, self.entry.ops
+    def next_f32_01(self, entry):
+        e, r, o, m, p, s = entry.locals
         mwc_float = o.cvt.rn.f32.u32(self.next_b32())
-        # TODO: check the precision on the uploaded types here
         return o.mul.f32(mwc_float, 1./(1<<32))
 
-    def next_f32_11(self):
-        e, r, o = self.entry, self.entry.regs, self.entry.ops
+    def next_f32_11(self, entry):
+        e, r, o, m, p, s = entry.locals
         mwc_float = o.cvt.rn.f32.s32(self.next_b32())
         return o.mul.f32(mwc_float, 1./(1<<31))
 
-    def call_setup(self, ctx, force=False):
+    def seed(self, ctx, seed=None, force=False):
         """
         Seed the random number generators with values taken from a
         ``np.random`` instance.
         """
         if force or self.nthreads_ready < ctx.nthreads:
+            if seed:
+                rand = np.random.RandomState(seed)
+            else:
+                rand = np.random
             # Load raw big-endian u32 multipliers from primes.bin.
             with open('primes.bin') as primefp:
                 dt = np.dtype(np.uint32).newbyteorder('B')
@@ -582,73 +580,83 @@ class MWCRNG(object):
             # have longer periods, which is also good. This is a compromise.
             mults = np.array(mults[:ctx.nthreads*4])
             rand.shuffle(mults)
-            locked_mults = ctx.hostpool.allocate(ctx.nthreads, np.uint32)
-            locked_mults[:] = mults[ctx.nthreads]
-            self.mults = ctx.pool.allocate(4*ctx.nthreads)
-            cuda.memcpy_htod_async(self.mults, locked_mults.base, ctx.stream)
+            #locked_mults = ctx.hostpool.allocate(ctx.nthreads, np.uint32)
+            #locked_mults[:] = mults[ctx.nthreads]
+            #self.mults = ctx.pool.allocate(4*ctx.nthreads)
+            #cuda.memcpy_htod_async(self.mults, locked_mults.base, ctx.stream)
+            self.mults = cuda.mem_alloc(4*ctx.nthreads)
+            cuda.memcpy_htod(self.mults, mults[:ctx.nthreads].tostring())
             # Intentionally excludes both 0 and (2^32-1), as they can lead to
             # degenerate sequences of period 0
             states = np.array(rand.randint(1, 0xffffffff, size=2*ctx.nthreads),
                               dtype=np.uint32)
-            locked_states = ctx.hostpool.allocate(2*ctx.nthreads, np.uint32)
-            locked_states[:] = states
-            self.states = ctx.pool.allocate(8*ctx.nthreads)
-            cuda.memcpy_htod_async(self.states, locked_states, ctx.stream)
+            #locked_states = ctx.hostpool.allocate(2*ctx.nthreads, np.uint32)
+            #locked_states[:] = states
+            #self.states = ctx.pool.allocate(8*ctx.nthreads)
+            #cuda.memcpy_htod_async(self.states, locked_states, ctx.stream)
+            self.states = cuda.mem_alloc(8*ctx.nthreads)
+            cuda.memcpy_htod(self.states, states.tostring())
             self.nthreads_ready = ctx.nthreads
         ctx.set_param('mwc_mults', self.mults)
         ctx.set_param('mwc_states', self.states)
 
-class MWCRNGTest(PTXEntry):
+class MWCRNGTest(object):
+    """
+    Test the ``MWCRNG`` class. This is not a test of the generator's
+    statistical properties, but merely a test that the generator is implemented
+    correctly on the GPU.
+    """
     rounds = 5000
 
     def __init__(self, entry):
-        self.entry = entry
         self.mwc = MWCRNG(entry)
+        entry.add_ptr_param('mwc_test_sums', 'u64')
 
-        entry.add_param('mwc_test_sums', entry.types.u32)
         with entry.body():
-            self.entry_body()
+            self.entry_body(entry)
 
-    def entry_body(self):
-        e, r, o = self.entry, self.entry.regs, self.entry.ops
+    def entry_body(self, entry):
+        e, r, o, m, p, s = entry.locals
+        r.sum = r.u64(0)
+        r.count = r.f32(self.rounds)
+        start = e.label()
+        r.sum = r.sum + o.cvt.u64.u32(self.mwc.next_b32(e))
+        r.count = r.count - 1
+        with r.count > 0:
+            o.bra.uni(start)
+        e.comment('yay')
+        gtid = s.ctaid_x * s.ntid_x + s.tid_x
+        o.st(p.mwc_test_sums[gtid], r.sum)
 
-        r.sum = 0
-        with e.std.loop(self.rounds) as mwc_rng_sum:
-            addend = o.cvt.u64.u32(self.mwc.next_b32())
-            r.sum = o.add.u64(r.sum, addend)
+    def run_test(self, ctx):
+        self.mwc.seed(ctx)
+        mults = cuda.from_device(self.mwc.mults, ctx.nthreads, np.uint32)
+        states = cuda.from_device(self.mwc.states, ctx.nthreads, np.uint64)
 
-        e.std.store_per_thread(e.params.mwc_test_sums, r.sum)
-
-    def call(self, ctx):
-        # Generate current state, upload it to GPU
-        self.mwc.call_setup(ctx, force=True)
-        mults, fullstates = self.mwc.mults, self.mwc.fullstates
-        sums = np.zeros_like(fullstates)
-
-        # Run two trials, to ensure device state is getting saved properly
         for trial in range(2):
             print "Trial %d, on CPU: " % trial,
+            sums = np.zeros_like(states)
             ctime = time.time()
             for i in range(self.rounds):
-                states = fullstates & 0xffffffff
-                carries = fullstates >> 32
-                fullstates = self.mults * states + carries
-                sums += fullstates & 0xffffffff
+                vals = states & 0xffffffff
+                carries = states >> 32
+                states = mults * vals + carries
+                sums += states & 0xffffffff
             ctime = time.time() - ctime
             print "Took %g seconds." % ctime
 
             print "Trial %d, on device: " % trial,
-            dsums = np.empty_like(sums)
-            ctx.set_param('mwc_test_sums', cuda.Out(dsums))
-            print "Took %g seconds." % ctx.call()
-
+            dsums = cuda.mem_alloc(8*ctx.nthreads)
+            ctx.set_param('mwc_test_sums', dsums)
+            print "Took %g seconds." % ctx.call_timed()
+            print ctx.nthreads
+            dsums = cuda.from_device(dsums, ctx.nthreads, np.uint64)
             if not np.all(np.equal(sums, dsums)):
                 print "Sum discrepancy!"
                 print sums
                 print dsums
-                raise TODOSomeKindOfException()
 
-class MWCRNGFloatsTest(PTXTest):
+class MWCRNGFloatsTest(object):
     """
     Note this only tests that the distributions are in the correct range, *not*
     that they have good random properties. MWC is a suitable algorithm, but
@@ -660,7 +668,6 @@ class MWCRNGFloatsTest(PTXTest):
     def deps(self):
         return [MWCRNG]
 
-    @ptx_func
     def module_setup(self):
         mem.global_.f32('mwc_rng_float_01_test_sums', ctx.nthreads)
         mem.global_.f32('mwc_rng_float_01_test_mins', ctx.nthreads)
@@ -669,7 +676,6 @@ class MWCRNGFloatsTest(PTXTest):
         mem.global_.f32('mwc_rng_float_11_test_mins', ctx.nthreads)
         mem.global_.f32('mwc_rng_float_11_test_maxs', ctx.nthreads)
 
-    @ptx_func
     def loop(self, kind):
         with block('Sum %d floats in %s' % (self.rounds, kind)):
             reg.f32('loopct val rsum rmin rmax')
@@ -691,7 +697,6 @@ class MWCRNGFloatsTest(PTXTest):
                                  'mwc_rng_float_%s_test_mins' % kind, rmin,
                                  'mwc_rng_float_%s_test_maxs' % kind, rmax)
 
-    @ptx_func
     def entry(self):
         self.loop('01')
         self.loop('11')
@@ -721,15 +726,14 @@ class MWCRNGFloatsTest(PTXTest):
                 raise PTXTestFailure("%s %s %g violates hard limit %g" %
                                      (fkind, rkind, lim(vals), exp))
 
-class CPDataStream(DataStream):
+class CPDataStream(object):
     """DataStream which stores the control points."""
     shortname = 'cp'
 
-class Timeouter(PTXFragment):
+class Timeouter(object):
     """Time-out infinite loops so that data can still be retrieved."""
     shortname = 'timeout'
 
-    @ptx_func
     def entry_setup(self):
         mem.shared.u64('s_timeouter_start_time')
         with block("Load start time for this block"):
@@ -737,7 +741,6 @@ class Timeouter(PTXFragment):
             op.mov.u64(now, '%clock64')
             op.st.shared.u64(addr(s_timeouter_start_time), now)
 
-    @ptx_func
     def check_time(self, secs):
         """
         Drop this into your mainloop somewhere.

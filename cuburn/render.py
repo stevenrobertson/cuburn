@@ -9,7 +9,6 @@ from fr0stlib import pyflam3
 from fr0stlib.pyflam3._flam3 import *
 from fr0stlib.pyflam3.constants import *
 
-from cuburn.cuda import LaunchContext
 from cuburn.device_code import *
 from cuburn.variations import Variations
 
