@@ -9,199 +9,131 @@ import struct
 import pycuda.driver as cuda
 import numpy as np
 
-from pyptx import ptx, run
+from pyptx import ptx, run, util
 from cuburn.variations import Variations
 
 class IterThread(object):
-    entry_name = 'iter_thread'
-    entry_params = []
+    def __init__(self, entry, features):
+        self.features = features
+        self.mwc = MWCRNG(entry)
+        self.cp = util.DataStream(entry)
+        self.vars = Variations(features)
 
-    def __init__(self):
-        self.cps_uploaded = False
+        entry.add_param('u32', 'num_cps')
+        entry.add_ptr_param('u32', 'cp_started_count')
+        entry.add_ptr_param('u8', 'cp_data')
 
-    def deps(self):
-        return [MWCRNG, CPDataStream, HistScatter, Variations, ShufflePoints,
-                Timeouter]
+        with entry.body():
+            self.entry_body(entry)
 
-    def module_setup(self):
-        mem.global_.u32('g_cp_array',
-                        cp.stream_size*features.max_ntemporal_samples)
-        mem.global_.u32('g_num_cps')
-        mem.global_.u32('g_num_cps_started')
-        # TODO move into debug statement
-        mem.global_.u32('g_num_rounds', ctx.nthreads)
-        mem.global_.u32('g_num_writes', ctx.nthreads)
-        mem.global_.b32('g_whatever', ctx.nthreads)
-
-    def entry(self):
-        # Index number of current CP, shared across CTA
-        mem.shared.u32('s_cp_idx')
+    def entry_body(self, entry):
+        e, r, o, m, p, s = entry.locals
+        # Index of this CTA's current CP
+        e.declare_mem('shared', 'u32', 'cp_idx')
 
         # Number of samples that have been generated so far in this CTA
         # If this number is negative, we're still fusing points, so this
         # behaves slightly differently (see ``fuse_loop_start``)
         # TODO: replace (or at least simplify) this logic
-        mem.shared.s32('s_num_samples')
-        mem.shared.f32('s_xf_sel', ctx.warps_per_cta)
+        e.declare_mem('shared', 'f32', 'num_samples')
 
-        # TODO: temporary, for testing
-        mem.local.u32('l_num_rounds')
-        mem.local.u32('l_num_writes')
-        op.st.local.u32(addr(l_num_rounds), 0)
-        op.st.local.u32(addr(l_num_writes), 0)
+        # The per-warp transform selection indices
+        e.declare_mem('shared', 'f32', 'xf_sel', e.nwarps_cta)
 
-        reg.f32('x y color consec_bad')
-        mwc.next_f32_11(x)
-        mwc.next_f32_11(y)
-        mwc.next_f32_01(color)
-        op.mov.f32(consec_bad, float(-features.fuse))
+        # TODO: re-add this logic using the printf formatter.
+        #mem.local.u32('l_num_rounds')
+        #mem.local.u32('l_num_writes')
+        #op.st.local.u32(addr(l_num_rounds), 0)
+        #op.st.local.u32(addr(l_num_writes), 0)
 
-        comment("Ensure all init is done")
-        op.bar.sync(0)
+        # Declare IFS-space coordinates for doing iterations
+        r.x, r.y, r.color = r.f32(), r.f32(), r.f32()
+        r.x, r.y = self.mwc.next_f32_11(), self.mwc.next_f32_11()
+        r.color = self.mwc.next_f32_01()
 
+        # This thread's sample's good/bad/fusing state
+        r.consec_bad = r.f32(-self.features.fuse)
 
+        e.comment("The main loop entry point")
+        cp_loop_start = e.label()
+        with s.tid_x == 0:
+            o.st(m.cp_idx.addr, o.atom.add(p.cp_started_count[0], 1))
+            o.st(m.num_samples.addr, 0)
 
-        label('cp_loop_start')
-        reg.u32('cp_idx cpA')
-        with block("Claim a CP"):
-            std.set_is_first_thread(reg.pred('p_is_first'))
-            op.atom.add.u32(cp_idx, addr(g_num_cps_started), 1, ifp=p_is_first)
-            op.st.volatile.shared.u32(addr(s_cp_idx), cp_idx, ifp=p_is_first)
-            op.st.volatile.shared.s32(addr(s_num_samples), 0)
+        e.comment("Load the CP index in all threads")
+        o.bar.sync(0)
+        cp_idx = o.ld.volatile(m.cp_idx.addr)
 
-        comment("Load the CP index in all threads")
-        op.bar.sync(0)
-        op.ld.volatile.shared.u32(cp_idx, addr(s_cp_idx))
+        e.comment("Check to see if this CP is valid (if not, we're done)")
+        all_cps_done = e.forward_label()
+        with cp_idx < p.num_cps:
+            o.bra.uni(all_cps_done)
+        self.cp.addr = p.cp_data[cp_idx * self.cp.stream_size]
 
-        with block("Check to see if this CP is valid (if not, we're done)"):
-            reg.u32('num_cps')
-            reg.pred('p_last_cp')
-            op.ldu.u32(num_cps, addr(g_num_cps))
-            op.setp.ge.u32(p_last_cp, cp_idx, num_cps)
-            op.bra('all_cps_done', ifp=p_last_cp)
+        loop_start = e.forward_label()
+        with s.tid_x < e.nwarps_cta:
+            o.bra(loop_start)
 
-        with block('Load CP address'):
-            op.mov.u32(cpA, g_cp_array)
-            op.mad.lo.u32(cpA, cp_idx, cp.stream_size, cpA)
+        e.comment("Choose the xform for each warp")
+        choose_xform = e.label()
+        o.st.volatile(m.xf_sel[s.tid_x], self.mwc.next_f32_01())
 
+        e.declare_label(loop_start)
+        e.comment("Execute the xform given by xf_sel")
+        xf_labels = [e.forward_label() for xf in self.features.xforms]
+        xf_sel = o.ld.volatile(m.xf_sel[s.tid_x >> 5])
+        for i, xf in enumerate(self.features.xforms):
+            xf_density = self.cp.get.f32('cp.xforms[%d].cweight'%xf.id)
+            with xf_density <= xf_sel:
+                o.bra.uni(xf_labels[i])
 
+        e.comment("This code should be unreachable")
+        o.trap()
 
-        label('iter_loop_choose_xform')
-        with block("Choose the xform for each warp"):
-            timeout.check_time(5)
-            comment("On subsequent runs, only warp 0 will hit this code")
-            reg.u32('x_addr x_offset')
-            reg.f32('xf_sel')
-            op.mov.u32(x_addr, s_xf_sel)
-            op.mov.u32(x_offset, '%tid.x')
-            op.and_.b32(x_offset, x_offset, ctx.warps_per_cta-1)
-            op.mad.lo.u32(x_addr, x_offset, 4, x_addr)
-            mwc.next_f32_01(xf_sel)
-            op.st.volatile.shared.f32(addr(x_addr), xf_sel)
+        xforms_done = e.forward_label()
+        for i, xf in enumerate(self.features.xforms):
+            e.declare_label(xf_labels[i])
+            r.x, r.y, r.color = self.vars.apply_xform(
+                    e, self.cp, r.x, r.y, r.color, xf.id)
+            o.bra.uni(xforms_done)
 
-        label('iter_loop_start')
+        e.comment("Determine write location, and whether point is valid")
+        e.declare_label(xforms_done)
+        histidx, is_valid = self.camera.get_index(r.x, r.y)
+        is_valid &= (r.consec_bad >= 0)
 
-        #timeout.check_time(10)
+        e.comment("Scatter point to pointbuffer")
+        self.hist.scatter(histidx, r.color, 0, is_valid)
 
-        with block():
-            reg.u32('num_rounds')
-            reg.pred('overload')
-            op.ld.local.u32(num_rounds, addr(l_num_rounds))
-            op.add.u32(num_rounds, num_rounds, 1)
-            op.st.local.u32(addr(l_num_rounds), num_rounds)
+        done_picking_new_point = e.forward_label()
+        with ~is_valid:
+            r.consec_bad += 1
+        with r.consec_bad < self.features.max_bad:
+            o.bra(done_picking_new_point)
 
-        with block("Select an xform"):
-            reg.f32('xf_sel')
-            reg.u32('warp_offset xf_sel_addr')
-            op.mov.u32(warp_offset, '%tid.x')
-            op.mov.u32(xf_sel_addr, s_xf_sel)
-            op.shr.u32(warp_offset, warp_offset, 5)
-            op.mad.lo.u32(xf_sel_addr, warp_offset, 4, xf_sel_addr)
-            op.ld.volatile.shared.f32(xf_sel, addr(xf_sel_addr))
+        e.comment("If too many consecutive bad values, pick a new point")
+        r.x, r.y = self.mwc.next_f32_11(), self.mwc.next_f32_11()
+        r.color = self.mwc.next_f32_01()
+        r.consec_bad = -self.features.fuse
 
-            reg.f32('xf_density')
-            reg.pred('xf_jump')
-            for xf in features.xforms:
-                cp.get(cpA, xf_density, 'cp.xforms[%d].cweight' % xf.id)
-                op.setp.le.f32(xf_jump, xf_sel, xf_density)
-                op.bra('XFORM_%d' % xf.id, ifp=xf_jump)
-            std.asrt("Reached end of xforms without choosing one")
+        e.declare_label(done_picking_new_point)
 
-            for xf in features.xforms:
-                label('XFORM_%d' % xf.id)
-                variations.apply_xform(x, y, color, x, y, color, xf.id)
-                op.bra("xform_done")
-
-        label("xform_done")
-
-        reg.pred('p_valid_pt')
-        with block("Write the result"):
-            reg.u32('hist_index')
-            camera.get_index(hist_index, x, y, p_valid_pt)
-            comment('if consec_bad < 0, point is fusing; treat as invalid')
-            op.setp.and_.ge.f32(p_valid_pt, consec_bad, 0., p_valid_pt)
-            # TODO: save and pass correct xform value here
-            hist.scatter(hist_index, color, 0, p_valid_pt, 'ldst')
-            with block():
-                reg.u32('num_writes')
-                op.ld.local.u32(num_writes, addr(l_num_writes))
-                op.add.u32(num_writes, num_writes, 1, ifp=p_valid_pt)
-                op.st.local.u32(addr(l_num_writes), num_writes)
-
-        with block("If the result was invalid, handle badvals"):
-            reg.pred('need_new_point')
-            op.add.f32(consec_bad, consec_bad, 1., ifnotp=p_valid_pt)
-            op.setp.ge.f32(need_new_point, consec_bad, float(features.max_bad))
-            op.bra('badval_done', ifnotp=need_new_point)
-
-            comment('If consec_bad > 5, pick a new random point')
-            mwc.next_f32_11(x)
-            mwc.next_f32_11(y)
-            mwc.next_f32_01(color)
-            op.mov.f32(consec_bad, float(-features.fuse))
-            label('badval_done')
-
-        with block("Increment number of samples by number of good values"):
-            reg.b32('good_samples laneid')
-            reg.pred('p_is_first')
-            op.vote.ballot.b32(good_samples, p_valid_pt)
-            op.popc.b32(good_samples, good_samples)
-            op.mov.u32(laneid, '%laneid')
-            op.setp.eq.u32(p_is_first, laneid, 0)
-            op.red.shared.add.s32(addr(s_num_samples), good_samples,
-                                  ifp=p_is_first)
-
-        with block("Check to see if we're done with this CP"):
-            reg.pred('p_cp_done')
-            reg.s32('num_samples num_samples_needed')
-            comment('Sync before making decision to prevent divergence')
-            op.bar.sync(3)
-            op.ld.volatile.shared.s32(num_samples, addr(s_num_samples))
-            cp.get(cpA, num_samples_needed, 'cp.nsamples')
-            op.setp.ge.s32(p_cp_done, num_samples, num_samples_needed)
-            op.bra.uni(cp_loop_start, ifp=p_cp_done)
+        e.comment("Determine number of good samples, and whether we're done")
+        num_samples = o.ld(m.num_samples)
+        num_samples += o.bar.red.popc(0, is_valid)
+        with s.tid_x == 0:
+            o.st(m.num_samples, num_samples)
+        with num_samples >= self.cp.get('nsamples'):
+            o.bra.uni(cp_loop_start)
 
         comment('Shuffle points between threads')
         shuf.shuffle(x, y, color, consec_bad)
 
-        with block("If in first warp, pick new offset"):
-            reg.u32('tid')
-            reg.pred('first_warp')
-            op.mov.u32(tid, '%tid.x')
-            assert ctx.warps_per_cta <= 32, \
-                   "Special-case for CTAs with >1024 threads not implemented"
-            op.setp.lo.u32(first_warp, tid, 32)
-            op.bra(iter_loop_choose_xform, ifp=first_warp)
-        op.bra(iter_loop_start)
+        with s.tid_x < e.nwarps_cta:
+            o.bra(choose_xform)
+        o.bra(loop_start)
 
-        label('all_cps_done')
-        # TODO this is for testing, move it to a debug statement
-        with block():
-            reg.u32('num_rounds num_writes')
-            op.ld.local.u32(num_rounds, addr(l_num_rounds))
-            op.ld.local.u32(num_writes, addr(l_num_writes))
-            std.store_per_thread(g_num_rounds, num_rounds,
-                                 g_num_writes, num_writes)
+        e.declare_label(all_cps_done)
 
     def upload_cp_stream(self, ctx, cp_stream, num_cps):
         cp_array_dp, cp_array_l = ctx.mod.get_global('g_cp_array')
@@ -525,40 +457,41 @@ class MWCRNG(object):
             raise EnvironmentError('primes.bin not found')
         self.nthreads_ready = 0
         self.mults, self.state = None, None
+        self.entry = entry
 
-        entry.add_ptr_param('mwc_mults', 'u32')
-        entry.add_ptr_param('mwc_states', 'u32')
+        entry.add_ptr_param('u32', 'mwc_mults')
+        entry.add_ptr_param('u32', 'mwc_states')
 
         with entry.head():
-            self.entry_head(entry)
-        entry.tail_callback(self.entry_tail, entry)
+            self.entry_head()
+        entry.tail_callback(self.entry_tail)
 
-    def entry_head(self, entry):
-        e, r, o, m, p, s = entry.locals
+    def entry_head(self):
+        e, r, o, m, p, s = self.entry.locals
         gtid = s.ctaid_x * s.ntid_x + s.tid_x
         r.mwc_mult, r.mwc_state, r.mwc_carry = r.u32(), r.u32(), r.u32()
         r.mwc_mult = o.ld(p.mwc_mults[gtid])
         r.mwc_state, r.mwc_carry = o.ld.v2(p.mwc_states[2*gtid])
 
-    def entry_tail(self, entry):
-        e, r, o, m, p, s = entry.locals
+    def entry_tail(self):
+        e, r, o, m, p, s = self.entry.locals
         gtid = s.ctaid_x * s.ntid_x + s.tid_x
         o.st.v2.u32(p.mwc_states[2*gtid], r.mwc_state, r.mwc_carry)
 
-    def next_b32(self, entry):
-        e, r, o, m, p, s = entry.locals
+    def next_b32(self):
+        e, r, o, m, p, s = self.entry.locals
         carry = o.cvt.u64(r.mwc_carry)
         mwc_out = o.mad.wide(r.mwc_mult, r.mwc_state, carry)
         r.mwc_state, r.mwc_carry = o.split.v2(mwc_out)
         return r.mwc_state
 
-    def next_f32_01(self, entry):
-        e, r, o, m, p, s = entry.locals
+    def next_f32_01(self):
+        e, r, o, m, p, s = self.entry.locals
         mwc_float = o.cvt.rn.f32.u32(self.next_b32())
         return o.mul.f32(mwc_float, 1./(1<<32))
 
-    def next_f32_11(self, entry):
-        e, r, o, m, p, s = entry.locals
+    def next_f32_11(self):
+        e, r, o, m, p, s = self.entry.locals
         mwc_float = o.cvt.rn.f32.s32(self.next_b32())
         return o.mul.f32(mwc_float, 1./(1<<31))
 
@@ -610,7 +543,7 @@ class MWCRNGTest(object):
 
     def __init__(self, entry):
         self.mwc = MWCRNG(entry)
-        entry.add_ptr_param('mwc_test_sums', 'u64')
+        entry.add_ptr_param('u64', 'mwc_test_sums')
 
         with entry.body():
             self.entry_body(entry)
@@ -649,7 +582,6 @@ class MWCRNGTest(object):
             dsums = cuda.mem_alloc(8*ctx.nthreads)
             ctx.set_param('mwc_test_sums', dsums)
             print "Took %g seconds." % ctx.call_timed()
-            print ctx.nthreads
             dsums = cuda.from_device(dsums, ctx.nthreads, np.uint64)
             if not np.all(np.equal(sums, dsums)):
                 print "Sum discrepancy!"

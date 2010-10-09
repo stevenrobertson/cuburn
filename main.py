@@ -42,7 +42,7 @@ def disass(mod):
     subprocess.check_call('/home/steven/code/decuda/elfToCubin.py --nouveau '
                           '/tmp/elf.o'.split())
 
-def main(args):
+def mwctest():
     mwcent = ptx.Entry("mwc_test", 512)
     mwctest = MWCRNGTest(mwcent)
 
@@ -57,9 +57,7 @@ def main(args):
     ctx = mod.get_context('mwc_test', 14)
     mwctest.run_test(ctx)
 
-    return
-
-
+def main(args):
     with open(args[-1]) as fp:
         genomes = Genome.from_string(fp.read())
     anim = Animation(genomes)

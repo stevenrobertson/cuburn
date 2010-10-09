@@ -144,20 +144,16 @@ class Animation(object):
         self.filters = Filters(self._frame, genomes[0])
         self.features = Features(genomes, self.filters)
 
-        self.ctx = None
-
     def compile(self):
         """
         Create a PTX kernel optimized for this animation, compile it, and
         attach it to a LaunchContext with a thread distribution optimized for
         the active device.
         """
-        # TODO: user-configurable test control
-        self.ctx = LaunchContext([IterThread], block=(512,1,1), grid=(28,1),
-                                 tests=True)
-        # TODO: user-configurable verbosity control
-        self.ctx.compile(verbose=3, anim=self, features=self.features)
         # TODO: automatic optimization of block parameters
+        entry = ptx.Entry("iterate", 512)
+        iter = IterThread(entry, self.features)
+        self.mod = run.Module([entry])
 
     def render_frame(self, time=0):
         # TODO: support more nuanced frame control than just 'time'
