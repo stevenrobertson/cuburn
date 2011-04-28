@@ -153,6 +153,10 @@ class Animation(object):
         # TODO: automatic optimization of block parameters
         entry = ptx.Entry("iterate", 512)
         iter = IterThread(entry, self.features)
+        entry.finalize()
+        iter.cp.finalize()
+        srcmod = ptx.Module([entry])
+        util.disass(srcmod)
         self.mod = run.Module([entry])
 
     def render_frame(self, time=0):
@@ -214,6 +218,13 @@ class Features(object):
     # Maximum consecutive out-of-frame points before picking new point
     max_bad = 3
 
+    # Height of the texture pallete which gets uploaded to the GPU (assuming
+    # that palette-from-texture is enabled). For most genomes, this doesn't
+    # need to be very large at all. However, since only an easily-cached
+    # fraction of this will be accessed per SM, larger values shouldn't hurt
+    # performance too much. Power-of-two, please.
+    palette_height = 16
+
     def __init__(self, genomes, flt):
         any = lambda l: bool(filter(None, map(l, genomes)))
         self.max_ntemporal_samples = max(
@@ -272,4 +283,3 @@ class Camera(object):
         self.norm_offset = -self.norm_scale * self.lower_bounds
         self.idx_scale = size * self.norm_scale
         self.idx_offset = size * self.norm_offset
-

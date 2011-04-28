@@ -17,7 +17,7 @@ from ctypes import *
 import numpy as np
 np.set_printoptions(precision=5, edgeitems=20)
 
-from pyptx import ptx, run
+from pyptx import ptx, run, util
 
 from cuburn.device_code import *
 from fr0stlib.pyflam3 import *
@@ -32,16 +32,6 @@ def dump_3d(nda):
             f.write('  |  '.join([' '.join(
                 ['%4.1g\t' % x for x in pt]) for pt in row]) + '\n')
 
-def disass(mod):
-    import subprocess
-    sys.stdout.flush()
-    with open('/tmp/pyptx.ptx', 'w') as fp:
-        fp.write(mod.source)
-    subprocess.check_call('ptxas -arch sm_21 /tmp/pyptx.ptx '
-                          '-o /tmp/elf.o'.split())
-    subprocess.check_call('/home/steven/code/decuda/elfToCubin.py --nouveau '
-                          '/tmp/elf.o'.split())
-
 def mwctest():
     mwcent = ptx.Entry("mwc_test", 512)
     mwctest = MWCRNGTest(mwcent)
@@ -49,7 +39,7 @@ def mwctest():
     # Get the source for saving and disassembly before potentially crashing
     mod = ptx.Module([mwcent])
     print '\n'.join(['%4d %s' % t for t in enumerate(mod.source.split('\n'))])
-    disass(mod)
+    util.disass(mod)
 
     mod = run.Module([mwcent])
     mod.print_func_info()
@@ -58,6 +48,7 @@ def mwctest():
     mwctest.run_test(ctx)
 
 def main(args):
+    #mwctest()
     with open(args[-1]) as fp:
         genomes = Genome.from_string(fp.read())
     anim = Animation(genomes)

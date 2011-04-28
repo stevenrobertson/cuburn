@@ -18,6 +18,9 @@ class IterThread(object):
         self.mwc = MWCRNG(entry)
         self.cp = util.DataStream(entry)
         self.vars = Variations(features)
+        self.camera = CameraTransform(features)
+        self.hist = HistScatter(entry, features)
+        self.shuf = ShufflePoints(entry)
 
         entry.add_param('u32', 'num_cps')
         entry.add_ptr_param('u32', 'cp_started_count')
@@ -35,7 +38,7 @@ class IterThread(object):
         # If this number is negative, we're still fusing points, so this
         # behaves slightly differently (see ``fuse_loop_start``)
         # TODO: replace (or at least simplify) this logic
-        e.declare_mem('shared', 'f32', 'num_samples')
+        e.declare_mem('shared', 'u32', 'num_samples')
 
         # The per-warp transform selection indices
         e.declare_mem('shared', 'f32', 'xf_sel', e.nwarps_cta)
@@ -66,7 +69,7 @@ class IterThread(object):
 
         e.comment("Check to see if this CP is valid (if not, we're done)")
         all_cps_done = e.forward_label()
-        with cp_idx < p.num_cps:
+        with cp_idx < p.num_cps.val:
             o.bra.uni(all_cps_done)
         self.cp.addr = p.cp_data[cp_idx * self.cp.stream_size]
 
@@ -99,11 +102,11 @@ class IterThread(object):
 
         e.comment("Determine write location, and whether point is valid")
         e.declare_label(xforms_done)
-        histidx, is_valid = self.camera.get_index(r.x, r.y)
+        histidx, is_valid = self.camera.get_index(e, self.cp, r.x, r.y)
         is_valid &= (r.consec_bad >= 0)
 
         e.comment("Scatter point to pointbuffer")
-        self.hist.scatter(histidx, r.color, 0, is_valid)
+        self.hist.scatter(self.cp, histidx, r.color, 0, is_valid)
 
         done_picking_new_point = e.forward_label()
         with ~is_valid:
@@ -119,15 +122,14 @@ class IterThread(object):
         e.declare_label(done_picking_new_point)
 
         e.comment("Determine number of good samples, and whether we're done")
-        num_samples = o.ld(m.num_samples)
+        num_samples = o.ld(m.num_samples.addr)
         num_samples += o.bar.red.popc(0, is_valid)
         with s.tid_x == 0:
             o.st(m.num_samples, num_samples)
-        with num_samples >= self.cp.get('nsamples'):
+        with num_samples >= self.cp.get.u32('nsamples'):
             o.bra.uni(cp_loop_start)
 
-        comment('Shuffle points between threads')
-        shuf.shuffle(x, y, color, consec_bad)
+        self.shuf.shuffle(e, r.x, r.y, r.color, r.consec_bad)
 
         with s.tid_x < e.nwarps_cta:
             o.bra(choose_xform)
@@ -180,123 +182,75 @@ class IterThread(object):
         print "CPs started:", cps_started
 
 class CameraTransform(object):
-    shortname = 'camera'
-    def deps(self):
-        return [CPDataStream]
+    def __init__(self, features):
+        self.features = features
 
-    def rotate(self, rotated_x, rotated_y, x, y):
+    def rotate(self, cp, x, y):
         """
         Rotate an IFS-space coordinate as defined by the camera.
         """
-        if features.camera_rotation:
-            assert rotated_x.name != x.name and rotated_y.name != y.name
-            with block("Rotate %s, %s to camera alignment" % (x, y)):
-                reg.f32('rot_center_x rot_center_y')
-                cp.get_v2(cpA, rot_center_x, 'cp.rot_center[0]',
-                                      rot_center_y, 'cp.rot_center[1]')
-                op.sub.f32(x, x, rot_center_x)
-                op.sub.f32(y, y, rot_center_y)
+        if not self.features.camera_rotation:
+            return x, y
+        rot_center_x, rot_center_y = cp.get.v2.f32('cp.rot_center[0]',
+                                                   'cp.rot_center[1]')
+        tx, ty = x - rot_center_x, y - rot_center_y
+        rot_cos_t, rot_sin_t = cp.get.v2.f32('cos(cp.rotate * 2 * pi / 360.)',
+                                            '-sin(cp.rotate * 2 * pi / 360.)')
+        rx = tx * rot_cos_t    + ty * rot_sin_t + rot_center_x
+        ry = tx * (-rot_sin_t) + ty * rot_cos_t + rot_center_y
+        return rx, ry
 
-                reg.f32('rot_sin_t rot_cos_t rot_old_x rot_old_y')
-                cp.get_v2(cpA, rot_cos_t,  'cos(cp.rotate * 2 * pi / 360.)',
-                               rot_sin_t, '-sin(cp.rotate * 2 * pi / 360.)')
-
-                comment('rotated_x = x * cos(t) - y * sin(t) + rot_center_x')
-                op.fma.rn.f32(rotated_x, x, rot_cos_t, rot_center_x)
-                op.fma.rn.f32(rotated_x, y, rot_sin_t, rotated_x)
-
-                op.neg.f32(rot_sin_t, rot_sin_t)
-                comment('rotated_y = x * sin(t) + y * cos(t) + rot_center_y')
-                op.fma.rn.f32(rotated_y, x, rot_sin_t, rot_center_y)
-                op.fma.rn.f32(rotated_y, y, rot_cos_t, rotated_y)
-
-                # TODO: if this is a register-critical section, reloading
-                # rot_center_[xy] here should save two regs. OTOH, if this is
-                # *not* reg-crit, moving the subtraction above to new variables
-                # may save a few clocks
-                op.add.f32(x, x, rot_center_x)
-                op.add.f32(y, y, rot_center_y)
-        else:
-            comment("No camera rotation in this kernel")
-            op.mov.f32(rotated_x, x)
-            op.mov.f32(rotated_y, y)
-
-    def get_norm(self, norm_x, norm_y, x, y):
+    def get_norm(self, cp, x, y):
         """
         Find the [0,1]-normalized floating-point histogram coordinates
         ``norm_x, norm_y`` from the given IFS-space coordinates ``x, y``.
         """
-        self.rotate(norm_x, norm_y, x, y)
-        with block("Scale rotated points to [0,1]-normalized coordinates"):
-            reg.f32('cam_scale cam_offset')
-            cp.get_v2(cpA, cam_scale,  'cp.camera.norm_scale[0]',
-                           cam_offset, 'cp.camera.norm_offset[0]')
-            op.fma.f32(norm_x, norm_x, cam_scale, cam_offset)
-            cp.get_v2(cpA, cam_scale,  'cp.camera.norm_scale[1]',
-                           cam_offset, 'cp.camera.norm_offset[1]')
-            op.fma.f32(norm_y, norm_y, cam_scale, cam_offset)
+        rx, ry = self.rotate(cp, x, y)
+        cam_scale, cam_offset = cp.get.v2.f32(
+                'cp.camera.norm_scale[0]', 'cp.camera.norm_offset[0]')
+        norm_x = rx * cam_scale + cam_offset
+        cam_scale, cam_offset = cp.get.v2.f32(
+                'cp.camera.norm_scale[1]', 'cp.camera.norm_offset[1]')
+        norm_y = ry * cam_scale + cam_offset
+        return norm_x, norm_y
 
-    def get_index(self, index, x, y, pred=None):
+    def get_index(self, entry, cp, x, y):
         """
         Find the histogram index (as a u32) from the IFS spatial coordinate in
-        ``x, y``.
-
-        If the coordinates are out of bounds, 0xffffffff will be stored to
-        ``index``. If ``pred`` is given, it will be set if the point is valid,
-        and cleared if not.
+        ``x, y``. Returns ``index, oob``, where ``oob`` is a predicate value
+        that is set if the result is out of bounds.
         """
-        # A few instructions could probably be shaved off of this one
-        with block("Find histogram index"):
-            reg.f32('norm_x norm_y')
-            self.rotate(norm_x, norm_y, x, y)
-            comment('Scale and offset from IFS to index coordinates')
-            reg.f32('cam_scale cam_offset')
-            cp.get_v2(cpA, cam_scale,  'cp.camera.idx_scale[0]',
-                           cam_offset, 'cp.camera.idx_offset[0]')
-            op.fma.rn.f32(norm_x, norm_x, cam_scale, cam_offset)
+        o = entry.ops
+        rx, ry = self.rotate(cp, x, y)
+        cam_scale, cam_offset = cp.get.v2.f32(
+                'cp.camera.idx_scale[0]', 'cp.camera.idx_offset[0]')
+        idx_x = rx * cam_scale + cam_offset
+        cam_scale, cam_offset = cp.get.v2.f32(
+                'cp.camera.idx_scale[1]', 'cp.camera.idx_offset[1]')
+        idx_y = ry * cam_scale + cam_offset
 
-            cp.get_v2(cpA, cam_scale,  'cp.camera.idx_scale[1]',
-                           cam_offset, 'cp.camera.idx_offset[1]')
-            op.fma.rn.f32(norm_y, norm_y, cam_scale, cam_offset)
+        idx_x_u32 = o.cvt.rzi.s32(idx_x)
+        idx_y_u32 = o.cvt.rzi.s32(idx_y)
+        oob = o.setp.lt.u32(idx_x_u32, self.features.hist_width)
+        oob |= o.setp.lt.u32(idx_y_u32, self.features.hist_height)
 
-            comment('Check for bad value')
-            reg.u32('index_x index_y')
-            if not pred:
-                pred = reg.pred('p_valid')
-
-            op.cvt.rzi.s32.f32(index_x, norm_x)
-            op.setp.ge.s32(pred, index_x, 0)
-            op.setp.lt.and_.s32(pred, index_x, features.hist_width, pred)
-
-            op.cvt.rzi.s32.f32(index_y, norm_y)
-            op.setp.ge.and_.s32(pred, index_y, 0, pred)
-            op.setp.lt.and_.s32(pred, index_y, features.hist_height, pred)
-
-            op.mad.lo.u32(index, index_y, features.hist_stride, index_x)
-            op.mov.u32(index, 0xffffffff, ifnotp=pred)
+        idx = idx_y_u32 * self.features.hist_stride + idx_x_u32
+        return idx, oob
 
 class PaletteLookup(object):
-    shortname = "palette"
-    # Resolution of texture on device. Bigger = more palette rez, maybe slower
-    texheight = 16
+    def __init__(self, entry, features):
+        self.entry, self.features = entry, features
+        #entry.declare_mem('global', 'texref', 'palette')
 
-    def __init__(self):
-        self.texref = None
-
-    def deps(self):
-        return [CPDataStream]
-
-    def module_setup(self):
-        mem.global_.texref('t_palette')
-
-    def look_up(self, r, g, b, a, color, norm_time, ifp):
+    def look_up(self, color, norm_time):
         """
         Look up the values of ``r, g, b, a`` corresponding to ``color_coord``
         at the CP indexed in ``timestamp_idx``. Note that both ``color_coord``
         and ``timestamp_idx`` should be [0,1]-normalized floats.
         """
-        op.tex._2d.v4.f32.f32(vec(r, g, b, a),
-                addr([t_palette, ', ',  vec(norm_time, color)]), ifp=ifp)
+        n = self.entry.ops.mov.f32
+        return n(1), n(1), n(1), n(1)
+        #o.tex._2d.v4.f32.f32(m.palette, norm_time, color)
         if features.non_box_temporal_filter:
             raise NotImplementedError("Non-box temporal filters not supported")
 
@@ -333,112 +287,52 @@ class PaletteLookup(object):
         assert self.texref, "Must upload palette texture before launch!"
 
 class HistScatter(object):
-    shortname = "hist"
-    def deps(self):
-        return [CPDataStream, CameraTransform, PaletteLookup]
+    def __init__(self, entry, features):
+        self.entry, self.features = entry, features
+        self.palette = PaletteLookup(entry, features)
+        entry.add_ptr_param('f32', 'hist_bins')
 
-    def module_setup(self):
-        mem.global_.f32('g_hist_bins',
-                        features.hist_height * features.hist_stride * 4)
-        comment("Target to ensure fake local values get written")
-        mem.global_.f32('g_hist_dummy')
-
-    def entry_setup(self):
-        comment("Fake bins for fake scatter")
-        mem.local.f32('l_scatter_fake_adr')
-        mem.local.f32('l_scatter_fake_alpha')
-
-    def entry_teardown(self):
-        with block("Store fake histogram bins to dummy global"):
-            reg.b32('hist_dummy')
-            op.ld.local.b32(hist_dummy, addr(l_scatter_fake_adr))
-            op.st.volatile.b32(addr(g_hist_dummy), hist_dummy)
-            op.ld.local.b32(hist_dummy, addr(l_scatter_fake_alpha))
-            op.st.volatile.b32(addr(g_hist_dummy), hist_dummy)
-
-    def scatter(self, hist_index, color, xf_idx, p_valid, type='ldst'):
+    def scatter(self, cp, hist_index, color, xf_idx, p_valid):
         """
-        Scatter the given point directly to the histogram bins. I think this
-        technique has the worst performance of all of 'em. Accesses ``cpA``
-        directly.
+        Scatter the given point directly to the histogram bins.
         """
-        with block("Scatter directly to buffer"):
-            reg.u32('hist_bin_addr')
-            op.mov.u32(hist_bin_addr, g_hist_bins)
-            op.mad.lo.u32(hist_bin_addr, hist_index, 16, hist_bin_addr)
-
-            if type == 'fake_notex':
-                op.st.local.u32(addr(l_scatter_fake_adr), hist_bin_addr)
-                op.st.local.f32(addr(l_scatter_fake_alpha), color)
-                return
-
-            reg.f32('r g b a norm_time')
-            cp.get(cpA, norm_time, 'cp.norm_time')
-            palette.look_up(r, g, b, a, color, norm_time, ifp=p_valid)
-            # TODO: look up, scale by xform visibility
-            # TODO: Make this more performant
-            if type == 'ldst':
-                reg.f32('gr gg gb ga')
-                op.ld.v4.f32(vec(gr, gg, gb, ga), addr(hist_bin_addr),
-                             ifp=p_valid)
-                op.add.f32(gr, gr, r)
-                op.add.f32(gg, gg, g)
-                op.add.f32(gb, gb, b)
-                op.add.f32(ga, ga, a)
-                op.st.v4.f32(addr(hist_bin_addr), vec(gr, gg, gb, ga),
-                             ifp=p_valid)
-            elif type == 'red':
-                for i, val in enumerate([r, g, b, a]):
-                    op.red.add.f32(addr(hist_bin_addr,4*i), val, ifp=p_valid)
-            elif type == 'fake':
-                op.st.local.u32(addr(l_scatter_fake_adr), hist_bin_addr)
-                op.st.local.f32(addr(l_scatter_fake_alpha), a)
-
-    def call_setup(self, ctx):
-        hist_bins_dp, hist_bins_l = ctx.mod.get_global('g_hist_bins')
-        cuda.memset_d32(hist_bins_dp, 0, hist_bins_l/4)
-
-    def get_bins(self, ctx, features):
-        hist_bins_dp, hist_bins_l = ctx.mod.get_global('g_hist_bins')
-        return cuda.from_device(hist_bins_dp,
-                (features.hist_height, features.hist_stride, 4),
-                dtype=np.float32)
+        e, r, o, m, p, s = self.entry.locals
+        norm_time = cp.get.f32('cp.norm_time')
+        base = p.hist_bins[4*hist_index]
+        colors = self.palette.look_up(color, norm_time)
+        g_colors = o.ld.v4(base)
+        for col, gcol in zip(colors, g_colors):
+            gcol += col
+        o.st.v4(base, *g_colors)
 
 
 class ShufflePoints(object):
     """
     Shuffle points in shared memory. See helpers/shuf.py for details.
     """
-    shortname = "shuf"
+    def __init__(self, entry):
+        entry.declare_mem('shared', 'b32', 'shuf_data', entry.nthreads_cta)
 
-    def module_setup(self):
-        # TODO: if needed, merge this shared memory block with others
-        mem.shared.f32('s_shuf_data', ctx.threads_per_cta)
-
-    def shuffle(self, *args, **kwargs):
+    def shuffle(self, entry, *args, **kwargs):
         """
         Shuffle the data from each register in args across threads. Keyword
-        argument ``bar`` specifies which barrier to use (default is 2).
+        argument ``bar`` specifies which barrier to use (default is 0). Each
+        register is overwritten in place.
         """
-        bar = kwargs.pop('bar', 2)
-        with block("Shuffle across threads"):
-            reg.u32('shuf_read shuf_write')
-            with block("Calculate read and write offsets"):
-                reg.u32('shuf_off shuf_laneid')
-                op.mov.u32(shuf_off, '%tid.x')
-                op.mov.u32(shuf_write, s_shuf_data)
-                op.mad.lo.u32(shuf_write, shuf_off, 4, shuf_write)
-                op.mov.u32(shuf_laneid, '%laneid')
-                op.mad.lo.u32(shuf_off, shuf_laneid, 32, shuf_off)
-                op.and_.b32(shuf_off, shuf_off, ctx.threads_per_cta - 1)
-                op.mov.u32(shuf_read, s_shuf_data)
-                op.mad.lo.u32(shuf_read, shuf_off, 4, shuf_read)
-            for var in args:
-                op.bar.sync(bar)
-                op.st.volatile.shared.b32(addr(shuf_write), var)
-                op.bar.sync(bar)
-                op.ld.volatile.shared.b32(var, addr(shuf_read))
+        e, r, o, m, p, s = entry.locals
+        bar = kwargs.pop('bar', 0)
+        assert not kwargs, "Unrecognized keyword arguments."
 
+        e.comment("Calculate read and write offsets for shuffle")
+        # See helpers/shuf.py for details
+        shuf_write = m.shuf_data[s.tid_x]
+        shuf_read = m.shuf_data[(s.tid_x + (32 * s.laneid)) &
+                                (e.nthreads_cta - 1)]
+        for var in args:
+            o.bar.sync(bar)
+            o.st.volatile(shuf_write, var)
+            o.bar.sync(bar)
+            var.val = o.ld.volatile(shuf_read)
 
 class MWCRNG(object):
     """
@@ -553,7 +447,7 @@ class MWCRNGTest(object):
         r.sum = r.u64(0)
         r.count = r.f32(self.rounds)
         start = e.label()
-        r.sum = r.sum + o.cvt.u64.u32(self.mwc.next_b32(e))
+        r.sum = r.sum + o.cvt.u64.u32(self.mwc.next_b32())
         r.count = r.count - 1
         with r.count > 0:
             o.bra.uni(start)
