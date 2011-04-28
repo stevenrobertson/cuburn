@@ -17,20 +17,12 @@ from ctypes import *
 import numpy as np
 np.set_printoptions(precision=5, edgeitems=20)
 
-from pyptx import ptx, run, util
-
-from cuburn.device_code import *
 from fr0stlib.pyflam3 import *
 from fr0stlib.pyflam3._flam3 import *
-from cuburn.render import *
-
 import pyglet
 
-def dump_3d(nda):
-    with open('/tmp/data.txt', 'w') as f:
-        for row in nda:
-            f.write('  |  '.join([' '.join(
-                ['%4.1g\t' % x for x in pt]) for pt in row]) + '\n')
+from cuburn.render import *
+
 
 def mwctest():
     mwcent = ptx.Entry("mwc_test", 512)

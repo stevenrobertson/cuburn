@@ -9,7 +9,6 @@ from fr0stlib import pyflam3
 from fr0stlib.pyflam3._flam3 import *
 from fr0stlib.pyflam3.constants import *
 
-from cuburn.device_code import *
 from cuburn.variations import Variations
 
 Point = lambda x, y: np.array([x, y], dtype=np.double)
@@ -136,7 +135,7 @@ class Animation(object):
     In other words, it's best to use exactly one Animation for each
     interpolated sequence between one or two genomes.
     """
-    def __init__(self, genomes):
+    def __init__(self, genomes, ngenomes = None):
         # _frame is the ctypes frame object used only for interpolation
         self._frame = _Frame(genomes)
 
@@ -145,28 +144,9 @@ class Animation(object):
         self.features = Features(genomes, self.filters)
 
     def compile(self):
-        """
-        Create a PTX kernel optimized for this animation, compile it, and
-        attach it to a LaunchContext with a thread distribution optimized for
-        the active device.
-        """
-        # TODO: automatic optimization of block parameters
-        entry = ptx.Entry("iterate", 512)
-        iter = IterThread(entry, self.features)
-        entry.finalize()
-        iter.cp.finalize()
-        srcmod = ptx.Module([entry])
-        util.disass(srcmod)
-        self.mod = run.Module([entry])
-
+        pass
     def render_frame(self, time=0):
-        # TODO: support more nuanced frame control than just 'time'
-        # TODO: reuse more information between frames
-        # TODO: allow animation-long override of certain parameters (size, etc)
-        frame = Frame(self._frame, time)
-        frame.upload_data(self.ctx, self.filters, time)
-        IterThread.call(self.ctx)
-        return HistScatter.get_bins(self.ctx, self.features)
+        pass
 
 class Filters(object):
     def __init__(self, frame, cp):
