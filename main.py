@@ -21,29 +21,18 @@ from fr0stlib.pyflam3 import *
 from fr0stlib.pyflam3._flam3 import *
 import pyglet
 
+import pycuda.autoinit
+
 from cuburn.render import *
+from cuburn.code.mwc import test_mwc
 
-
-def mwctest():
-    mwcent = ptx.Entry("mwc_test", 512)
-    mwctest = MWCRNGTest(mwcent)
-
-    # Get the source for saving and disassembly before potentially crashing
-    mod = ptx.Module([mwcent])
-    print '\n'.join(['%4d %s' % t for t in enumerate(mod.source.split('\n'))])
-    util.disass(mod)
-
-    mod = run.Module([mwcent])
-    mod.print_func_info()
-
-    ctx = mod.get_context('mwc_test', 14)
-    mwctest.run_test(ctx)
 
 def main(args):
-    #mwctest()
+    test_mwc()
+    return
     with open(args[-1]) as fp:
-        genomes = Genome.from_string(fp.read())
-    anim = Animation(genomes)
+        genomes, ngenomes = Genome.from_string(fp.read())
+    anim = Animation(genomes, ngenomes)
     anim.compile()
     bins = anim.render_frame()
     w, h = anim.features.hist_width, anim.features.hist_height
