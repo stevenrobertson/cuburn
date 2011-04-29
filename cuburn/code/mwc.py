@@ -20,13 +20,22 @@ typedef struct {
 } mwc_st;
 
 __device__ uint32_t mwc_next(mwc_st *st) {
-    asm(".reg .u64 val;\n\t"
+    asm("{\n\t.reg .u64 val;\n\t"
         "cvt.u64.u32  val, %0;\n\t"
         "mad.wide.u32 val, %1, %2, val;\n\t"
-        "mov.b64 {%1, %0}, val;\n\t"
+        "mov.b64 {%1, %0}, val;\n\t}\n\t"
         : "=r"(st->carry), "=r"(st->state) : "r"(st->mul));
     return st->state;
 }
+
+__device__ float mwc_next_01(mwc_st *st) {
+    return mwc_next(st) * (1.0f / 4294967296.0f);
+}
+
+__device__ float mwc_next_11(mwc_st *st) {
+    return ((int32_t) mwc_next(st)) * (1.0f / 2147483648.0f);
+}
+
 """
 
 testsrc = code.base + src + """

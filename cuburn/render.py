@@ -85,10 +85,6 @@ class Frame(object):
         center = self.center_cp
         ncps = center.nbatches * center.ntemporal_samples
 
-        if ncps < ctx.nctas:
-            raise NotImplementedError(
-                "Distribution of a CP across multiple CTAs not yet done")
-
         # TODO: isn't this leaking xforms from C all over the place?
         stream = StringIO()
         cp_list = []
