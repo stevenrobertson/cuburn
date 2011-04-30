@@ -7,62 +7,86 @@ from pycuda.driver import In, Out, InOut
 from pycuda.compiler import SourceModule
 import numpy as np
 
-from cuburn import code
 from cuburn.code import mwc
+from cuburn.code.util import *
 
-src = r"""
-#define FUSE 20
-#define MAXOOB 10
+import tempita
 
-typedef struct {
-    // Number of iterations to perform, *per thread*.
-    uint32_t    niters;
+class IterCode(HunkOCode):
+    def __init__(self, features):
+        self.features = features
+        self.packer = DataPacker('iter_info')
+        iterbody = self._iterbody()
+        bodies = [self._xfbody(i,x) for i,x in enumerate(self.features.xforms)]
+        bodies.append(iterbody)
+        self.defs = '\n'.join(bodies)
 
-    // Number of accumulators per row and column in the accum buffer
-    uint32_t    accwidth, accheight;
-} iter_info;
+    def _xfbody(self, xfid, xform):
+        px = self.packer.view('info', 'xf%d_' % xfid)
+        px.sub('xf', 'cp.xforms[%d]' % xfid)
 
+        tmpl = tempita.Template("""
+__device__
+void apply_xf{{xfid}}(float *ix, float *iy, float *icolor,
+                      const iter_info *info) {
+    float tx, ty, ox = *ix, oy = *iy;
+    {{apply_affine('ox', 'oy', 'tx', 'ty', px, 'xf.c', 'pre')}}
+
+    // tiny little TODO: variations
+
+    *ix = tx;
+    *iy = ty;
+
+    float csp = {{px.get('xf.color_speed')}};
+    *icolor = *icolor * (1.0f - csp) + {{px.get('xf.color')}} * csp;
+};
+""")
+        g = dict(globals())
+        g.update(locals())
+        return tmpl.substitute(g)
+
+    def _iterbody(self):
+        tmpl = tempita.Template("""
 __global__
-void silly(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
+void iter(mwc_st *msts, const iter_info *infos, float *accbuf, float *denbuf) {
     mwc_st rctx = msts[gtid()];
-    iter_info *info = &(infos[blockIdx.x]);
+    const iter_info *info = &(infos[blockIdx.x]);
 
-    float consec_bad = -FUSE;
-    float nsamps = info->niters;
+    int consec_bad = -{{features.fuse}};
+    int nsamps = 500;
 
     float x, y, color;
     x = mwc_next_11(&rctx);
     y = mwc_next_11(&rctx);
     color = mwc_next_01(&rctx);
 
-    while (nsamps > 0.0f) {
+    while (nsamps > 0) {
         float xfsel = mwc_next_01(&rctx);
 
-        x *= 0.5f;
-        y *= 0.5f;
-        color *= 0.5f;
-        if (xfsel < 0.33f) {
-            color += 0.25f;
-            x += 0.5f;
-        } else if (xfsel < 0.66f) {
-            color += 0.5f;
-            y += 0.5f;
+        {{for xfid, xform in enumerate(features.xforms)}}
+        if (xfsel < {{packer.get('cp.norm_density[%d]' % xfid)}}) {
+            apply_xf{{xfid}}(&x, &y, &color, info);
+        } else
+        {{endfor}}
+        {
+            denbuf[0] = xfsel;
+            break; // TODO: fail here
         }
 
-        if (consec_bad < 0.0f) {
+        if (consec_bad < 0) {
             consec_bad++;
             continue;
         }
 
         if (x <= -1.0f || x >= 1.0f || y <= -1.0f || y >= 1.0f
-            || consec_bad < 0.0f) {
+            || consec_bad < 0) {
 
             consec_bad++;
-            if (consec_bad > MAXOOB) {
+            if (consec_bad > {{features.max_oob}}) {
                 x = mwc_next_11(&rctx);
                 y = mwc_next_11(&rctx);
                 color = mwc_next_01(&rctx);
-                consec_bad = -FUSE;
+                consec_bad = -{{features.fuse}};
             }
             continue;
         }
@@ -80,26 +104,28 @@ void silly(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
         nsamps--;
     }
 }
-"""
+""")
+        return tmpl.substitute(
+                features = self.features,
+                packer = self.packer.view('info'))
 
-def silly():
-    mod = SourceModule(code.base + mwc.src + src)
+
+def silly(features, cp):
     abuf = np.zeros((512, 512, 4), dtype=np.float32)
     dbuf = np.zeros((512, 512), dtype=np.float32)
-    seeds = mwc.build_mwc_seeds(512 * 24, seed=5)
+    seeds = mwc.MWC.make_seeds(512 * 24)
 
-    info = np.zeros(3, dtype=np.uint32)
-    info[0] = 5000
-    info[1] = 512
-    info[2] = 512
-    info = np.repeat([info], 24, axis=0)
+    iter = IterCode(features)
+    code = assemble_code(BaseCode, mwc.MWC, iter, iter.packer)
+    print code
+    mod = SourceModule(code)
 
-    fun = mod.get_function("silly")
+    info = iter.packer.pack(cp=cp)
+    print info
+
+    fun = mod.get_function("iter")
     fun(InOut(seeds), In(info), InOut(abuf), InOut(dbuf),
-        block=(512,1,1), grid=(24,1), time_kernel=True)
+        block=(512,1,1), grid=(1,1), time_kernel=True)
 
-    print abuf
-    print dbuf
-    print sum(dbuf)
     return abuf, dbuf
 

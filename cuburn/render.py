@@ -14,7 +14,17 @@ from cuburn.variations import Variations
 Point = lambda x, y: np.array([x, y], dtype=np.double)
 
 class Genome(pyflam3.Genome):
-    pass
+    @classmethod
+    def from_string(cls, *args, **kwargs):
+        gnms = super(Genome, cls).from_string(*args, **kwargs)
+        for g in gnms: g._init()
+        return gnms
+
+    def _init(self):
+        self.xforms = [self.xform[i] for i in range(self.num_xforms)]
+        dens = np.array([x.density for x in self.xforms])
+        dens /= np.sum(dens)
+        self.norm_density = [np.sum(dens[:i+1]) for i in range(len(dens))]
 
 class XForm(object):
     """
@@ -99,7 +109,7 @@ class Frame(object):
                 cp.camera = Camera(self._frame, cp, filters)
                 cp.nsamples = (cp.camera.sample_density *
                                center.width * center.height) / ncps
-                cp.xforms = XForm.parse(cp)
+
 
         print "Expected writes:", (
                 cp.camera.sample_density * center.width * center.height)
@@ -190,9 +200,10 @@ class Features(object):
     """
     # Constant parameters which control handling of out-of-frame samples:
     # Number of iterations to iterate without write after new point
-    fuse = 2
-    # Maximum consecutive out-of-frame points before picking new point
-    max_bad = 3
+    fuse = 20
+    # Maximum consecutive out-of-bounds points before picking new point
+    max_oob = 10
+    max_nxforms = 12
 
     # Height of the texture pallete which gets uploaded to the GPU (assuming
     # that palette-from-texture is enabled). For most genomes, this doesn't
@@ -205,7 +216,6 @@ class Features(object):
         any = lambda l: bool(filter(None, map(l, genomes)))
         self.max_ntemporal_samples = max(
                 [cp.nbatches * cp.ntemporal_samples for cp in genomes])
-        self.camera_rotation = any(lambda cp: cp.rotate)
         self.non_box_temporal_filter = genomes[0].temporal_filter_type
         self.palette_mode = genomes[0].palette_mode and "linear" or "nearest"
 
@@ -214,6 +224,7 @@ class Features(object):
             "number of xforms! (try running through flam3-genome first)")
         self.xforms = [XFormFeatures([x[i] for x in xforms], i)
                        for i in range(len(xforms[0]))]
+        self.nxforms = len(self.xforms)
         if any(lambda cp: cp.final_xform_enable):
             raise NotImplementedError("Final xform")
 

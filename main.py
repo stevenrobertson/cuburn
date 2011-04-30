@@ -24,16 +24,15 @@ import pyglet
 import pycuda.autoinit
 
 from cuburn.render import *
-from cuburn.code.mwc import test_mwc
+from cuburn.code.mwc import MWCTest
 from cuburn.code.iter import silly
 
-
 def main(args):
+    #MWCTest.test_mwc()
     with open(args[-1]) as fp:
         genomes = Genome.from_string(fp.read())
     anim = Animation(genomes)
-
-    accum, den = silly()
+    accum, den = silly(anim.features, genomes[0])
 
     if False:
         bins = anim.render_frame()
