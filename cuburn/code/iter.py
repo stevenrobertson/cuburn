@@ -2,13 +2,17 @@
 The main iteration loop.
 """
 
+from ctypes import byref
+
 import pycuda.driver as cuda
 from pycuda.driver import In, Out, InOut
 from pycuda.compiler import SourceModule
 import numpy as np
 
+from fr0stlib.pyflam3 import flam3_interpolate
 from cuburn.code import mwc, variations
 from cuburn.code.util import *
+from cuburn.render import Genome
 
 import tempita
 
@@ -117,22 +121,32 @@ void iter(mwc_st *msts, const iter_info *infos, float *accbuf, float *denbuf) {
                 packer = self.packer.view('info'))
 
 
-def silly(features, cp):
+def silly(features, cps):
+    nsteps = 1000
     abuf = np.zeros((512, 512, 4), dtype=np.float32)
     dbuf = np.zeros((512, 512), dtype=np.float32)
-    seeds = mwc.MWC.make_seeds(512 * 24)
+    seeds = mwc.MWC.make_seeds(512 * nsteps)
 
     iter = IterCode(features)
     code = assemble_code(BaseCode, mwc.MWC, iter, iter.packer)
     print code
     mod = SourceModule(code, options=['-use_fast_math'], keep=True)
 
-    info = iter.packer.pack(cp=cp)
-    print info
+    cps_as_array = (Genome * len(cps))()
+    for i, cp in enumerate(cps):
+        cps_as_array[i] = cp
+
+    cp = Genome()
+    infos = []
+    for n in range(nsteps):
+        flam3_interpolate(cps_as_array, 2, (n - nsteps/2) * 0.001, 0, byref(cp))
+        cp._init()
+        infos.append(iter.packer.pack(cp=cp))
+    infos = np.concatenate(infos)
 
     fun = mod.get_function("iter")
-    fun(InOut(seeds), In(info), InOut(abuf), InOut(dbuf),
-        block=(512,1,1), grid=(1,1), time_kernel=True)
+    fun(InOut(seeds), In(infos), InOut(abuf), InOut(dbuf),
+        block=(512,1,1), grid=(nsteps,1), time_kernel=True)
 
     return abuf, dbuf
 

@@ -32,7 +32,7 @@ def main(args):
     with open(args[-1]) as fp:
         genomes = Genome.from_string(fp.read())
     anim = Animation(genomes)
-    accum, den = silly(anim.features, genomes[0])
+    accum, den = silly(anim.features, genomes)
 
     if False:
         bins = anim.render_frame()
