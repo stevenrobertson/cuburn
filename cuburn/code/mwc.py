@@ -3,7 +3,6 @@ The multiply-with-carry random number generator.
 """
 
 import numpy as np
-import tempita
 
 from cuburn.code.util import *
 

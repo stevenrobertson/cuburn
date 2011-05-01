@@ -7,7 +7,7 @@ from pycuda.driver import In, Out, InOut
 from pycuda.compiler import SourceModule
 import numpy as np
 
-from cuburn.code import mwc
+from cuburn.code import mwc, variations
 from cuburn.code.util import *
 
 import tempita
@@ -32,10 +32,18 @@ void apply_xf{{xfid}}(float *ix, float *iy, float *icolor,
     float tx, ty, ox = *ix, oy = *iy;
     {{apply_affine('ox', 'oy', 'tx', 'ty', px, 'xf.c', 'pre')}}
 
-    // tiny little TODO: variations
+    ox = 0;
+    oy = 0;
 
-    *ix = tx;
-    *iy = ty;
+    {{for v in xform.vars}}
+    if (1) {
+        float w = {{px.get('xf.var[%d]' % v)}};
+        {{variations.var_code[variations.var_nos[v]]()}}
+    }
+    {{endfor}}
+
+    *ix = ox;
+    *iy = oy;
 
     float csp = {{px.get('xf.color_speed')}};
     *icolor = *icolor * (1.0f - csp) + {{px.get('xf.color')}} * csp;
@@ -64,7 +72,7 @@ void iter(mwc_st *msts, const iter_info *infos, float *accbuf, float *denbuf) {
         float xfsel = mwc_next_01(&rctx);
 
         {{for xfid, xform in enumerate(features.xforms)}}
-        if (xfsel < {{packer.get('cp.norm_density[%d]' % xfid)}}) {
+        if (xfsel <= {{packer.get('cp.norm_density[%d]' % xfid)}}) {
             apply_xf{{xfid}}(&x, &y, &color, info);
         } else
         {{endfor}}
@@ -78,9 +86,9 @@ void iter(mwc_st *msts, const iter_info *infos, float *accbuf, float *denbuf) {
             continue;
         }
 
-        if (x <= -1.0f || x >= 1.0f || y <= -1.0f || y >= 1.0f
-            || consec_bad < 0) {
+        nsamps--;
 
+        if (x <= -1.0f || x >= 1.0f || y <= -1.0f || y >= 1.0f) {
             consec_bad++;
             if (consec_bad > {{features.max_oob}}) {
                 x = mwc_next_11(&rctx);
@@ -92,8 +100,8 @@ void iter(mwc_st *msts, const iter_info *infos, float *accbuf, float *denbuf) {
         }
 
         // TODO: dither?
-        int i = ((int)((y + 1.0f) * 256.0f) * 512)
-              +  (int)((x + 1.0f) * 256.0f);
+        int i = ((int)((y + 1.0f) * 255.0f) * 512)
+              +  (int)((x + 1.0f) * 255.0f);
         accbuf[i*4]     += color < 0.5f ? (1.0f - 2.0f * color) : 0.0f;
         accbuf[i*4+1]   += 1.0f - 2.0f * fabsf(0.5f - color);
         accbuf[i*4+2]   += color > 0.5f ? color * 2.0f - 1.0f : 0.0f;
@@ -101,7 +109,6 @@ void iter(mwc_st *msts, const iter_info *infos, float *accbuf, float *denbuf) {
 
         denbuf[i] += 1.0f;
 
-        nsamps--;
     }
 }
 """)
@@ -118,7 +125,7 @@ def silly(features, cp):
     iter = IterCode(features)
     code = assemble_code(BaseCode, mwc.MWC, iter, iter.packer)
     print code
-    mod = SourceModule(code)
+    mod = SourceModule(code, options=['-use_fast_math'], keep=True)
 
     info = iter.packer.pack(cp=cp)
     print info

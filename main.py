@@ -45,8 +45,8 @@ def main(args):
         bins = np.minimum(bins, 255)
         bins = bins.astype(np.uint8)
 
-    #if '-g' not in args:
-    #    return
+    if '-g' not in args:
+        return
 
     imgbuf = (accum * 255).astype(np.uint8)
 

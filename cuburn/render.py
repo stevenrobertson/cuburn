@@ -219,12 +219,11 @@ class Features(object):
         self.non_box_temporal_filter = genomes[0].temporal_filter_type
         self.palette_mode = genomes[0].palette_mode and "linear" or "nearest"
 
-        xforms = [XForm.parse(cp) for cp in genomes]
-        assert len(xforms[0]) == len(xforms[-1]), ("genomes must have same "
-            "number of xforms! (try running through flam3-genome first)")
-        self.xforms = [XFormFeatures([x[i] for x in xforms], i)
-                       for i in range(len(xforms[0]))]
-        self.nxforms = len(self.xforms)
+        assert len(set([len(cp.xforms) for cp in genomes])) == 1, ("genomes "
+            "must have same number of xforms! (use flam3-genome first)")
+        self.nxforms = len(genomes[0].xforms)
+        self.xforms = [XFormFeatures([cp.xforms[i] for cp in genomes], i)
+                       for i in range(self.nxforms)]
         if any(lambda cp: cp.final_xform_enable):
             raise NotImplementedError("Final xform")
 
@@ -242,8 +241,10 @@ class XFormFeatures(object):
         self.id = xform_id
         any = lambda l: bool(filter(None, map(l, xforms)))
         self.has_post = any(lambda xf: getattr(xf, 'post', None))
-        self.vars = set([n for x in xforms for n in Variations.names
-                           if getattr(x, n, None)])
+        self.vars = set()
+        for x in xforms:
+            self.vars = (
+                self.vars.union(set([i for i, v in enumerate(x.var) if v])))
 
 class Camera(object):
     """Viewport and exposure."""
