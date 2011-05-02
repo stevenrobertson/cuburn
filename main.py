@@ -34,17 +34,6 @@ def main(args):
     anim = Animation(genomes)
     accum, den = silly(anim.features, genomes)
 
-    if False:
-        bins = anim.render_frame()
-        w, h = anim.features.hist_width, anim.features.hist_height
-        bins = bins[:,:w]
-        alpha = bins[...,3]
-        k2ish = (256./(np.mean(alpha)+1e-9))
-        lses = 20 * np.log2(1.0 + alpha * k2ish) / (alpha+1e-6)
-        bins *= lses.reshape(h,w,1).repeat(4,2)
-        bins = np.minimum(bins, 255)
-        bins = bins.astype(np.uint8)
-
     if '-g' not in args:
         return
 
