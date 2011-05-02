@@ -109,7 +109,7 @@ void iter(mwc_st *msts, const iter_info *infos, float *accbuf, float *denbuf) {
         }
 
         // TODO: dither?
-        int i = ((int)((1.0f - y) * 255.0f) * 512)
+        int i = ((int)((y + 1.0f) * 255.0f) * 512)
               +  (int)((x + 1.0f) * 255.0f);
 
         // since info was declared const, C++ barfs unless it's loaded first

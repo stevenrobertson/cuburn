@@ -16,6 +16,7 @@ from ctypes import *
 
 import numpy as np
 np.set_printoptions(precision=5, edgeitems=20)
+import scipy
 
 from fr0stlib.pyflam3 import *
 from fr0stlib.pyflam3._flam3 import *
@@ -37,11 +38,13 @@ def main(args):
     if '-g' not in args:
         return
 
+    noalpha = np.delete(accum, 3, axis=2)
+    scipy.misc.imsave('rendered.png', noalpha)
+
     imgbuf = (np.minimum(accum * 255, 255)).astype(np.uint8)
 
     window = pyglet.window.Window(1600, 900)
-    image = pyglet.image.ImageData(512, 512, 'RGBA', imgbuf.tostring())
-                                   #-anim.features.hist_stride*4)
+    image = pyglet.image.ImageData(512, 512, 'RGBA', imgbuf.tostring(), -2048)
     tex = image.texture
 
     #pal = (anim.ctx.ptx.instances[PaletteLookup].pal * 255.).astype(np.uint8)
