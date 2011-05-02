@@ -48,7 +48,7 @@ def main(args):
     if '-g' not in args:
         return
 
-    imgbuf = (accum * 255).astype(np.uint8)
+    imgbuf = (np.minimum(accum * 255, 255)).astype(np.uint8)
 
     window = pyglet.window.Window(1600, 900)
     image = pyglet.image.ImageData(512, 512, 'RGBA', imgbuf.tostring())

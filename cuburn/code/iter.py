@@ -10,7 +10,7 @@ from pycuda.compiler import SourceModule
 import numpy as np
 
 from fr0stlib.pyflam3 import flam3_interpolate
-from cuburn.code import mwc, variations
+from cuburn.code import mwc, variations, filter
 from cuburn.code.util import *
 from cuburn.render import Genome
 
@@ -109,7 +109,7 @@ void iter(mwc_st *msts, const iter_info *infos, float *accbuf, float *denbuf) {
         }
 
         // TODO: dither?
-        int i = ((int)((y + 1.0f) * 255.0f) * 512)
+        int i = ((int)((1.0f - y) * 255.0f) * 512)
               +  (int)((x + 1.0f) * 255.0f);
 
         // since info was declared const, C++ barfs unless it's loaded first
@@ -120,7 +120,6 @@ void iter(mwc_st *msts, const iter_info *infos, float *accbuf, float *denbuf) {
         accbuf[i*4+2]   += outcol.z;
         accbuf[i*4+3]   += outcol.w;
         denbuf[i] += 1.0f;
-
     }
 }
 """)
@@ -136,7 +135,7 @@ def silly(features, cps):
     seeds = mwc.MWC.make_seeds(512 * nsteps)
 
     iter = IterCode(features)
-    code = assemble_code(BaseCode, mwc.MWC, iter, iter.packer)
+    code = assemble_code(BaseCode, mwc.MWC, iter, iter.packer, filter.ColorClip)
     print code
     mod = SourceModule(code, options=['-use_fast_math'], keep=True)
 
@@ -168,10 +167,26 @@ def silly(features, cps):
     tref.set_format(cuda.array_format.UNSIGNED_INT8, 4)
     tref.set_flags(cuda.TRSF_NORMALIZED_COORDINATES)
 
+    abufd = cuda.to_device(abuf)
+    dbufd = cuda.to_device(dbuf)
+
     fun = mod.get_function("iter")
-    t = fun(InOut(seeds), In(infos), InOut(abuf), InOut(dbuf),
+    t = fun(InOut(seeds), In(infos), abufd, dbufd,
         block=(512,1,1), grid=(nsteps,1), time_kernel=True)
     print "Completed render in %g seconds" % t
 
+    f = np.float32
+
+    k1 = cp.contrast * cp.brightness * 268 / 256
+    area = 1
+    k2 = 4 / (cp.contrast * 5000)
+
+    fun = mod.get_function("logfilt")
+    t = fun(abufd, f(k1), f(k2),
+        f(1 / cp.gamma), f(cp.vibrancy), f(cp.highlight_power),
+        block=(512,1,1), grid=(512,1), time_kernel=True)
+    print "Completed color filtering in %g seconds" % t
+
+    abuf = cuda.from_device_like(abufd, abuf)
     return abuf, dbuf
 
