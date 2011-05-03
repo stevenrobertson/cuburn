@@ -22,14 +22,14 @@ var(1, 'sinusoidal', """
     """)
 
 var(2, 'spherical', """
-    float r2 = w / (tx*tx + ty*ty + 1e-20);
+    float r2 = w / (tx*tx + ty*ty + 1e-20f);
     ox += tx * r2;
     oy += ty * r2;
     """)
 
 var(5, 'polar', """
     ox += w * atan2f(tx, ty) * M_1_PI;
-    oy += w * (sqrtf(tx * tx + ty * ty) - 1.0);
+    oy += w * (sqrtf(tx * tx + ty * ty) - 1.0f);
     """)
 
 
