@@ -35,7 +35,7 @@ var(5, 'polar', """
 
 var(10, 'hyperbolic', """
     float a = atan2f(tx, ty);
-    float r = sqrt(tx*tx + ty*ty) + 1e-20;
+    float r = sqrt(tx*tx + ty*ty) + 1e-20f;
     ox += w * sinf(a) / r;
     oy += w * cosf(a) * r;
     """)
@@ -46,7 +46,7 @@ var(33, 'juliascope', """
     float t_rnd = truncf(mwc_next_01(rctx) * fabsf(power));
     // TODO: don't draw the extra random number
     if (mwc_next(rctx) & 1) ang = -ang;
-    float tmpr = (2 * M_PI * t_rnd + ang) / power;
+    float tmpr = (2.0f * M_PI * t_rnd + ang) / power;
 
     float cn = {{px.get('xf.juliascope_dist / xf.juliascope_power / 2',
                          'juscope_cn')}};

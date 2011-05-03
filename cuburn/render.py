@@ -26,103 +26,6 @@ class Genome(pyflam3.Genome):
         dens /= np.sum(dens)
         self.norm_density = [np.sum(dens[:i+1]) for i in range(len(dens))]
 
-class XForm(object):
-    """
-    A Python structure (*not* a ctypes wrapper) storing an xform. There are
-    a few differences between the meaning of properties on this object and
-    those of the C version; they are noted below.
-    """
-    def __init__(self, **kwargs):
-        read_affine = lambda c: [[c[0], c[1]], [c[2], c[3]], [c[4], c[5]]]
-        self.coefs = read_affine(map(float, kwargs.pop('coefs').split()))
-        if 'post' in kwargs:
-            self.post = read_affine(map(float, kwargs.pop('post').split()))
-        # TODO: more verification, detection of unknown variables, etc
-        for k, v in kwargs.items():
-            setattr(self, k, float(v))
-
-    # ctypes was being a pain. just parse the string.
-    @classmethod
-    def parse(cls, cp):
-        flame_str = flam3_print_to_string(byref(cp))
-        xforms = []
-        for line in flame_str.split('\n'):
-            if not line.strip().startswith('<xform'):
-                continue
-            props = dict(re.findall(r'(\w*)="([^"]*)"', line))
-            xforms.append(cls(**props))
-        # Set cumulative xform weight
-        xforms[0].cweight = xforms[0].weight
-        for i in range(1, len(xforms)):
-            xforms[i].cweight = xforms[i].weight + xforms[i-1].cweight
-        xforms[-1].cweight = 1.0
-        return xforms
-
-class _Frame(pyflam3.Frame):
-    """
-    ctypes flam3_frame object used for genome interpolation and
-    spatial filter creation
-    """
-    def __init__(self, genomes, *args, **kwargs):
-        pyflam3.Frame.__init__(self, *args, **kwargs)
-        self.genomes = (BaseGenome * len(genomes))()
-        for i in range(len(genomes)):
-            memmove(byref(self.genomes[i]), byref(genomes[i]),
-                    sizeof(BaseGenome))
-        self.ngenomes = len(genomes)
-
-        # TODO: allow user to override this
-        self.pixel_aspect_ratio = 1.0
-
-    def interpolate(self, time, stagger=0, cp=None):
-        cp = cp or BaseGenome()
-        flam3_interpolate(self.genomes, self.ngenomes, time,
-                          stagger, byref(cp))
-        return cp
-
-class Frame(object):
-    """
-    Handler for a single frame of a rendered genome.
-    """
-    def __init__(self, _frame, time):
-        self._frame = _frame
-        self.center_cp = self._frame.interpolate(time)
-
-    def upload_data(self, ctx, filters, time):
-        """
-        Prepare and upload the data needed to render this frame to the device.
-        """
-        center = self.center_cp
-        ncps = center.nbatches * center.ntemporal_samples
-
-        # TODO: isn't this leaking xforms from C all over the place?
-        stream = StringIO()
-        cp_list = []
-
-        for batch_idx in range(center.nbatches):
-            for time_idx in range(center.ntemporal_samples):
-                idx = time_idx + batch_idx * center.nbatches
-                interp_time = time + filters.temporal_deltas[idx]
-                cp = self._frame.interpolate(interp_time)
-                cp_list.append(cp)
-
-                cp.camera = Camera(self._frame, cp, filters)
-                cp.nsamples = (cp.camera.sample_density *
-                               center.width * center.height) / ncps
-
-
-        print "Expected writes:", (
-                cp.camera.sample_density * center.width * center.height)
-        min_time = min(filters.temporal_deltas)
-        max_time = max(filters.temporal_deltas)
-        for i, cp in enumerate(cp_list):
-            cp.norm_time = (filters.temporal_deltas[i] - min_time) / (
-                            max_time - min_time)
-            CPDataStream.pack_into(ctx, stream, frame=self, cp=cp, cp_idx=idx)
-        PaletteLookup.upload_palette(ctx, self, cp_list)
-        stream.seek(0)
-        IterThread.upload_cp_stream(ctx, stream.read(), ncps)
-
 class Animation(object):
     """
     Control structure for rendering a series of frames.
@@ -142,56 +45,12 @@ class Animation(object):
     interpolated sequence between one or two genomes.
     """
     def __init__(self, genomes, ngenomes = None):
-        # _frame is the ctypes frame object used only for interpolation
-        self._frame = _Frame(genomes)
-
-        # Use the same set of filters throughout the anim, a la flam3
-        self.filters = Filters(self._frame, genomes[0])
-        self.features = Features(genomes, self.filters)
+        self.features = Features(genomes)
 
     def compile(self):
         pass
     def render_frame(self, time=0):
         pass
-
-class Filters(object):
-    def __init__(self, frame, cp):
-        # Use one oversample per filter set, even over multiple timesteps
-        self.oversample = frame.genomes[0].spatial_oversample
-
-        # Ugh. I'd really like to replace this mess
-        spa_filt_ptr = POINTER(c_double)()
-        spa_width = flam3_create_spatial_filter(byref(frame),
-                                                flam3_field_both,
-                                                byref(spa_filt_ptr))
-        if spa_width < 0:
-            raise EnvironmentError("flam3 call failed")
-        self.spatial = np.asarray([[spa_filt_ptr[y*spa_width+x] for x in
-            range(spa_width)] for y in range(spa_width)], dtype=np.double)
-        self.spatial_width = spa_width
-        flam3_free(spa_filt_ptr)
-
-        tmp_filt_ptr = POINTER(c_double)()
-        tmp_deltas_ptr = POINTER(c_double)()
-        steps = cp.nbatches * cp.ntemporal_samples
-        self.temporal_sum = flam3_create_temporal_filter(
-                steps,
-                cp.temporal_filter_type,
-                cp.temporal_filter_exp,
-                cp.temporal_filter_width,
-                byref(tmp_filt_ptr),
-                byref(tmp_deltas_ptr))
-        self.temporal = np.asarray([tmp_filt_ptr[i] for i in range(steps)],
-                                   dtype=np.double)
-        flam3_free(tmp_filt_ptr)
-        self.temporal_deltas = np.asarray(
-                [tmp_deltas_ptr[i] for i in range(steps)], dtype=np.double)
-        flam3_free(tmp_deltas_ptr)
-
-        # TODO: density estimation
-        self.gutter = (spa_width - self.oversample) / 2
-
-
 
 class Features(object):
     """
@@ -212,7 +71,7 @@ class Features(object):
     # performance too much. Power-of-two, please.
     palette_height = 16
 
-    def __init__(self, genomes, flt):
+    def __init__(self, genomes):
         any = lambda l: bool(filter(None, map(l, genomes)))
         self.max_ntemporal_samples = max(
                 [cp.nbatches * cp.ntemporal_samples for cp in genomes])
@@ -227,15 +86,6 @@ class Features(object):
         if any(lambda cp: cp.final_xform_enable):
             raise NotImplementedError("Final xform")
 
-        # Histogram (and log-density copy) width and height
-        self.hist_width  = flt.oversample * genomes[0].width  + 2 * flt.gutter
-        self.hist_height = flt.oversample * genomes[0].height + 2 * flt.gutter
-        # Histogram stride, for better filtering. This code assumes the
-        # 128-byte L1 cache line width of Fermi devices, and a 16-byte
-        # histogram bucket size. TODO: detect these things programmatically,
-        # particularly the histogram bucket size, which may be split soon
-        self.hist_stride = 8 * int(math.ceil(self.hist_width / 8.0))
-
 class XFormFeatures(object):
     def __init__(self, xforms, xform_id):
         self.id = xform_id
@@ -248,7 +98,7 @@ class XFormFeatures(object):
 
 class Camera(object):
     """Viewport and exposure."""
-    def __init__(self, frame, cp, filters):
+    def __init__(self, frame, cp):
         # Calculate the conversion matrix between the IFS space (xform
         # coordinates) and the sampling lattice (bucket addresses)
         # TODO: test this code (against compute_camera?)
@@ -262,8 +112,6 @@ class Camera(object):
         self.ppu = Point(
             cp.pixels_per_unit * scale / frame.pixel_aspect_ratio,
             cp.pixels_per_unit * scale)
-        # extra shifts applied due to gutter
-        gutter = filters.gutter / (cp.spatial_oversample * self.ppu)
         cornerLL = center - (size / (2 * self.ppu))
         self.lower_bounds = cornerLL - gutter
         self.upper_bounds = cornerLL + (size / self.ppu) + gutter
@@ -271,3 +119,4 @@ class Camera(object):
         self.norm_offset = -self.norm_scale * self.lower_bounds
         self.idx_scale = size * self.norm_scale
         self.idx_offset = size * self.norm_offset
+

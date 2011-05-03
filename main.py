@@ -11,7 +11,7 @@
 
 import os
 import sys
-os.environ['PATH'] = '/usr/x86_64-pc-linux-gnu/gcc-bin/4.4.5:' + os.environ['PATH']
+
 from pprint import pprint
 from ctypes import *
 
@@ -19,27 +19,37 @@ import numpy as np
 np.set_printoptions(precision=5, edgeitems=20)
 import scipy
 
+import pyglet
+import pycuda.autoinit
+
 from fr0stlib.pyflam3 import *
 from fr0stlib.pyflam3._flam3 import *
 
-import pyglet
-window = pyglet.window.Window(1024, 1024)
-import pycuda.gl.autoinit
-
+import cuburn._pyflam3_hacks
 from cuburn.render import *
 from cuburn.code.mwc import MWCTest
-from cuburn.code.iter import silly, membench
+from cuburn.code.iter import render, membench
 
+# Required on my system; CUDA doesn't yet work with GCC 4.5
+os.environ['PATH'] = ('/usr/x86_64-pc-linux-gnu/gcc-bin/4.4.5:'
+                     + os.environ['PATH'])
 
 def main(args):
-    #MWCTest.test_mwc()
-    with open(args[-1]) as fp:
+    if '-t' in args:
+        MWCTest.test_mwc()
+        membench()
+
+    window = pyglet.window.Window(1024, 1024) if '-g' in args else None
+
+    with open(args[1]) as fp:
         genomes = Genome.from_string(fp.read())
     anim = Animation(genomes)
-    accum, den = silly(anim.features, genomes)
+    accum, den = render(anim.features, genomes)
 
     noalpha = np.delete(accum, 3, axis=2)
     scipy.misc.imsave('rendered.png', noalpha)
+
+
 
     if '-g' not in args:
         return
@@ -66,7 +76,7 @@ def main(args):
     pyglet.app.run()
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2 or not os.path.isfile(sys.argv[-1]):
+    if len(sys.argv) < 2 or not os.path.isfile(sys.argv[1]):
         print "Last argument must be a path to a genome file"
         sys.exit(1)
     main(sys.argv)

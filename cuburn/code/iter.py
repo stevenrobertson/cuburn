@@ -130,7 +130,7 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
                 packer = self.packer.view('info'))
 
 
-def silly(features, cps):
+def render(features, cps):
     nsteps = 1000
     abuf = np.zeros((1024, 1024, 4), dtype=np.float32)
     dbuf = np.zeros((1024, 1024), dtype=np.float32)
