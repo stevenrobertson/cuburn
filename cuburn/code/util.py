@@ -160,7 +160,7 @@ typedef struct {
 """)
         return tmpl.substitute(
                 values  = [(n, self.packed[n][1]) for n in self.packed_order],
-                padding = len(self) % (self.clsize / 4),
+                padding = self.align / 4 - len(self),
                 tname   = self.tname
             )
 
