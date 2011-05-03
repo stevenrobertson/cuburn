@@ -37,7 +37,7 @@ texture<uchar4, cudaTextureType2D, cudaReadModeNormalizedFloat> palTex;
         tmpl = tempita.Template("""
 __device__
 void apply_xf{{xfid}}(float *ix, float *iy, float *icolor,
-                      const iter_info *info) {
+                      const iter_info *info, mwc_st *rctx) {
     float tx, ty, ox = *ix, oy = *iy;
     {{apply_affine('ox', 'oy', 'tx', 'ty', px, 'xf.c', 'pre')}}
 
@@ -47,7 +47,7 @@ void apply_xf{{xfid}}(float *ix, float *iy, float *icolor,
     {{for v in xform.vars}}
     if (1) {
         float w = {{px.get('xf.var[%d]' % v)}};
-        {{variations.var_code[variations.var_nos[v]]()}}
+        {{variations.var_code[variations.var_nos[v]].substitute(locals())}}
     }
     {{endfor}}
 
@@ -82,7 +82,7 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
 
         {{for xfid, xform in enumerate(features.xforms)}}
         if (xfsel <= {{packer.get('cp.norm_density[%d]' % xfid)}}) {
-            apply_xf{{xfid}}(&x, &y, &color, info);
+            apply_xf{{xfid}}(&x, &y, &color, info, &rctx);
         } else
         {{endfor}}
         {
@@ -97,7 +97,7 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
 
         nsamps--;
 
-        if (x <= -1.0f || x >= 1.0f || y <= -1.0f || y >= 1.0f) {
+        if (x <= -0.5f || x >= 0.5f || y <= -0.5f || y >= 0.5f) {
             consec_bad++;
             if (consec_bad > {{features.max_oob}}) {
                 x = mwc_next_11(&rctx);
@@ -109,8 +109,8 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
         }
 
         // TODO: dither?
-        int i = ((int)((y + 1.0f) * 511.0f) * 1024)
-              +  (int)((x + 1.0f) * 511.0f) + 1025;
+        int i = ((int)((y + 0.5f) * 1023.0f) * 1024)
+              +  (int)((x + 0.5f) * 1023.0f) + 1025;
 
         // since info was declared const, C++ barfs unless it's loaded first
         float cp_step_frac = {{packer.get('cp_step_frac')}};
@@ -129,7 +129,7 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
 
 
 def silly(features, cps):
-    nsteps = 1000
+    nsteps = 500
     abuf = np.zeros((1024, 1024, 4), dtype=np.float32)
     dbuf = np.zeros((1024, 1024), dtype=np.float32)
     seeds = mwc.MWC.make_seeds(512 * nsteps)
@@ -139,28 +139,37 @@ def silly(features, cps):
 
     for lno, line in enumerate(code.split('\n')):
         print '%3d %s' % (lno, line)
-    mod = SourceModule(code, options=[], keep=True)
+    mod = SourceModule(code, options=['--use_fast_math'], keep=True)
 
     cps_as_array = (Genome * len(cps))()
     for i, cp in enumerate(cps):
         cps_as_array[i] = cp
 
-    cp = Genome()
-    memset(byref(cp), 0, sizeof(cp))
     infos = []
+    pal = np.empty((16, 256, 4), dtype=np.uint8)
 
     # TODO: move this into a common function
-    pal = np.empty((16, 256, 4), dtype=np.uint8)
-    sampAt = [int(i/15.*(nsteps-1)) for i in range(16)]
+    if len(cps) > 1:
+        cp = Genome()
+        memset(byref(cp), 0, sizeof(cp))
 
-    for n in range(nsteps):
-        flam3_interpolate(cps_as_array, 2, float(n)/nsteps - 0.5, 0, byref(cp))
-        cp._init()
-        if n in sampAt:
-            pidx = sampAt.index(n)
-            for i, e in enumerate(cp.palette.entries):
-                pal[pidx][i] = np.uint8(np.array(e.color) * 255.0)
-        infos.append(iter.packer.pack(cp=cp, cp_step_frac=float(n)/nsteps))
+        sampAt = [int(i/15.*(nsteps-1)) for i in range(16)]
+        for n in range(nsteps):
+            flam3_interpolate(cps_as_array, 2, float(n)/nsteps - 0.5,
+                              0, byref(cp))
+            cp._init()
+            if n in sampAt:
+                pidx = sampAt.index(n)
+                for i, e in enumerate(cp.palette.entries):
+                    pal[pidx][i] = np.uint8(np.array(e.color) * 255.0)
+            infos.append(iter.packer.pack(cp=cp, cp_step_frac=float(n)/nsteps))
+    else:
+        for i, e in enumerate(cps[0].palette.entries):
+            pal[0][i] = np.uint8(np.array(e.color) * 255.0)
+        pal[1:] = pal[0]
+        infos.append(iter.packer.pack(cp=cps[0], cp_step_frac=0))
+        infos *= nsteps
+
     infos = np.concatenate(infos)
 
     dpal = cuda.make_multichannel_2d_array(pal, 'C')

@@ -32,20 +32,17 @@ from cuburn.code.iter import silly, membench
 
 
 def main(args):
-    membench()
-    return
-
     #MWCTest.test_mwc()
     with open(args[-1]) as fp:
         genomes = Genome.from_string(fp.read())
     anim = Animation(genomes)
     accum, den = silly(anim.features, genomes)
 
-    if '-g' not in args:
-        return
-
     noalpha = np.delete(accum, 3, axis=2)
     scipy.misc.imsave('rendered.png', noalpha)
+
+    if '-g' not in args:
+        return
 
     imgbuf = (np.minimum(accum * 255, 255)).astype(np.uint8)
 
