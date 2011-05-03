@@ -30,7 +30,12 @@ __device__ float mwc_next_01(mwc_st *st) {
 }
 
 __device__ float mwc_next_11(mwc_st *st) {
-    return ((int32_t) mwc_next(st)) * (1.0f / 2147483648.0f);
+    uint32_t val = mwc_next(st);
+    float ret;
+    asm("cvt.rn.f32.s32 %0,     %1;\n\t"
+        "mul.f32        %0,     %0,     (1.0 / 2147483648.0);"
+        : "=f"(ret) : "r"(val));
+    return ret;
 }
 """
 
