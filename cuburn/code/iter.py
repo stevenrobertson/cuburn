@@ -108,9 +108,11 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
             continue;
         }
 
-        // TODO: dither?
-        int i = ((int)((y + 0.5f) * 1023.0f) * 1024)
-              +  (int)((x + 0.5f) * 1023.0f) + 1025;
+        float ditherx = mwc_next_11(&rctx) * 0.5f;
+        float dithery = mwc_next_11(&rctx) * 0.5f;
+
+        int i = ((int)((y + 0.5f) * 1022.0f + ditherx) * 1024)
+              +  (int)((x + 0.5f) * 1022.0f + dithery) + 1025;
 
         // since info was declared const, C++ barfs unless it's loaded first
         float cp_step_frac = {{packer.get('cp_step_frac')}};
@@ -129,7 +131,7 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
 
 
 def silly(features, cps):
-    nsteps = 500
+    nsteps = 1000
     abuf = np.zeros((1024, 1024, 4), dtype=np.float32)
     dbuf = np.zeros((1024, 1024), dtype=np.float32)
     seeds = mwc.MWC.make_seeds(512 * nsteps)
@@ -191,7 +193,7 @@ def silly(features, cps):
 
     k1 = cp.contrast * cp.brightness * 268 / 256
     area = 1
-    k2 = 1 / (cp.contrast * 5000)
+    k2 = 1 / (cp.contrast * (5 * nsteps))
 
     fun = mod.get_function("logfilt")
     t = fun(abufd, f(k1), f(k2),
