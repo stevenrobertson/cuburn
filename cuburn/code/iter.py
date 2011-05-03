@@ -114,7 +114,7 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
 
         // since info was declared const, C++ barfs unless it's loaded first
         float cp_step_frac = {{packer.get('cp_step_frac')}};
-        float4 outcol = tex2D(palTex, cp_step_frac, color);
+        float4 outcol = tex2D(palTex, color, cp_step_frac);
         accbuf[i*4]     += outcol.x;
         accbuf[i*4+1]   += outcol.y;
         accbuf[i*4+2]   += outcol.z;
@@ -154,7 +154,7 @@ def silly(features, cps):
     sampAt = [int(i/15.*(nsteps-1)) for i in range(16)]
 
     for n in range(nsteps):
-        flam3_interpolate(cps_as_array, 2, float(n)/nsteps - 0.5, 0, byref(cp))
+        flam3_interpolate(cps_as_array, 2, float(n)/nsteps/5 - 0.1, 0, byref(cp))
         cp._init()
         if n in sampAt:
             pidx = sampAt.index(n)
@@ -182,7 +182,7 @@ def silly(features, cps):
 
     k1 = cp.contrast * cp.brightness * 268 / 256
     area = 1
-    k2 = 16 / (cp.contrast * 5000 * 256)
+    k2 = 1 / (cp.contrast * 5000)
 
     fun = mod.get_function("logfilt")
     t = fun(abufd, f(k1), f(k2),
