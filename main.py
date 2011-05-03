@@ -20,9 +20,10 @@ import scipy
 
 from fr0stlib.pyflam3 import *
 from fr0stlib.pyflam3._flam3 import *
-import pyglet
 
-import pycuda.autoinit
+import pyglet
+window = pyglet.window.Window(1024, 1024)
+import pycuda.gl.autoinit
 
 from cuburn.render import *
 from cuburn.code.mwc import MWCTest
@@ -43,8 +44,7 @@ def main(args):
 
     imgbuf = (np.minimum(accum * 255, 255)).astype(np.uint8)
 
-    window = pyglet.window.Window(1600, 900)
-    image = pyglet.image.ImageData(512, 512, 'RGBA', imgbuf.tostring(), -2048)
+    image = pyglet.image.ImageData(1024, 1024, 'RGBA', imgbuf.tostring(), -4096)
     tex = image.texture
 
     #pal = (anim.ctx.ptx.instances[PaletteLookup].pal * 255.).astype(np.uint8)

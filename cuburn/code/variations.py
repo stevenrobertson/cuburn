@@ -33,7 +33,7 @@ def sinusoidal():
 @_var(2)
 def spherical():
     return """
-    float r2 = w / (tx*tx + ty*ty);
+    float r2 = w / (tx*tx + ty*ty + 1e-20);
     ox += tx * r2;
     oy += ty * r2;
     """

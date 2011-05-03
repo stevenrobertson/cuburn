@@ -65,9 +65,9 @@ void apply_xf{{xfid}}(float *ix, float *iy, float *icolor,
     def _iterbody(self):
         tmpl = tempita.Template("""
 __global__
-void iter(mwc_st *msts, const iter_info *infos, float *accbuf, float *denbuf) {
+void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
     mwc_st rctx = msts[gtid()];
-    const iter_info *info = &(infos[blockIdx.x]);
+    iter_info *info = &(infos[blockIdx.x]);
 
     int consec_bad = -{{features.fuse}};
     int nsamps = 2560;
@@ -109,8 +109,8 @@ void iter(mwc_st *msts, const iter_info *infos, float *accbuf, float *denbuf) {
         }
 
         // TODO: dither?
-        int i = ((int)((y + 1.0f) * 255.0f) * 512)
-              +  (int)((x + 1.0f) * 255.0f);
+        int i = ((int)((y + 1.0f) * 511.0f) * 1024)
+              +  (int)((x + 1.0f) * 511.0f) + 1025;
 
         // since info was declared const, C++ barfs unless it's loaded first
         float cp_step_frac = {{packer.get('cp_step_frac')}};
@@ -130,14 +130,16 @@ void iter(mwc_st *msts, const iter_info *infos, float *accbuf, float *denbuf) {
 
 def silly(features, cps):
     nsteps = 1000
-    abuf = np.zeros((512, 512, 4), dtype=np.float32)
-    dbuf = np.zeros((512, 512), dtype=np.float32)
+    abuf = np.zeros((1024, 1024, 4), dtype=np.float32)
+    dbuf = np.zeros((1024, 1024), dtype=np.float32)
     seeds = mwc.MWC.make_seeds(512 * nsteps)
 
     iter = IterCode(features)
     code = assemble_code(BaseCode, mwc.MWC, iter, iter.packer, filter.ColorClip)
-    print code
-    mod = SourceModule(code, options=['-use_fast_math'], keep=True)
+
+    for lno, line in enumerate(code.split('\n')):
+        print '%3d %s' % (lno, line)
+    mod = SourceModule(code, options=[], keep=True)
 
     cps_as_array = (Genome * len(cps))()
     for i, cp in enumerate(cps):
@@ -152,7 +154,7 @@ def silly(features, cps):
     sampAt = [int(i/15.*(nsteps-1)) for i in range(16)]
 
     for n in range(nsteps):
-        flam3_interpolate(cps_as_array, 2, (n - nsteps/2) * 0.001, 0, byref(cp))
+        flam3_interpolate(cps_as_array, 2, float(n)/nsteps - 0.5, 0, byref(cp))
         cp._init()
         if n in sampAt:
             pidx = sampAt.index(n)
@@ -166,12 +168,13 @@ def silly(features, cps):
     tref.set_array(dpal)
     tref.set_format(cuda.array_format.UNSIGNED_INT8, 4)
     tref.set_flags(cuda.TRSF_NORMALIZED_COORDINATES)
+    tref.set_filter_mode(cuda.filter_mode.LINEAR)
 
     abufd = cuda.to_device(abuf)
     dbufd = cuda.to_device(dbuf)
 
     fun = mod.get_function("iter")
-    t = fun(InOut(seeds), In(infos), abufd, dbufd,
+    t = fun(InOut(seeds), InOut(infos), abufd, dbufd,
         block=(512,1,1), grid=(nsteps,1), time_kernel=True)
     print "Completed render in %g seconds" % t
 
@@ -179,14 +182,15 @@ def silly(features, cps):
 
     k1 = cp.contrast * cp.brightness * 268 / 256
     area = 1
-    k2 = 4 / (cp.contrast * 5000)
+    k2 = 16 / (cp.contrast * 5000 * 256)
 
     fun = mod.get_function("logfilt")
     t = fun(abufd, f(k1), f(k2),
         f(1 / cp.gamma), f(cp.vibrancy), f(cp.highlight_power),
-        block=(512,1,1), grid=(512,1), time_kernel=True)
+        block=(1024,1,1), grid=(1024,1), time_kernel=True)
     print "Completed color filtering in %g seconds" % t
 
     abuf = cuda.from_device_like(abufd, abuf)
+    dbuf = cuda.from_device_like(dbufd, dbuf)
     return abuf, dbuf
 
