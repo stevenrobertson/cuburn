@@ -154,7 +154,7 @@ def silly(features, cps):
     sampAt = [int(i/15.*(nsteps-1)) for i in range(16)]
 
     for n in range(nsteps):
-        flam3_interpolate(cps_as_array, 2, float(n)/nsteps/5 - 0.1, 0, byref(cp))
+        flam3_interpolate(cps_as_array, 2, float(n)/nsteps - 0.5, 0, byref(cp))
         cp._init()
         if n in sampAt:
             pidx = sampAt.index(n)
@@ -193,4 +193,49 @@ def silly(features, cps):
     abuf = cuda.from_device_like(abufd, abuf)
     dbuf = cuda.from_device_like(dbufd, dbuf)
     return abuf, dbuf
+
+
+# TODO: find a better place to stick this code
+class MemBench(HunkOCode):
+    decls = """
+__shared__ uint32_t coord[512];
+"""
+
+    defs_tmpl = tempita.Template("""
+__global__
+void iter{{W}}(mwc_st *mwcs, uint32_t *buf) {
+    mwc_st rctx = mwcs[gtid()];
+
+    int mask = (1 << {{W}}) - 1;
+    int smoff = threadIdx.x >> {{W}};
+    int writer = (threadIdx.x & mask) == 0;
+
+    for (int i = 0; i < 1024 * 32; i++) {
+        if (writer)
+            coord[smoff] = mwc_next(&rctx) & 0x7ffffff; // 512MB / 4 bytes
+        __syncthreads();
+        uint32_t *dst = buf + (coord[smoff] + (threadIdx.x & mask));
+        uint32_t val = mwc_next(&rctx);
+        asm("st.global.u32  [%0],   %1;" :: "l"(dst), "r"(val));
+    }
+}
+""")
+
+    @property
+    def defs(self):
+        return '\n'.join([self.defs_tmpl.substitute(W=w) for w in range(8)])
+
+def membench():
+    code = assemble_code(BaseCode, mwc.MWC, MemBench())
+    mod = SourceModule(code)
+
+    buf = cuda.mem_alloc(512 << 20)
+    seeds = mwc.MWC.make_seeds(512 * 21)
+
+    for w in range(8):
+        fun = mod.get_function('iter%d' % w)
+        print 'Launching with W=%d' % w
+        t = fun(cuda.In(seeds), buf,
+                block=(512, 1, 1), grid=(21, 1), time_kernel=True)
+        print 'Completed in %g' % t
 

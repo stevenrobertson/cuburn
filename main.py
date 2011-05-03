@@ -11,6 +11,7 @@
 
 import os
 import sys
+os.environ['PATH'] = '/usr/x86_64-pc-linux-gnu/gcc-bin/4.4.5:' + os.environ['PATH']
 from pprint import pprint
 from ctypes import *
 
@@ -27,9 +28,13 @@ import pycuda.gl.autoinit
 
 from cuburn.render import *
 from cuburn.code.mwc import MWCTest
-from cuburn.code.iter import silly
+from cuburn.code.iter import silly, membench
+
 
 def main(args):
+    membench()
+    return
+
     #MWCTest.test_mwc()
     with open(args[-1]) as fp:
         genomes = Genome.from_string(fp.read())
