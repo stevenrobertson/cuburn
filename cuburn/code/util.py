@@ -18,6 +18,18 @@ def assemble_code(*sections):
 
 def apply_affine(x, y, xo, yo, packer, base_accessor, base_name):
     return tempita.Template("""
+    {{xo}} = {{packer.get(ba + '[0,0]', bn + '_xx')}} * {{x}}
+           + {{packer.get(ba + '[0,1]', bn + '_xy')}} * {{y}}
+           + {{packer.get(ba + '[0,2]', bn + '_xo')}};
+    {{yo}} = {{packer.get(ba + '[1,0]', bn + '_yx')}} * {{x}}
+           + {{packer.get(ba + '[1,1]', bn + '_yy')}} * {{y}}
+           + {{packer.get(ba + '[1,2]', bn + '_yo')}};
+    """).substitute(x=x, y=y, xo=xo, yo=yo, packer=packer,
+                    ba=base_accessor, bn=base_name)
+
+def apply_affine_flam3(x, y, xo, yo, packer, base_accessor, base_name):
+    """Read an affine transformation in *flam3 order* and apply it."""
+    return tempita.Template("""
     {{xo}} = {{packer.get(ba + '[0][0]', bn + '_xx')}} * {{x}}
            + {{packer.get(ba + '[1][0]', bn + '_xy')}} * {{y}}
            + {{packer.get(ba + '[2][0]', bn + '_xo')}};
@@ -41,6 +53,14 @@ uint32_t gtid() {
             (threadIdx.y + blockDim.y *
                 (threadIdx.z + blockDim.z *
                     (blockIdx.x + (gridDim.x * blockIdx.y))));
+}
+
+__device__
+int trunca(float f) {
+    // truncate as used in address calculations
+    int ret;
+    asm("cvt.rni.s32.f32    %0,     %1;" : "=r"(ret) : "f"(f));
+    return ret;
 }
 """
 

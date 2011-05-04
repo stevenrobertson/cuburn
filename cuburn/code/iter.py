@@ -39,7 +39,7 @@ __device__
 void apply_xf{{xfid}}(float *ix, float *iy, float *icolor,
                       const iter_info *info, mwc_st *rctx) {
     float tx, ty, ox = *ix, oy = *iy;
-    {{apply_affine('ox', 'oy', 'tx', 'ty', px, 'xf.c', 'pre')}}
+    {{apply_affine_flam3('ox', 'oy', 'tx', 'ty', px, 'xf.c', 'pre')}}
 
     ox = 0;
     oy = 0;
@@ -97,7 +97,20 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
 
         nsamps--;
 
-        if (x <= -0.5f || x >= 0.5f || y <= -0.5f || y >= 0.5f) {
+        // TODO: this may not optimize well, verify.
+
+        float cx, cy;
+        {{apply_affine('x', 'y', 'cx', 'cy', packer,
+                       'cp.camera_transform', 'cam')}}
+
+        float ditherwidth = {{packer.get('0.5 * cp.spatial_filter_radius')}};
+        float ditherx = mwc_next_11(&rctx) * ditherwidth;
+        float dithery = mwc_next_11(&rctx) * ditherwidth;
+
+        int ix = trunca(cx+ditherx), iy = trunca(cy+dithery);
+
+        if (ix < 0 || ix >= {{features.width}} ||
+            iy < 0 || iy >= {{features.height}} ) {
             consec_bad++;
             if (consec_bad > {{features.max_oob}}) {
                 x = mwc_next_11(&rctx);
@@ -108,11 +121,7 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
             continue;
         }
 
-        float ditherx = mwc_next_11(&rctx) * 0.5f;
-        float dithery = mwc_next_11(&rctx) * 0.5f;
-
-        int i = ((int)((y + 0.5f) * 1022.0f + ditherx) * 1024)
-              +  (int)((x + 0.5f) * 1022.0f + dithery) + 1025;
+        int i = iy * {{features.height}} + ix;
 
         // since info was declared const, C++ barfs unless it's loaded first
         float cp_step_frac = {{packer.get('cp_step_frac')}};
@@ -127,8 +136,8 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
 """)
         return tmpl.substitute(
                 features = self.features,
-                packer = self.packer.view('info'))
-
+                packer = self.packer.view('info'),
+                **globals())
 
 def render(features, cps):
     nsteps = 1000

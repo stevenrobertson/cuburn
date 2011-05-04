@@ -9,9 +9,8 @@ from fr0stlib import pyflam3
 from fr0stlib.pyflam3._flam3 import *
 from fr0stlib.pyflam3.constants import *
 
+from cuburn import affine
 from cuburn.variations import Variations
-
-Point = lambda x, y: np.array([x, y], dtype=np.double)
 
 class Genome(pyflam3.Genome):
     @classmethod
@@ -25,6 +24,25 @@ class Genome(pyflam3.Genome):
         dens = np.array([x.density for x in self.xforms])
         dens /= np.sum(dens)
         self.norm_density = [np.sum(dens[:i+1]) for i in range(len(dens))]
+
+    scale = property(lambda cp: 2.0 ** cp.zoom)
+    adj_density = property(lambda cp: cp.sample_density * (cp.scale ** 2))
+    ppu = property(lambda cp: cp.pixels_per_unit * cp.scale)
+
+    @property
+    def camera_transform(cp):
+        """
+        An affine matrix which will transform IFS coordinates to image width
+        and height. Assumes that width and height are constant.
+        """
+        # TODO: when reading as a property during packing, this may be
+        # calculated 6 times instead of 1
+        return ( affine.translate(0.5 * cp.width, 0.5 * cp.height)
+               * affine.scale(cp.ppu, cp.ppu)
+               * affine.translate(-cp._center[0], -cp._center[1])
+               * affine.rotate(cp.rotate * 2 * np.pi / 360,
+                               cp.rot_center[0],
+                               cp.rot_center[1]) )
 
 class Animation(object):
     """
@@ -86,6 +104,9 @@ class Features(object):
         if any(lambda cp: cp.final_xform_enable):
             raise NotImplementedError("Final xform")
 
+        self.width = genomes[0].width
+        self.height = genomes[0].height
+
 class XFormFeatures(object):
     def __init__(self, xforms, xform_id):
         self.id = xform_id
@@ -96,27 +117,4 @@ class XFormFeatures(object):
             self.vars = (
                 self.vars.union(set([i for i, v in enumerate(x.var) if v])))
 
-class Camera(object):
-    """Viewport and exposure."""
-    def __init__(self, frame, cp):
-        # Calculate the conversion matrix between the IFS space (xform
-        # coordinates) and the sampling lattice (bucket addresses)
-        # TODO: test this code (against compute_camera?)
-        scale = 2.0 ** cp.zoom
-        self.sample_density = cp.sample_density * scale * scale
-
-        center = Point(cp._center[0], cp._center[1])
-        size = Point(cp.width, cp.height)
-
-        # pix per unit, where 'unit' is '1.0' in IFS space
-        self.ppu = Point(
-            cp.pixels_per_unit * scale / frame.pixel_aspect_ratio,
-            cp.pixels_per_unit * scale)
-        cornerLL = center - (size / (2 * self.ppu))
-        self.lower_bounds = cornerLL - gutter
-        self.upper_bounds = cornerLL + (size / self.ppu) + gutter
-        self.norm_scale = 1.0 / (self.upper_bounds - self.lower_bounds)
-        self.norm_offset = -self.norm_scale * self.lower_bounds
-        self.idx_scale = size * self.norm_scale
-        self.idx_offset = size * self.norm_offset
 
