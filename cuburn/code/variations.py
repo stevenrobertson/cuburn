@@ -180,6 +180,65 @@ var(22, 'fan', """
     oy += r * sinf(a);
     """)
 
+var(23, 'blob', """
+    float r = sqrtf(tx*tx + ty*ty);
+    float a = atan2f(tx, ty);
+    float bdiff = 0.5f * ({{px.get('xf.blob_high - xf.blob_low','blob_diff'}})
+    r *= w * ({{px.get('xf.blob_low')}} + bdiff * (1.0f + sinf({{px.get('xf.blob_waves')}} * a)))
+    ox += sinf(a) * r;
+    oy += cosf(a) * r;
+    """)
+
+var(24, 'pdj', """
+    float nx1 = cosf({{px.get('xf.pdj_b')}} * tx);
+    float nx2 = sinf({{px.get('xf.pdj_c')}} * tx);
+    float ny1 = sinf({{px.get('xf.pdj_a')}} * ty);
+    float ny2 = cosf({{px.get('xf.pdj_d')}} * ty);
+    ox += w * (ny1 - nx1);
+    oy += w * (nx2 - ny2);
+    """)
+
+var(25, 'fan2', """
+    float dy = {{px.get('xf.fan2_y')}};
+    float dx = M_PI * {{px.get('xf.fan2_x')}} * {{px.get('xf.fan2_x')}};
+    float dx2 = 0.5f * dx;
+    float a = atan2f(tx, ty);
+    float r = w * sqrtf(tx*tx + ty*ty);
+    if (t > dx2)
+        a -= dx2;
+    else
+        a += dx2;
+    
+    ox += r * sinf(a);
+    oy += r * cosf(a);
+    """)
+
+var(26, 'rings2', """
+    float dx = {{px.get('xf.rings2_val')}} * {{px.get('xf.rings2_val')}};
+    float r = sqrtf(tx*tx + ty*ty);
+    float a = atan2f(tx, ty);
+    r += -2.0f * dx * (int)((r+dx)/(2.0f*dx)) + r * (1.0f - dx);
+    ox += w * sinf(a) * r;
+    oy += w * cosf(a) * r;
+    """)
+
+var(27, 'eyefish', """
+    float r = 2.0f * w / (sqrtf(tx*tx + ty*ty) + 1.0f);
+    ox += r * tx;
+    oy += r * ty;
+    """)
+
+var(28, 'bubble', """
+    float r = w / (0.25f * (tx*tx + ty*ty) + 1.0f);
+    ox += r * tx;
+    oy += r * ty;
+    """)
+
+var(29, 'cylinder', """
+    ox += w * sinf(tx);
+    oy += w * ty;
+    """)
+
 var(33, 'juliascope', """
     float ang = atan2f(ty, tx);
     float power = {{px.get('xf.juliascope_power', 'juscope_power')}};
