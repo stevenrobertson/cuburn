@@ -21,7 +21,8 @@ class Genome(pyflam3.Genome):
 
     def _init(self):
         self.xforms = [self.xform[i] for i in range(self.num_xforms)]
-        dens = np.array([x.density for x in self.xforms])
+        dens = np.array([x.density for i, x in enumerate(self.xforms)
+                         if i != self.final_xform_index])
         dens /= np.sum(dens)
         self.norm_density = [np.sum(dens[:i+1]) for i in range(len(dens))]
 
@@ -102,7 +103,12 @@ class Features(object):
         self.xforms = [XFormFeatures([cp.xforms[i] for cp in genomes], i)
                        for i in range(self.nxforms)]
         if any(lambda cp: cp.final_xform_enable):
-            raise NotImplementedError("Final xform")
+            if not reduce(lambda a, b: a == b,
+                          [cp.final_xform_index for cp in genomes]):
+                raise ValueError("Differing final xform indexes")
+            self.final_xform_index = genomes[0].final_xform_index
+        else:
+            self.final_xform_index = None
 
         self.width = genomes[0].width
         self.height = genomes[0].height

@@ -14,8 +14,6 @@ from cuburn.code import mwc, variations, filter
 from cuburn.code.util import *
 from cuburn.render import Genome
 
-import tempita
-
 class IterCode(HunkOCode):
     def __init__(self, features):
         self.features = features
@@ -34,7 +32,7 @@ texture<uchar4, cudaTextureType2D, cudaReadModeNormalizedFloat> palTex;
         px = self.packer.view('info', 'xf%d_' % xfid)
         px.sub('xf', 'cp.xforms[%d]' % xfid)
 
-        tmpl = tempita.Template("""
+        tmpl = Template("""
 __device__
 void apply_xf{{xfid}}(float *ix, float *iy, float *icolor,
                       const iter_info *info, mwc_st *rctx) {
@@ -63,7 +61,7 @@ void apply_xf{{xfid}}(float *ix, float *iy, float *icolor,
         return tmpl.substitute(g)
 
     def _iterbody(self):
-        tmpl = tempita.Template("""
+        tmpl = Template("""
 __global__
 void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
     mwc_st rctx = msts[gtid()];
@@ -82,14 +80,20 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
         float xfsel = mwc_next_01(&rctx);
 
         {{for xfid, xform in enumerate(features.xforms)}}
+        {{if xfid != features.final_xform_index}}
         if (xfsel <= {{packer.get('cp.norm_density[%d]' % xfid)}}) {
             apply_xf{{xfid}}(&x, &y, &color, info, &rctx);
         } else
+        {{endif}}
         {{endfor}}
         {
             denbuf[0] = xfsel;
             break; // TODO: fail here
         }
+        {{if features.final_xform_index}}
+        float fx = x, fy = y, fcolor;
+        apply_xf{{features.final_xform_index}}(&fx, &fy, &fcolor, info, &rctx);
+        {{endif}}
 
         if (consec_bad < 0) {
             consec_bad++;
@@ -101,8 +105,13 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
         // TODO: this may not optimize well, verify.
 
         float cx, cy;
+        {{if features.final_xform_index}}
+        {{apply_affine('fx', 'fy', 'cx', 'cy', packer,
+                       'cp.camera_transform', 'cam')}}
+        {{else}}
         {{apply_affine('x', 'y', 'cx', 'cy', packer,
                        'cp.camera_transform', 'cam')}}
+        {{endif}}
 
         float ditherwidth = {{packer.get('0.5 * cp.spatial_filter_radius')}};
         float ditherx = mwc_next_11(&rctx) * ditherwidth;
@@ -225,7 +234,7 @@ class MemBench(HunkOCode):
 __shared__ uint32_t coord[512];
 """
 
-    defs_tmpl = tempita.Template("""
+    defs_tmpl = Template("""
 __global__
 void iter{{W}}(mwc_st *mwcs, uint32_t *buf) {
     mwc_st rctx = mwcs[gtid()];

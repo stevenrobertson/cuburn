@@ -5,6 +5,10 @@ Provides tools and miscellaneous functions for building device code.
 import numpy as np
 import tempita
 
+class Template(tempita.Template):
+    default_namespace = tempita.Template.default_namespace.copy()
+Template.default_namespace.update({'np': np})
+
 class HunkOCode(object):
     """An apparently passive container for device code."""
     # Use property objects to make these dynamic
@@ -13,11 +17,11 @@ class HunkOCode(object):
     defs = ''
 
 def assemble_code(*sections):
-    return '\n'.join(['\n'.join([getattr(sect, kind) for sect in sections])
-                      for kind in ['headers', 'decls', 'defs']])
+    return ''.join([''.join([getattr(sect, kind) for sect in sections])
+                    for kind in ['headers', 'decls', 'defs']])
 
 def apply_affine(x, y, xo, yo, packer, base_accessor, base_name):
-    return tempita.Template("""
+    return Template("""
     {{xo}} = {{packer.get(ba + '[0,0]', bn + '_xx')}} * {{x}}
            + {{packer.get(ba + '[0,1]', bn + '_xy')}} * {{y}}
            + {{packer.get(ba + '[0,2]', bn + '_xo')}};
@@ -112,6 +116,8 @@ class DataPacker(HunkOCode):
     future, but for now it's incredibly barebones.
     """
 
+    default_namespace = {'np': np}
+
     def __init__(self, tname, clsize=128):
         """
         Create a new DataPacker.
@@ -148,13 +154,15 @@ class DataPacker(HunkOCode):
         return (4 * len(self) + self.clsize - 1) / self.clsize * self.clsize
 
     def pack(self, **kwargs):
+        base_ns = self.default_namespace.copy()
+        base_ns.update(kwargs)
         out = np.zeros(self.align/4, dtype=np.float32)
         subbed_nses = {}
 
         for i, name in enumerate(self.packed_order):
             view, accessor = self.packed[name]
             if view not in subbed_nses:
-                subbed_nses[view] = view._apply_subs(dict(kwargs))
+                subbed_nses[view] = view._apply_subs(dict(base_ns))
             try:
                 val = eval(accessor, subbed_nses[view])
             except Exception, e:
@@ -165,7 +173,7 @@ class DataPacker(HunkOCode):
 
     @property
     def decls(self):
-        tmpl = tempita.Template("""
+        tmpl = Template("""
 typedef struct {
 
 {{for name, accessor in values}}

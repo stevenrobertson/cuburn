@@ -65,7 +65,7 @@ var(8, 'disc', """
     float a = w * atan2f(tx, ty) * M_1_PI;
     float r = M_PI * sqrtf(tx*tx + ty*ty);
     ox += sinf(r) * a
-    oy += cosf(r) * a 
+    oy += cosf(r) * a
     """)
 
 var(9, 'spiral', """
@@ -208,7 +208,7 @@ var(25, 'fan2', """
         a -= dx2;
     else
         a += dx2;
-    
+
     ox += r * sinf(a);
     oy += r * cosf(a);
     """)
@@ -237,6 +237,16 @@ var(28, 'bubble', """
 var(29, 'cylinder', """
     ox += w * sinf(tx);
     oy += w * ty;
+    """)
+var(30, 'perspective', """
+    float pdist = {{px.get('xf.perspective_dist')}};
+    float pvsin = {{px.get('np.sin(xf.perspective_angle*np.pi/2)', 'pvsin')}};
+    float pvfcos = {{px.get(
+        'xf.perspective_dist*np.cos(xf.perspective_angle*np.pi/2)', 'pvfcos')}};
+
+    float t = 1.0 / (pdist - ty * pvsin);
+    ox += w * pdist * tx * t;
+    oy += w * pvfcos * ty * t;
     """)
 
 var(33, 'juliascope', """
