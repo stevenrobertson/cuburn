@@ -318,3 +318,126 @@ var(36, 'radial_blur', """
     oy += ra*sinf(tmpa) + rz*ty;
     """)
 
+var(37, 'pie', """
+    float slices = {{px.get('xf.pie_slices')}};
+    float sl = truncf(mwc_next_01(rctx) * slices + 0.5f);
+    float a = {{px.get('xf.pie_rotation')}} +
+                2.0f * M_PI * (sl + mwc_next_01(rctx) + {{px.get('xf.pie_thickness')}} / slices;
+    float r = w * mwc_next_01(rctx);
+    ox += r * cosf(a);
+    oy += r * sinf(a);
+    """)
+
+var(38, 'ngon', """
+    float power = {{px.get('xf.ngon_power')}} * 0.5f
+    float b = 2.0f * M_PI / {{px.get('xf.ngon_sides')}}
+    float corners = {{px.get('xf.ngon_corners')}}
+    float circle = {{px.get('xf.ngon_circle')}}
+
+    float r_factor = powf(tx*tx + ty*ty, power);
+    float theta = atan2f(ty, tx);
+    float phi = theta - b * floorf(theta/b);
+    if (phi > b/2.0f) phi -= b;
+    float amp = (corners * (1.0f / cosf(phi) - 1.0f) + circle) / r_factor;
+
+    ox += w * tx * amp;
+    oy += w * ty * amp;
+    """}
+
+var(39, 'curl', """
+    float c1 = {{px.get('xf.curl_c1')}};
+    float c2 = {{px.get('xf.curl_c2')}};
+
+    float re = 1.0f + c1*tx + c2*(tx*tx - ty*ty);
+    float im = c1*ty + 2.0f*c2*tx*ty;
+    float r = w / (re*re + im*im);
+
+    ox += r * (tx*re + ty*im);
+    oy += r * (ty*re + tx*im);
+    """)
+
+var(40, 'rectangles', """
+    float rx = {{px.get('xf.rectangles_x')}};
+    float ry = {{px.get('xf.rectangles_y')}};
+    
+    ox += w * ( (rx==0.0f) ? tx : rx * (2.0f * floorf(tx/rx) + 1.0f) - tx);
+    oy += w * ( (ry==0.0f) ? ty : ry * (2.0f * floorf(ty/ry) + 1.0f) - ty);
+    """)
+
+var(41, 'arch', """
+    float ang = mwc_next_01(rctx) * w * M_PI;
+
+    ox += w * sinf(ang);
+    oy += w * sinf(ang) * sinf(ang) / cosf(ang);
+    """)
+
+var(42, 'tangent', """
+    ox += w * sinf(tx) / cosf(ty);
+    oy += w * tanf(ty);
+    """)
+
+var(43, 'square', """
+    ox += w * (mwc_next_01(rctx) - 0.5f);
+    oy += w * (mwc_next_01(rctx) - 0.5f);
+    """)
+
+var(44, 'rays', """
+    float ang = w * mwc_next_01(rctx) * M_PI;
+    float r = w / (tx*tx + ty*ty);
+    float tanr = w * tanf(ang) * r;
+    ox += tanr * cosf(tx);
+    oy += tanr * sinf(ty);
+    """)
+
+var(45, 'blade', """
+    float r = mwc_next_01(rctx) * w * sqrtf(tx*tx + ty*ty);
+    ox += w * tx * (cosf(r) + sinf(r));
+    oy += w * tx * (cosf(r) - sinf(r));
+    """)
+
+var(46, 'secant2', """
+    float r = w * sqrtf(tx*tx + ty*ty);
+    float cr = cosf(r);
+    float icr = 1.0f / cr;
+    icr += (cr < 0 ? 1 : -1);
+
+    ox += w * tx;
+    oy += w * icr;
+    """)
+
+# var 47 is twintrian, has a call to badvalue in it
+
+var(48, 'cross', """
+    float s = tx*tx - ty*ty;
+    float r = w * sqrtf(1.0f / (s*s));
+
+    ox += r * tx;
+    oy += r * ty;
+    """)
+
+var(49, 'disc2', """
+    float twist = {{px.get('xf.disc2_twist')}};
+    float rotpi = {{px.get('xf.disc2_rot * M_PI', 'disc2_rotpi')}};
+
+    float sintwist = sinf(twist);
+    float costwist = cosf(twist) - 1.0f;
+
+    if (twist > 2.0f * M_PI) {
+        float k = (1.0f + twist - 2.0f * M_PI);
+        sintwist *= k;
+        costwist *= k;
+    }
+
+    if (twist < -2.0f * M_PI) {
+        float k = (1.0f + twist + 2.0f * M_PI);
+        sintwist *= k;
+        costwist *= k;
+    }
+
+    float t = rotpi * (tx + ty);
+    float r = w * atan2f(tx, ty) / M_PI;
+
+    ox += r * (sinf(t) + costwist);
+    oy += r * (cosf(t) + sintwist);
+    """)
+
