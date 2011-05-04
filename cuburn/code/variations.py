@@ -154,6 +154,32 @@ var(19, 'power', """
     oy += r * sa;
     """)
 
+var(20, 'cosine', """
+    float a = M_PI * tx;
+    ox += w * cosf(a) * coshf(ty);
+    oy -= w * sinf(a) * sinhf(ty);
+    """)
+
+var(21, 'rings', """
+    float dx = {{px.get(None, 'pre_xo')}} * {{px.get(None, 'pre_xo')}};
+    float r = sqrtf(tx*tx + ty*ty);
+    float a = atan2f(tx, ty);
+    r = w * (fmodf(r+dx, 2.0f*dx) - dx + r * (1.0f - dx));
+    ox += r * cosf(a);
+    oy += r * sinf(a);
+    """)
+
+var(22, 'fan', """
+    float dx = M_PI * ({{px.get(None, 'pre_xo')}} * {{px.get(None, 'pre_xo')}});
+    float dx2 = 0.5f * dx;
+    float dy = {{px.get(None, 'pre_yo')}};
+    float a = atan2f(tx, ty);
+    a += (fmodf(a+dy, dx) > dx2) ? -dx2 : dx2;
+    float r = w * sqrtf(tx*tx + ty*ty);
+    ox += r * cosf(a);
+    oy += r * sinf(a);
+    """)
+
 var(33, 'juliascope', """
     float ang = atan2f(ty, tx);
     float power = {{px.get('xf.juliascope_power', 'juscope_power')}};
