@@ -22,7 +22,7 @@ var(1, 'sinusoidal', """
     """)
 
 var(2, 'spherical', """
-    float r2 = w / (tx*tx + ty*ty + 1e-20f);
+    float r2 = w / (tx*tx + ty*ty);
     ox += tx * r2;
     oy += ty * r2;
     """)
@@ -38,7 +38,7 @@ var(3, 'swirl', """
 var(4, 'horseshoe', """
     float r = w / sqrt(tx*tx + ty*ty);
     ox += r * (tx - ty) * (tx + ty);
-    oy += 2.0 * tx * ty * r;
+    oy += 2.0f * tx * ty * r;
     """)
 
 var(5, 'polar', """
@@ -78,7 +78,7 @@ var(9, 'spiral', """
 
 var(10, 'hyperbolic', """
     float a = atan2f(tx, ty);
-    float r = sqrt(tx*tx + ty*ty) + 1e-20f;
+    float r = sqrt(tx*tx + ty*ty);
     ox += w * sinf(a) / r;
     oy += w * cosf(a) * r;
     """)
@@ -102,7 +102,7 @@ var(12, 'ex', """
     """)
 
 var(13, 'julia', """
-    float a = 0.5 * atan2f(tx, ty)
+    float a = 0.5f * atan2f(tx, ty)
     if (mwc_next(rctx) & 1) a += M_PI;
     float r = w * sqrt(tx*tx + ty*ty);
     ox += r * cos(a);
@@ -110,10 +110,10 @@ var(13, 'julia', """
     """)
 
 var(14, 'bent', """
-    float nx = 1.0;
-    if (tx < 0.0) nx = 2.0;
+    float nx = 1.0f;
+    if (tx < 0.0f) nx = 2.0f;
     float ny = 1.0;
-    if (ty < 0.0) ty = 0.5;
+    if (ty < 0.0f) ty = 0.5f;
     ox += w * nx * tx;
     oy += w * ny * ty;
     """)
@@ -127,7 +127,7 @@ var(15, 'waves', """
 
 var(16, 'fisheye', """
     float r = sqrt(tx*tx + ty*ty);
-    r = 2.0 * w / (r + 1.0);
+    r = 2.0f * w / (r + 1.0f);
     ox += r * ty;
     oy += r * tx;
     """)
