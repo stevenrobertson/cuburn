@@ -121,8 +121,13 @@ var(14, 'bent', """
 var(15, 'waves', """
     float c10 = {{px.get(None, 'pre_xy')}};
     float c11 = {{px.get(None, 'pre_yy')}};
-    ox += w * (tx + c10 + sinf(ty * {{px.get('xf.waves_dx2')}}));
-    oy += w * (ty + c11 + sinf(tx * {{px.get('xf.waves_dy2')}}));
+    float dx = {{px.get(None, 'pre_xo')}};
+    float dy = {{px.get(None, 'pre_yo')}};
+    float dx2 = 1.0f / (dx * dx);
+    float dy2 = 1.0f / (dy * dy);
+
+    ox += w * (tx + c10 + sinf(ty * dx2));
+    oy += w * (ty + c11 + sinf(tx * dy2));
     """)
 
 var(16, 'fisheye', """
@@ -238,6 +243,7 @@ var(29, 'cylinder', """
     ox += w * sinf(tx);
     oy += w * ty;
     """)
+
 var(30, 'perspective', """
     float pdist = {{px.get('xf.perspective_dist')}};
     float pvsin = {{px.get('np.sin(xf.perspective_angle*np.pi/2)', 'pvsin')}};
@@ -247,6 +253,25 @@ var(30, 'perspective', """
     float t = 1.0 / (pdist - ty * pvsin);
     ox += w * pdist * tx * t;
     oy += w * pvfcos * ty * t;
+    """)
+
+var(31, 'noise', """
+    float tmpr = mwc_next_01(rctx) * 2.0f * M_PI;
+    float r = w * mwc_next_01(rctx);
+    ox += tx * r * cosf(tmpr);
+    oy += ty * r * sinf(tmpr);
+    """)
+
+var(32, 'julian', """
+    float power = {{px.get('xf.julian_power')}};
+    float t_rnd = truncf(mwc_next_01(rctx) * fabsf(power));
+    float a = atan2f(ty, tx);
+    float tmpr = (a + 2.0f * M_PI * t_rnd) / power;
+    float cn = {{px.get('xf.julian_dist / xf.julian_power / 2', 'julian_cn')}};
+    float r = w * powf(tx * tx + ty * ty, cn);
+
+    ox += r * cosf(tmpr);
+    oy += r * sinf(tmpr);
     """)
 
 var(33, 'juliascope', """
