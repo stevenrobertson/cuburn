@@ -112,8 +112,8 @@ var(13, 'julia', """
 var(14, 'bent', """
     float nx = 1.0f;
     if (tx < 0.0f) nx = 2.0f;
-    float ny = 1.0;
-    if (ty < 0.0f) ty = 0.5f;
+    float ny = 1.0f;
+    if (ty < 0.0f) ny = 0.5f;
     ox += w * nx * tx;
     oy += w * ny * ty;
     """)
@@ -439,5 +439,117 @@ var(49, 'disc2', """
 
     ox += r * (sinf(t) + costwist);
     oy += r * (cosf(t) + sintwist);
+    """)
+
+var(50, 'super_shape', """
+    float ang = atan2f(ty, tx);
+    float theta = 0.25f * ({{px.get('xf.super_shape_m')}} * ang + M_PI);
+    float t1 = fabsf(cosf(theta));
+    float t2 = fabsf(sinf(theta));
+    t1 = powf(t1,{{px.get('xf.super_shape_n2')}});
+    t2 = powf(t2,{{px.get('xf.super_shape_n3')}});   
+    float myrnd = {{px.get('xf.super_shape_rnd')}};
+    float d = sqrtf(tx*tx+ty*ty);
+
+    float r = w * ((myrnd*mwc_next_01(rctx) + (1.0f-myrnd)*d) - {{px.get('xf.super_shape_holes')}})
+                * powf(t1+t2, {{px.get('-1.0 / xf.super_shape_holes', 'super_shape_pneg')}}) / d;
+
+    ox += r * tx;
+    oy += r * ty;
+    """)
+
+var(51, 'flower', """
+    float holes = {{px.get('xf.flower_holes')}};
+    float petals = {{px.get('xf.flower_petals')}};
+
+    float r = w * (mwc_next_01(rctx) - holes) * cosf(petals*atan2f(ty, tx)) / sqrtf(tx*tx + ty*ty);
+
+    ox += r * tx;
+    oy += r * ty;
+    """)
+
+var(52, 'conic', """
+    float d = sqrtf(tx*tx + ty*ty);
+    float ct = tx / d;
+    float holes = {{px.get('xf.conic_holes')}};
+    float eccen = {{px.get('xf.conic_eccentricity')}};
+
+    float r = w * (mwc_next_01(rctx) - holes) * eccen / (1.0f + eccen*ct) / d;
+
+    ox += r * tx;
+    oy += r * ty;
+    """)
+
+var(53, 'parabola', """
+    float r = sqrtf(tx*tx + ty*ty);
+    float sr = sinf(r);
+    float cr = cosf(r);
+
+    ox += {{px.get('xf.parabola_height')}} * w * sr * sr * mwc_next_01(rctx);
+    oy += {{px.get('xf.parabola_width')}} * w * cr * mwc_next_01(rctx);
+    """)
+
+var(54, 'bent2', """
+    float nx = 1.0f;
+    if (tx < 0.0f) nx = {{px.get('xf.bent2_x')}};
+    float ny = 1.0f;
+    if (ty < 0.0f) ny = {{px.get('xf.bent2_y')}};
+    ox += w * nx * tx;
+    oy += w * ny * ty;
+    """)
+
+var(55, 'bipolar', """
+    float x2y2 = tx*tx + ty*ty;
+    float t = x2y2 + 1.0f;
+    float x2 = tx * 2.0f;
+    float ps = -M_PI_2 * {{px.get('xf.bipolar_shift')}}
+    float y = 0.5 * atan2f(2.0f * ty, x2y2 - 1.0f) + ps;
+   
+    if (y > M_PI_2)
+        y = -M_PI_2 + fmodf(y + M_PI_2, M_PI);
+    else if (y < -M_PI_2)
+        y = M_PI_2 - fmodf(M_PI_2 - y, M_PI);
+
+    ox += w * 0.25f * M_2_PI * logf( (t+x2) / (t-x2) );
+    oy += w * M_2_PI * y;
+    """)
+
+var(56, 'boarders', """
+    float roundX = rintf(tx);
+    float roundY = rintf(ty);
+    float offsetX = tx - roundX;
+    float offsetY = ty - roundY;
+
+    if (mwc_next_01(rctx) > 0.75f) {
+        ox += w * (offsetX*0.5f + roundX);
+        oy += w * (offsetY*0.5f + roundY);
+    } else {
+        if (fabsf(offsetX) >= fabsf(offsetY)) {
+            if (offsetX >= 0.0f) {
+                ox += w * (offsetX*0.5f + roundX + 0.25f);
+                oy += w * (offsetY*0.5f + roundY + 0.25f * offsetY / offsetX);
+            } else {
+                ox += w * (offsetX*0.5f + roundX - 0.25f);
+                oy += w * (offsetY*0.5f + roundY - 0.25f * offsetY / offsetX);
+            }
+        } else {
+            if (offsetY >= 0.0f) {
+                oy += w * (offsetY*0.5f + roundY + 0.25f);
+                ox += w * (offsetX*0.5f + roundX + offsetX / offsetY * 0.25f);
+            } else {
+                oy += w * (offsetY*0.5f + roundY - 0.25f);
+                ox += w * (offsetX*0.5f + roundX - offsetX / offsetY * 0.25f);
+            }
+        }
+    }
+    """)
+
+var(57, 'butterfly', """
+    /* wx is weight*4/sqrt(3*pi) */
+    float wx = w * 1.3029400317411197908970256609023f;
+    float y2 = ty * 2.0f
+    float r = wx * sqrtf(fabsf(ty * tx)/(tx*tx + y2*y2));
+    ox += r * tx;
+    oy += r * y2;
     """)
 
