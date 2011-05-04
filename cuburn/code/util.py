@@ -91,7 +91,7 @@ class DataPackerView(object):
             name = name.replace('[', '_').replace(']', '')
         name = self.prefix + name
         self.packer._access(self, accessor, name)
-        return '%s->%s' % (self.ptr, name)
+        return '%s.%s' % (self.ptr, name)
 
     def sub(self, dst, src):
         """Add a substitution to the namespace."""
@@ -118,7 +118,7 @@ class DataPacker(HunkOCode):
 
     default_namespace = {'np': np}
 
-    def __init__(self, tname, clsize=128):
+    def __init__(self, tname, clsize=4):
         """
         Create a new DataPacker.
 
@@ -175,7 +175,6 @@ class DataPacker(HunkOCode):
     def decls(self):
         tmpl = Template("""
 typedef struct {
-
 {{for name, accessor in values}}
     float   {{'%-20s' % name}}; // {{accessor}}
 {{endfor}}
@@ -183,7 +182,6 @@ typedef struct {
     // Align to fill whole cache lines
     float   padding[{{padding}}];
 {{endif}}
-
 } {{tname}};
 """)
         return tmpl.substitute(

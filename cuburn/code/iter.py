@@ -26,6 +26,7 @@ class IterCode(HunkOCode):
     decls = """
 // Note: for normalized lookups, uchar4 actually returns floats
 texture<uchar4, cudaTextureType2D, cudaReadModeNormalizedFloat> palTex;
+__shared__ iter_info info;
 """
 
     def _xfbody(self, xfid, xform):
@@ -34,8 +35,7 @@ texture<uchar4, cudaTextureType2D, cudaReadModeNormalizedFloat> palTex;
 
         tmpl = Template("""
 __device__
-void apply_xf{{xfid}}(float *ix, float *iy, float *icolor,
-                      const iter_info *info, mwc_st *rctx) {
+void apply_xf{{xfid}}(float *ix, float *iy, float *icolor, mwc_st *rctx) {
     float tx, ty, ox = *ix, oy = *iy;
     {{apply_affine_flam3('ox', 'oy', 'tx', 'ty', px, 'xf.c', 'pre')}}
 
@@ -65,7 +65,12 @@ void apply_xf{{xfid}}(float *ix, float *iy, float *icolor,
 __global__
 void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
     mwc_st rctx = msts[gtid()];
-    iter_info *info = &(infos[blockIdx.x]);
+    iter_info *info_glob = &(infos[blockIdx.x]);
+
+    // load info to shared memory cooperatively
+    for (int i = threadIdx.x; i * 4 < sizeof(iter_info); i += blockDim.x)
+        reinterpret_cast<float*>(&info)[i] =
+            reinterpret_cast<float*>(info_glob)[i];
 
     int consec_bad = -{{features.fuse}};
     // TODO: make nsteps adjustable via genome
@@ -82,7 +87,7 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
         {{for xfid, xform in enumerate(features.xforms)}}
         {{if xfid != features.final_xform_index}}
         if (xfsel <= {{packer.get('cp.norm_density[%d]' % xfid)}}) {
-            apply_xf{{xfid}}(&x, &y, &color, info, &rctx);
+            apply_xf{{xfid}}(&x, &y, &color, &rctx);
         } else
         {{endif}}
         {{endfor}}
@@ -92,7 +97,7 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
         }
         {{if features.final_xform_index}}
         float fx = x, fy = y, fcolor;
-        apply_xf{{features.final_xform_index}}(&fx, &fy, &fcolor, info, &rctx);
+        apply_xf{{features.final_xform_index}}(&fx, &fy, &fcolor, &rctx);
         {{endif}}
 
         if (consec_bad < 0) {
@@ -133,9 +138,7 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
 
         int i = iy * {{features.width}} + ix;
 
-        // since info was declared const, C++ barfs unless it's loaded first
-        float cp_step_frac = {{packer.get('cp_step_frac')}};
-        float4 outcol = tex2D(palTex, color, cp_step_frac);
+        float4 outcol = tex2D(palTex, color, {{packer.get('cp_step_frac')}});
         accbuf[i*4]     += outcol.x;
         accbuf[i*4+1]   += outcol.y;
         accbuf[i*4+2]   += outcol.z;
@@ -157,11 +160,12 @@ def render(features, cps):
     seeds = mwc.MWC.make_seeds(512 * nsteps)
 
     iter = IterCode(features)
-    code = assemble_code(BaseCode, mwc.MWC, iter, iter.packer, filter.ColorClip)
+    code = assemble_code(BaseCode, mwc.MWC, iter.packer, iter, filter.ColorClip)
 
     for lno, line in enumerate(code.split('\n')):
         print '%3d %s' % (lno, line)
-    mod = SourceModule(code, options=['--use_fast_math'], keep=True)
+    mod = SourceModule(code, keep=True,
+            options=['-use_fast_math', '-maxrregcount', '32'])
 
     cps_as_array = (Genome * len(cps))()
     for i, cp in enumerate(cps):
@@ -205,6 +209,7 @@ def render(features, cps):
     dbufd = cuda.to_device(dbuf)
 
     fun = mod.get_function("iter")
+    fun.set_cache_config(cuda.func_cache.PREFER_L1)
     t = fun(InOut(seeds), InOut(infos), abufd, dbufd,
         block=(512,1,1), grid=(nsteps,1), time_kernel=True)
     print "Completed render in %g seconds" % t
