@@ -290,3 +290,31 @@ var(33, 'juliascope', """
     oy += r * sinf(tmpr);
     """)
 
+var(34, 'blur', """
+    float tmpr = mwc_next_01(rctx) * 2.0f * M_PI;
+    float r = w * mwc_next_01(rctx);
+    ox += r * cosf(tmpr);
+    oy += r * sinf(tmpr);
+    """)
+
+var(35, 'gaussian', """
+    float ang = mwc_next_01(rctx) * 2.0f * M_PI;
+    float r = weight * ( mwc_next_01(rctx) + mwc_next_01(rctx)
+                   + mwc_next_01(rctx) + mwc_next_01(rctx) - 2.0f );
+    ox += r * cosf(ang);
+    oy += r * sinf(ang);
+    """)
+
+var(36, 'radial_blur', """
+    float blur_angle = {{px.get('xf.radial_blur_angle')}} * M_PI * 0.5f;
+    float spinvar = sinf(blur_angle);
+    float zoomvar = cosf(blur_angle);
+    float r = weight * ( mwc_next_01(rctx) + mwc_next_01(rctx)
+                   + mwc_next_01(rctx) + mwc_next_01(rctx) - 2.0f );
+    float ra = sqrtf(tx*tx + ty*ty);
+    float tmpa = atan2f(ty, tx) + spinvar * r;
+    float rz = zoomvar * r - 1.0f;
+    ox += ra*cosf(tmpa) + rz*tx;
+    oy += ra*sinf(tmpa) + rz*ty;
+    """)
+
