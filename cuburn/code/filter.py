@@ -7,7 +7,7 @@ __global__
 void logfilt(float4 *pixbuf, float k1, float k2,
              float gamma, float vibrancy, float highpow) {
     // TODO: test if over an edge of the framebuffer
-    int i = 1024 * blockIdx.x + threadIdx.x;
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
     float4 pix = pixbuf[i];
 
     if (pix.w <= 0) return;

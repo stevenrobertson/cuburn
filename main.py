@@ -39,7 +39,6 @@ def main(args):
         MWCTest.test_mwc()
         membench()
 
-    window = pyglet.window.Window(1024, 1024) if '-g' in args else None
 
     with open(args[1]) as fp:
         genomes = Genome.from_string(fp.read())
@@ -52,9 +51,11 @@ def main(args):
     if '-g' not in args:
         return
 
+    window = pyglet.window.Window(anim.features.width, anim.features.height)
     imgbuf = (np.minimum(accum * 255, 255)).astype(np.uint8)
-
-    image = pyglet.image.ImageData(1024, 1024, 'RGBA', imgbuf.tostring(), -4096)
+    image = pyglet.image.ImageData(anim.features.width, anim.features.height,
+                                   'RGBA', imgbuf.tostring(),
+                                   -anim.features.width * 4)
     tex = image.texture
 
     #pal = (anim.ctx.ptx.instances[PaletteLookup].pal * 255.).astype(np.uint8)

@@ -70,7 +70,8 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
     iter_info *info = &(infos[blockIdx.x]);
 
     int consec_bad = -{{features.fuse}};
-    int nsamps = 2560;
+    // TODO: make nsteps adjustable via genome
+    int nsamps = {{packer.get('cp.width * cp.height / 512000. * cp.adj_density')}};
 
     float x, y, color;
     x = mwc_next_11(&rctx);
@@ -121,7 +122,7 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
             continue;
         }
 
-        int i = iy * {{features.height}} + ix;
+        int i = iy * {{features.width}} + ix;
 
         // since info was declared const, C++ barfs unless it's loaded first
         float cp_step_frac = {{packer.get('cp_step_frac')}};
@@ -140,9 +141,10 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
                 **globals())
 
 def render(features, cps):
+    # TODO: make this adjustable via genome
     nsteps = 1000
-    abuf = np.zeros((1024, 1024, 4), dtype=np.float32)
-    dbuf = np.zeros((1024, 1024), dtype=np.float32)
+    abuf = np.zeros((features.height, features.width, 4), dtype=np.float32)
+    dbuf = np.zeros((features.height, features.width), dtype=np.float32)
     seeds = mwc.MWC.make_seeds(512 * nsteps)
 
     iter = IterCode(features)
@@ -200,14 +202,16 @@ def render(features, cps):
 
     f = np.float32
 
-    k1 = cp.contrast * cp.brightness * 268 / 256
-    area = 1
-    k2 = 1 / (cp.contrast * (5 * nsteps))
+    npix = features.width * features.height
+
+    k1 = cp.brightness * 268 / 256
+    area = features.width * features.height / cp.ppu ** 2
+    k2 = 1 / (area * cp.adj_density)
 
     fun = mod.get_function("logfilt")
     t = fun(abufd, f(k1), f(k2),
         f(1 / cp.gamma), f(cp.vibrancy), f(cp.highlight_power),
-        block=(1024,1,1), grid=(1024,1), time_kernel=True)
+        block=(256,1,1), grid=(npix/256,1), time_kernel=True)
     print "Completed color filtering in %g seconds" % t
 
     abuf = cuda.from_device_like(abufd, abuf)
