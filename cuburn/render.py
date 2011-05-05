@@ -112,6 +112,9 @@ class Features(object):
 
         self.width = genomes[0].width
         self.height = genomes[0].height
+        self.acc_width = genomes[0].width
+        self.acc_height = genomes[0].height
+        self.acc_stride = genomes[0].width
 
 class XFormFeatures(object):
     def __init__(self, xforms, xform_id):

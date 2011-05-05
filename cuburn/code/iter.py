@@ -160,11 +160,13 @@ def render(features, cps):
     seeds = mwc.MWC.make_seeds(512 * nsteps)
 
     iter = IterCode(features)
-    code = assemble_code(BaseCode, mwc.MWC, iter.packer, iter, filter.ColorClip)
+    de = filter.DensityEst(features, cps[0])
+    code = assemble_code(BaseCode, mwc.MWC, iter.packer, iter,
+                         filter.ColorClip, de)
 
     for lno, line in enumerate(code.split('\n')):
         print '%3d %s' % (lno, line)
-    mod = SourceModule(code, keep=True,
+    mod = SourceModule(code,
             options=['-use_fast_math', '-maxrregcount', '32'])
 
     cps_as_array = (Genome * len(cps))()
@@ -222,6 +224,8 @@ def render(features, cps):
     area = features.width * features.height / cp.ppu ** 2
     k2 = 1 / (area * cp.adj_density)
 
+    de.invoke(mod, abufd, dbufd)
+
     fun = mod.get_function("logfilt")
     t = fun(abufd, f(k1), f(k2),
         f(1 / cp.gamma), f(cp.vibrancy), f(cp.highlight_power),
@@ -229,8 +233,8 @@ def render(features, cps):
     print "Completed color filtering in %g seconds" % t
 
     abuf = cuda.from_device_like(abufd, abuf)
-    dbuf = cuda.from_device_like(dbufd, dbuf)
     return abuf, dbuf
+
 
 
 # TODO: find a better place to stick this code
