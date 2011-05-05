@@ -553,3 +553,132 @@ var(57, 'butterfly', """
     oy += r * y2;
     """)
 
+var(58, 'cell', """
+    float cell_size = {{px.get('xf.cell_size')}}
+    float inv_cell_size = 1.0f/cell_size;
+    
+    /* calculate input cell */
+    float x = floorf(tx * inv_cell_size);
+    float y = floorf(ty * inv_cell_size);
+
+    /* Offset from cell origin */
+    float dx = tx - x*cell_size;
+    float dy = ty - y*cell_size;
+   
+   /* interleave cells */
+    if (y >= 0.0f) {
+        if (x >= 0.0f) {
+            y *= 2.0f;
+            x *= 2.0f;
+        } else {
+            y *= 2.0f;
+            x = -(2.0f*x+1.0f);
+        }
+    } else {
+        if (x >= 0.0f) {
+            y = -(2.0f*y+1.0f);
+            x *= 2.0f;
+         } else {
+            y = -(2.0f*y+1.0f);
+            x = -(2.0f*x+1.0f);
+         }
+    }
+   
+    ox += w * (dx + x*cell_size);
+    oy -= w * (dy + y*cell_size);
+    """)
+
+var(59, 'cpow', """
+    float a = atan2f(ty, tx);
+    float lnr = 0.5f * logf(sqrtf(tx*tx+ty*ty));
+    float power = {{px.get('xf.cpow_power')}}
+    float va = 2.0f * M_PI / power;
+    float vc = {{px.get('xf.cpow_r')}} / power;
+    float vd = {{px.get('xf.cpow_i')}} / power;
+    float ang = vc*a + vd*lnr + va*floorf(power*mwc_next_01(rctx));   
+    float m = w * expf(vc * lnr - vd * a);
+    ox += m * cosf(ang);
+    oy += m * sinf(ang);
+    """)
+
+var(60, 'curve', """
+    float pc_xlen = {{px.get('xf.curve_xlength * xf.curve_xlength','pc_xlen')}};
+    float pc_ylen = {{px.get('xf.curve_ylength * xf.curve_ylength','pc_ylen')}};
+   
+    if (pc_xlen<1E-20f) pc_xlen = 1E-20f;
+    if (pc_ylen<1E-20f) pc_ylen = 1E-20f;
+
+    ox += w * (tx + {{px.get('xf.curve_xamp')}} * expf(-ty*ty/pc_xlen));
+    ox += w * (ty + {{px.get('xf.curve_yamp')}} * expf(-tx*tx/pc_ylen));
+    """)
+
+var(61, 'edisc', """
+    float tmp = tx*tx + ty*ty + 1.0f;
+    float tmp2 = 2.0f * tx;
+    float r1 = sqrtf(tmp+tmp2);
+    float r2 = sqrtf(tmp-tmp2);
+    float xmax = (r1+r2) * 0.5f;
+    float a1 = logf(xmax + sqrtf(xmax - 1.0f));
+    float a2 = -acosf(tx/xmax);
+    float neww = w / 11.57034632f;
+   
+    float snv = sinf(a1);
+    float csv = cosf(a1);
+    if (ty > 0.0f) snv = -snv;
+
+    ox += neww * coshf(a2) * csv;
+    oy += neww * sinhf(s2) * snv;
+    """)
+
+var(62, 'elliptic', """
+    float tmp = tx*tx + ty*ty + 1.0f;
+    float x2 = 2.0f * tx;
+    float xmax = 0.5f * (sqrtf(tmp+x2) + sqrtf(tmp-x2));
+    float a = tx / xmax;
+    float b = 1.0f - a*a;
+    float ssx = xmax - 1.0f;
+    float neww = w / M_PI_2;
+   
+    if (b < 0.0f)
+        b = 0.0f;
+    else
+        b = sqrtf(b);
+      
+    if (ssx < 0.0f)
+        ssx = 0.0f;
+    else
+        ssx = sqrtf(ssx);
+      
+    ox += neww * atan2f(a,b);
+   
+    if (ty > 0.0f)
+        oy += neww * logf(xmax + ssx);
+    else
+        oy -= neww * logf(xmax + ssx);
+    """)
+
+var(63, 'escher', """
+    float a = atan2f(ty,tx);
+    float lnr = 0.5f * logf(tx*tx + ty*ty);
+    float ebeta = {{px.get('xf.escher_beta')}};
+    float seb = sinf(ebeta);
+    float ceb = cosf(ebeta);
+    float vc = 0.5f * (1.0f + ceb);
+    float vd = 0.5f * seb;
+    float m = w * expf(vc*lnr - vd*a);
+    float n = vc*a + vd*lnr;
+
+    ox += m * cosf(n);
+    oy += m * sinf(n);
+    """)
+
+var(64, 'foci', """
+    float expx = expf(tx) * 0.5f;
+    float expnx = 0.25f / expx;
+    float sn = sinf(ty);
+    float cn = cosf(ty);
+    float tmp = w / (expx + expnx - cn);    
+    ox += tmp * (expx - expnx);
+    oy += tmp * sn;
+    """)
+
