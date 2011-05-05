@@ -682,3 +682,87 @@ var(64, 'foci', """
     oy += tmp * sn;
     """)
 
+var(65, 'lazysusan', """
+    float lx = {{px.get('xf.lazysusan_x')}};
+    float ly = {{px.get('xf.lazysusan_y')}};
+    float x = tx - lx; 
+    float y = ty + ly;
+    float r = sqrtf(x*x + y*y);
+
+    if (r < w) {
+        float a = atan2f(y,x) + {{px.get('xf.lazysusan_spin')}} +
+                 {{px.get('xf.lazysusan_twist')}}*(w-r);
+        r = w * r;
+
+        ox += r * cosf(a) + lx;
+        oy += r * sinf(a) - ly;
+
+    } else {
+        r = w * (1.0f + {{px.get('xf.lazysusan_space')}} / r);
+
+        ox += r * x + lx;
+        oy += r * y - ly;   
+    }
+    """)      
+
+var(66, 'loonie', """
+    float r2 = tx*tx + ty*ty;;
+    float w2 = w*w;
+   
+    if (r2 < w2) {
+        float r = w * sqrtf(w2/r2 - 1.0f);
+        ox += r * tx;
+        oy += r * ty;
+    } else {
+        ox += w * tx;
+        oy += w * ty;
+    }
+    """)
+
+var(67, 'pre_blur', """
+    float rndG = w * (mwc_next_01(rctx) + mwc_next_01(rctx)
+                   + mwc_next_01(rctx) + mwc_next_01(rctx) - 2.0f);
+    float rndA = mwc_next_01(rctx) * 2.0f * M_PI;
+   
+    /* Note: original coordinate changed */
+    tx += rndG * cosf(rndA);
+    ty += rndG * sinf(rndA);
+    """)
+
+var(68, 'modulus', """
+    float mx = {{px.get('xf.modulus_x')}}
+    float my = {{px.get('xf.modulus_y')}}
+    float xr = 2.0f*mx;
+    float yr = 2.0f*my;
+   
+    if (tx > mx)
+        ox += w * (-mx + fmodf(tx + mx, xr));
+    else if (tx < -mx)
+        ox += w * ( mx - fmodf(mx - tx, xr));
+    else
+        ox += w * tx;
+      
+    if (ty > my)
+        oy += w * (-my + fmodf(ty + my, yr));
+    else if (ty < -my)
+        oy += w * ( my - fmodf(my - ty, yr));
+    else
+        oy += w * ty;
+    """)         
+
+var(69, 'oscope', """
+    float tpf = 2.0f * M_PI * {{px.get('xf.oscope_frequency')}};
+    float amp = {{px.get('xf.oscope_amplitude')}};
+    float sep = {{px.get('xf.oscope_separation')}};
+    float dmp = {{px.get('xf.oscope_damping')}};
+
+    float t = amp * expf(-fabsf(tx)*dmp) * cosf(tpf*tx) + sep;
+
+    ox += w*tx;   
+    if (fabsf(ty) <= t)
+        oy -= w*ty;
+    else
+        oy += w*ty;
+    """)
+
+
