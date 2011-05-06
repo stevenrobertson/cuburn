@@ -846,4 +846,119 @@ var(77, 'wedge', """
     oy += r * sinf(a);
     """)
 
+var(81, 'waves2', """
+    ox += w*(tx + {{ps.get('xf.waves2_scalex')}}*sinf(ty * {{ps.get('xf.waves2_freqx')}}));
+    oy += w*(ty + {{ps.get('xf.waves2_scaley')}}*sinf(tx * {{ps.get('xf.waves2_freqy')}}));
+    """)
+
+var(82, 'exp', """
+    float expe = expf(f->tx);
+    ox += w * expe * cosf(ty);
+    oy += w * expe * sinf(ty);
+    """)
+
+var(83, 'log', """        
+    ox += w * 0.5f * logf(tx*tx + ty*ty);
+    oy += w * atan2f(ty, tx);
+    """)
+
+var(84, 'sin', """
+    ox += w * sinf(tx) * coshf(ty);
+    oy += w * cosf(tx) * sinhf(ty);
+    """)
+
+var(85, 'cos', """
+    ox += w * cosf(tx) * coshf(ty);
+    oy -= w * sinf(tx) * sinhf(ty);
+    """)
+
+var(86, 'tan', """
+    float tanden = 1.0f/(cosf(2.0*tx) + coshf(2.0f*ty));
+    ox += w * tanden * sinf(2.0f*tx);
+    oy += w * tanden * sinhf(2.0f*ty);
+    """)
+
+var(87, 'sec', """
+    float secden = 2.0f/(cosf(2.0f*tx) + coshf(2.0f*ty));
+    ox += w * secden * cosf(tx) * coshf(ty);
+    oy += w * secden * sinf(tx) * sinhf(ty);
+    """)
+
+var(88, 'csc', """
+    float cscden = 2.0f/(coshf(2.0f*ty) - cosf(2.0f*tx));
+    ox += w * cscden * sinf(tx) * coshf(ty);
+    oy -= w * cscden * cosf(tx) * sinhf(ty);
+    """)
+
+var(89, 'cot', """
+    float cotden = 1.0f/(coshf(2.0f*ty) - cosf(2.0f*tx));
+    ox += w * cotden * sinf(2.0f*tx);
+    oy += w * cotden * -1.0f * sinhf(2.0f*ty);
+    """)
+
+var(90, 'sinh', """
+    ox += w * sinhf(tx) * cosf(ty);
+    oy += w * coshf(tx) * sinf(ty);
+    """)
+
+var(91, 'cosh', """
+    ox += w * coshf(tx) * cosf(ty);
+    oy += w * sinhf(tx) * sinf(ty);
+    """)
+
+var(92, 'tanh', """
+    float tanhden = 1.0f/(cosf(2.0f*ty) + coshf(2.0f*tx));
+    ox += w * tanhden * sinhf(2.0f*tx);
+    oy += w * tanhden * sinf(2.0f*ty);
+    """)
+
+var(93, 'sech', """
+    float sechden = 2.0f/(cosf(2.0f*ty) + coshf(2.0f*tx));
+    ox += w * sechden * cosf(ty) * coshf(tx);
+    oy -= w * sechden * sinf(ty) * sinhf(tx);
+    """)
+
+var(94, 'csch', """
+    cschden = 2.0f/(coshf(2.0f*tx) - cosf(2.0f*ty));
+    ox += w * cschden * sinhf(tx) * cosf(ty);
+    oy -= w * cschden * coshf(tx) * sinf(ty);
+    """)
+
+var(95, 'coth', """
+    cothden = 1.0f/(coshf(2.0f*tx) - cosf(2.0f*ty));
+    ox += w * cothden * sinhf(2.0f*tx);
+    oy += w * cothden * sinf(2.0f*ty);
+    """)
+
+var(97, 'flux', """
+    float xpw = tx + w;
+    float xmw = tx - w;
+    float avgr = w * (2.0f + {{px.get('xf.flux_spread')}}) * sqrtf(sqrtf(ty*ty+xpw*xpw)/sqrtf(ty*ty+xmw*xmw));
+    float avga = (atan2f(ty, xmw) - atan2f(ty,xpw))*0.5f;
+    ox += avgr * cosf(avga);
+    oy += avgr * sinf(avga);
+    """)
+
+var(98, 'mobius', """
+    float rea = {{px.get('xf.mobius_re_a')}};
+    float ima = {{px.get('xf.mobius_im_a')}};
+    float reb = {{px.get('xf.mobius_re_b')}};
+    float imb = {{px.get('xf.mobius_im_b')}};
+    float rec = {{px.get('xf.mobius_re_c')}};
+    float imc = {{px.get('xf.mobius_im_c')}};
+    float red = {{px.get('xf.mobius_re_d')}};
+    float imd = {{px.get('xf.mobius_im_d')}};
+
+    float re_u, im_u, re_v, im_v, rad_v;
+
+    re_u = rea * tx - ima * ty + reb;
+    im_u = rea * ty + ima * tx + imb;
+    re_v = rec * tx - imc * ty + red;
+    im_v = rec * ty + imc * tx + imd;
+
+    rad_v = w / (re_v*re_v + im_v*im_v);
+
+    ox += rad_v * (re_u*re_v + im_u*im_v);
+    oy += rad_v * (im_u*re_v - re_u*im_v);
+    """)
 
