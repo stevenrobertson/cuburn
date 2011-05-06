@@ -220,19 +220,15 @@ def render(features, cps):
 
     npix = features.width * features.height
 
-    k1 = cp.brightness * 268 / 256
-    area = features.width * features.height / cp.ppu ** 2
-    k2 = 1 / (area * cp.adj_density)
+    obufd = cuda.to_device(abuf)
+    de.invoke(mod, abufd, obufd, dbufd)
 
-    de.invoke(mod, abufd, dbufd)
-
-    fun = mod.get_function("logfilt")
-    t = fun(abufd, f(k1), f(k2),
-        f(1 / cp.gamma), f(cp.vibrancy), f(cp.highlight_power),
+    fun = mod.get_function("colorclip")
+    t = fun(obufd, f(1 / cp.gamma), f(cp.vibrancy), f(cp.highlight_power),
         block=(256,1,1), grid=(npix/256,1), time_kernel=True)
     print "Completed color filtering in %g seconds" % t
 
-    abuf = cuda.from_device_like(abufd, abuf)
+    abuf = cuda.from_device_like(obufd, abuf)
     return abuf, dbuf
 
 
