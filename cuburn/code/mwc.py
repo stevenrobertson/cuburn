@@ -21,7 +21,7 @@ __device__ uint32_t mwc_next(mwc_st *st) {
         "cvt.u64.u32  val, %0;\n\t"
         "mad.wide.u32 val, %1, %2, val;\n\t"
         "mov.b64 {%1, %0}, val;\n\t}\n\t"
-        : "=r"(st->carry), "=r"(st->state) : "r"(st->mul));
+        : "+r"(st->carry), "+r"(st->state) : "r"(st->mul));
     return st->state;
 }
 
