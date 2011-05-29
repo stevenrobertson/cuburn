@@ -61,9 +61,9 @@ void apply_xf{{xfid}}(float *ix, float *iy, float *icolor, mwc_st *rctx) {
         return tmpl.substitute(g)
 
     def _iterbody(self):
-        tmpl = Template("""
+        tmpl = Template(r"""
 __global__
-void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
+void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
     mwc_st rctx = msts[gtid()];
     iter_info *info_glob = &(infos[blockIdx.x]);
 
@@ -139,10 +139,12 @@ void iter(mwc_st *msts, iter_info *infos, float *accbuf, float *denbuf) {
         int i = iy * {{features.width}} + ix;
 
         float4 outcol = tex2D(palTex, color, {{packer.get('cp_step_frac')}});
-        accbuf[i*4]     += outcol.x;
-        accbuf[i*4+1]   += outcol.y;
-        accbuf[i*4+2]   += outcol.z;
-        accbuf[i*4+3]   += outcol.w;
+        float4 pix = accbuf[i];
+        pix.x += outcol.x;
+        pix.y += outcol.y;
+        pix.z += outcol.z;
+        pix.w += outcol.w;
+        accbuf[i] = pix;    // TODO: atomic operations (or better)
         denbuf[i] += 1.0f;
     }
 }
