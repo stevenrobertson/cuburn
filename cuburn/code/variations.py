@@ -102,7 +102,7 @@ var(12, 'ex', """
     """)
 
 var(13, 'julia', """
-    float a = 0.5f * atan2f(tx, ty)
+    float a = 0.5f * atan2f(tx, ty);
     if (mwc_next(rctx) & 1) a += M_PI;
     float r = w * sqrtf(tx*tx + ty*ty);
     ox += r * cosf(a);
@@ -299,8 +299,8 @@ var(34, 'blur', """
 
 var(35, 'gaussian', """
     float ang = mwc_next_01(rctx) * 2.0f * M_PI;
-    float r = weight * ( mwc_next_01(rctx) + mwc_next_01(rctx)
-                   + mwc_next_01(rctx) + mwc_next_01(rctx) - 2.0f );
+    float r = w * ( mwc_next_01(rctx) + mwc_next_01(rctx)
+                  + mwc_next_01(rctx) + mwc_next_01(rctx) - 2.0f );
     ox += r * cosf(ang);
     oy += r * sinf(ang);
     """)
@@ -342,7 +342,7 @@ var(38, 'ngon', """
 
     ox += w * tx * amp;
     oy += w * ty * amp;
-    """}
+    """)
 
 var(39, 'curl', """
     float c1 = {{px.get('xf.curl_c1')}};
@@ -359,7 +359,7 @@ var(39, 'curl', """
 var(40, 'rectangles', """
     float rx = {{px.get('xf.rectangles_x')}};
     float ry = {{px.get('xf.rectangles_y')}};
-    
+
     ox += w * ( (rx==0.0f) ? tx : rx * (2.0f * floorf(tx/rx) + 1.0f) - tx);
     oy += w * ( (ry==0.0f) ? ty : ry * (2.0f * floorf(ty/ry) + 1.0f) - ty);
     """)
@@ -447,7 +447,7 @@ var(50, 'super_shape', """
     float t1 = fabsf(cosf(theta));
     float t2 = fabsf(sinf(theta));
     t1 = powf(t1,{{px.get('xf.super_shape_n2')}});
-    t2 = powf(t2,{{px.get('xf.super_shape_n3')}});   
+    t2 = powf(t2,{{px.get('xf.super_shape_n3')}});
     float myrnd = {{px.get('xf.super_shape_rnd')}};
     float d = sqrtf(tx*tx+ty*ty);
 
@@ -504,7 +504,7 @@ var(55, 'bipolar', """
     float x2 = tx * 2.0f;
     float ps = -M_PI_2 * {{px.get('xf.bipolar_shift')}}
     float y = 0.5 * atan2f(2.0f * ty, x2y2 - 1.0f) + ps;
-   
+
     if (y > M_PI_2)
         y = -M_PI_2 + fmodf(y + M_PI_2, M_PI);
     else if (y < -M_PI_2)
@@ -556,7 +556,7 @@ var(57, 'butterfly', """
 var(58, 'cell', """
     float cell_size = {{px.get('xf.cell_size')}}
     float inv_cell_size = 1.0f/cell_size;
-    
+
     /* calculate input cell */
     float x = floorf(tx * inv_cell_size);
     float y = floorf(ty * inv_cell_size);
@@ -564,7 +564,7 @@ var(58, 'cell', """
     /* Offset from cell origin */
     float dx = tx - x*cell_size;
     float dy = ty - y*cell_size;
-   
+
    /* interleave cells */
     if (y >= 0.0f) {
         if (x >= 0.0f) {
@@ -583,7 +583,7 @@ var(58, 'cell', """
             x = -(2.0f*x+1.0f);
          }
     }
-   
+
     ox += w * (dx + x*cell_size);
     oy -= w * (dy + y*cell_size);
     """)
@@ -595,7 +595,7 @@ var(59, 'cpow', """
     float va = 2.0f * M_PI / power;
     float vc = {{px.get('xf.cpow_r')}} / power;
     float vd = {{px.get('xf.cpow_i')}} / power;
-    float ang = vc*a + vd*lnr + va*floorf(power*mwc_next_01(rctx));   
+    float ang = vc*a + vd*lnr + va*floorf(power*mwc_next_01(rctx));
     float m = w * expf(vc * lnr - vd * a);
     ox += m * cosf(ang);
     oy += m * sinf(ang);
@@ -604,7 +604,7 @@ var(59, 'cpow', """
 var(60, 'curve', """
     float pc_xlen = {{px.get('xf.curve_xlength * xf.curve_xlength','pc_xlen')}};
     float pc_ylen = {{px.get('xf.curve_ylength * xf.curve_ylength','pc_ylen')}};
-   
+
     if (pc_xlen<1E-20f) pc_xlen = 1E-20f;
     if (pc_ylen<1E-20f) pc_ylen = 1E-20f;
 
@@ -621,7 +621,7 @@ var(61, 'edisc', """
     float a1 = logf(xmax + sqrtf(xmax - 1.0f));
     float a2 = -acosf(tx/xmax);
     float neww = w / 11.57034632f;
-   
+
     float snv = sinf(a1);
     float csv = cosf(a1);
     if (ty > 0.0f) snv = -snv;
@@ -638,19 +638,19 @@ var(62, 'elliptic', """
     float b = 1.0f - a*a;
     float ssx = xmax - 1.0f;
     float neww = w / M_PI_2;
-   
+
     if (b < 0.0f)
         b = 0.0f;
     else
         b = sqrtf(b);
-      
+
     if (ssx < 0.0f)
         ssx = 0.0f;
     else
         ssx = sqrtf(ssx);
-      
+
     ox += neww * atan2f(a,b);
-   
+
     if (ty > 0.0f)
         oy += neww * logf(xmax + ssx);
     else
@@ -677,7 +677,7 @@ var(64, 'foci', """
     float expnx = 0.25f / expx;
     float sn = sinf(ty);
     float cn = cosf(ty);
-    float tmp = w / (expx + expnx - cn);    
+    float tmp = w / (expx + expnx - cn);
     ox += tmp * (expx - expnx);
     oy += tmp * sn;
     """)
@@ -685,7 +685,7 @@ var(64, 'foci', """
 var(65, 'lazysusan', """
     float lx = {{px.get('xf.lazysusan_x')}};
     float ly = {{px.get('xf.lazysusan_y')}};
-    float x = tx - lx; 
+    float x = tx - lx;
     float y = ty + ly;
     float r = sqrtf(x*x + y*y);
 
@@ -701,14 +701,14 @@ var(65, 'lazysusan', """
         r = w * (1.0f + {{px.get('xf.lazysusan_space')}} / r);
 
         ox += r * x + lx;
-        oy += r * y - ly;   
+        oy += r * y - ly;
     }
-    """)      
+    """)
 
 var(66, 'loonie', """
     float r2 = tx*tx + ty*ty;;
     float w2 = w*w;
-   
+
     if (r2 < w2) {
         float r = w * sqrtf(w2/r2 - 1.0f);
         ox += r * tx;
@@ -723,7 +723,7 @@ var(67, 'pre_blur', """
     float rndG = w * (mwc_next_01(rctx) + mwc_next_01(rctx)
                    + mwc_next_01(rctx) + mwc_next_01(rctx) - 2.0f);
     float rndA = mwc_next_01(rctx) * 2.0f * M_PI;
-   
+
     /* Note: original coordinate changed */
     tx += rndG * cosf(rndA);
     ty += rndG * sinf(rndA);
@@ -734,21 +734,21 @@ var(68, 'modulus', """
     float my = {{px.get('xf.modulus_y')}}
     float xr = 2.0f*mx;
     float yr = 2.0f*my;
-   
+
     if (tx > mx)
         ox += w * (-mx + fmodf(tx + mx, xr));
     else if (tx < -mx)
         ox += w * ( mx - fmodf(mx - tx, xr));
     else
         ox += w * tx;
-      
+
     if (ty > my)
         oy += w * (-my + fmodf(ty + my, yr));
     else if (ty < -my)
         oy += w * ( my - fmodf(my - ty, yr));
     else
         oy += w * ty;
-    """)         
+    """)
 
 var(69, 'oscope', """
     float tpf = 2.0f * M_PI * {{px.get('xf.oscope_frequency')}};
@@ -758,7 +758,7 @@ var(69, 'oscope', """
 
     float t = amp * expf(-fabsf(tx)*dmp) * cosf(tpf*tx) + sep;
 
-    ox += w*tx;   
+    ox += w*tx;
     if (fabsf(ty) <= t)
         oy -= w*ty;
     else
@@ -780,7 +780,7 @@ var(71, 'popcorn2', """
 var(72, 'scry', """
     /* note that scry does not multiply by weight, but as the */
     /* values still approach 0 as the weight approaches 0, it */
-    /* should be ok                                           */ 
+    /* should be ok                                           */
     float t = tx*tx + ty*ty;
     float r = 1.0f / (sqrtf(t) * (t + 1.0f/w));
     ox += tx*r;
@@ -790,12 +790,12 @@ var(72, 'scry', """
 var(73, 'separation', """
     float sx2 = {{px.get('xf.separation_x * xf.separation_x', 'sx2')}};
     float sy2 = {{px.get('xf.separation_y * xf.separation_y', 'sy2')}};
-    
+
     if (tx > 0.0f)
         ox += w * (sqrtf(tx*tx + sx2) - tx*{{ps.get('xf.separation_xinside')}});
     else
         ox -= w * (sqrtf(tx*tx + sx2) + tx*{{ps.get('xf.separation_xinside')}});
-   
+
     if (ty > 0.0f)
         oy += w * (sqrtf(ty*ty + sy2) - ty*{{ps.get('xf.separation_yinside')}});
     else
@@ -807,7 +807,7 @@ var(74, 'split', """
         oy += w*ty;
     else
         oy -= w*ty;
-      
+
     if (cosf(ty*{{px.get('xf.split_ysize')}}*M_PI) >= 0.0f)
         ox += w*tx;
     else
@@ -819,7 +819,7 @@ var(75, 'splits', """
         ox += w*(tx + {{ps.get('xf.splits_x')}});
     else
         ox += w*(tx - {{ps.get('xf.splits_x')}});
-      
+
     if (f->ty >= 0)
         oy += w*(ty + {{ps.get('xf.splits_y')}});
     else
@@ -857,7 +857,7 @@ var(82, 'exp', """
     oy += w * expe * sinf(ty);
     """)
 
-var(83, 'log', """        
+var(83, 'log', """
     ox += w * 0.5f * logf(tx*tx + ty*ty);
     oy += w * atan2f(ty, tx);
     """)
