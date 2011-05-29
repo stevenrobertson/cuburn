@@ -47,6 +47,7 @@ def main(args):
 
     noalpha = np.delete(accum, 3, axis=2)
     scipy.misc.imsave('rendered.png', noalpha)
+    scipy.misc.imsave('rendered.jpg', noalpha)
 
     if '-g' not in args:
         return
