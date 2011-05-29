@@ -68,7 +68,8 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
     iter_info *info_glob = &(infos[blockIdx.x]);
 
     // load info to shared memory cooperatively
-    for (int i = threadIdx.x; i * 4 < sizeof(iter_info); i += blockDim.x)
+    for (int i = threadIdx.y * 32 + threadIdx.x;
+         i * 4 < sizeof(iter_info); i += blockDim.x * blockDim.y)
         reinterpret_cast<float*>(&info)[i] =
             reinterpret_cast<float*>(info_glob)[i];
 
@@ -215,7 +216,7 @@ def render(features, cps):
     fun = mod.get_function("iter")
     fun.set_cache_config(cuda.func_cache.PREFER_L1)
     t = fun(InOut(seeds), InOut(infos), abufd, dbufd,
-        block=(512,1,1), grid=(nsteps,1), time_kernel=True)
+        block=(32,16,1), grid=(nsteps,1), time_kernel=True)
     print "Completed render in %g seconds" % t
 
     f = np.float32
