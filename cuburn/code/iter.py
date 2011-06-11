@@ -8,6 +8,7 @@ import pycuda.driver as cuda
 from pycuda.driver import In, Out, InOut
 from pycuda.compiler import SourceModule
 import numpy as np
+from scipy import ndimage
 
 from fr0stlib.pyflam3 import flam3_interpolate
 from cuburn.code import mwc, variations, filter
@@ -125,8 +126,8 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
 
         int ix = trunca(cx+ditherx), iy = trunca(cy+dithery);
 
-        if (ix < 0 || ix >= {{features.width}} ||
-            iy < 0 || iy >= {{features.height}} ) {
+        if (ix < 0 || ix >= {{features.acc_width}} ||
+            iy < 0 || iy >= {{features.acc_height}} ) {
             consec_bad++;
             if (consec_bad > {{features.max_oob}}) {
                 x = mwc_next_11(&rctx);
@@ -137,7 +138,7 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
             continue;
         }
 
-        int i = iy * {{features.width}} + ix;
+        int i = iy * {{features.acc_stride}} + ix;
 
         float4 outcol = tex2D(palTex, color, {{packer.get('cp_step_frac')}});
         float4 pix = accbuf[i];
@@ -148,6 +149,7 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
         accbuf[i] = pix;    // TODO: atomic operations (or better)
         denbuf[i] += 1.0f;
     }
+    asm volatile ("membar.cta;");
 }
 """)
         return tmpl.substitute(
@@ -158,8 +160,8 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
 def render(features, cps):
     # TODO: make this adjustable via genome
     nsteps = 1000
-    abuf = np.zeros((features.height, features.width, 4), dtype=np.float32)
-    dbuf = np.zeros((features.height, features.width), dtype=np.float32)
+    abuf = np.zeros((features.acc_height, features.acc_stride, 4), dtype=np.float32)
+    dbuf = np.zeros((features.acc_height, features.acc_stride), dtype=np.float32)
     seeds = mwc.MWC.make_seeds(512 * nsteps)
 
     iter = IterCode(features)
@@ -221,9 +223,13 @@ def render(features, cps):
 
     f = np.float32
 
-    npix = features.width * features.height
+    npix = features.acc_width * features.acc_height
 
+    # TODO: just allocate
     obufd = cuda.to_device(abuf)
+    dbuf = cuda.from_device_like(dbufd, dbuf)
+    dbuf = ndimage.filters.gaussian_filter(dbuf, 0.6)
+    dbufd = cuda.to_device(dbuf)
     de.invoke(mod, abufd, obufd, dbufd)
 
     fun = mod.get_function("colorclip")

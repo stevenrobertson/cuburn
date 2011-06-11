@@ -38,7 +38,9 @@ class Genome(pyflam3.Genome):
         """
         # TODO: when reading as a property during packing, this may be
         # calculated 6 times instead of 1
-        return ( affine.translate(0.5 * cp.width, 0.5 * cp.height)
+        # TODO: also requires knowing gutter width
+        g = Features.gutter
+        return ( affine.translate(0.5 * cp.width + g, 0.5 * cp.height + g)
                * affine.scale(cp.ppu, cp.ppu)
                * affine.translate(-cp._center[0], -cp._center[1])
                * affine.rotate(cp.rotate * 2 * np.pi / 360,
@@ -90,6 +92,10 @@ class Features(object):
     # performance too much. Power-of-two, please.
     palette_height = 16
 
+    # Maximum width of DE and other spatial filters, and thus in turn the
+    # amount of padding applied
+    gutter = 16
+
     def __init__(self, genomes):
         any = lambda l: bool(filter(None, map(l, genomes)))
         self.max_ntemporal_samples = max(
@@ -112,9 +118,9 @@ class Features(object):
 
         self.width = genomes[0].width
         self.height = genomes[0].height
-        self.acc_width = genomes[0].width
-        self.acc_height = genomes[0].height
-        self.acc_stride = genomes[0].width
+        self.acc_width = genomes[0].width + 2 * self.gutter
+        self.acc_height = genomes[0].height + 2 * self.gutter
+        self.acc_stride = genomes[0].width + 2 * self.gutter
 
 class XFormFeatures(object):
     def __init__(self, xforms, xform_id):

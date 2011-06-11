@@ -117,7 +117,7 @@ void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
         float den = denbuf[idx];
 
         if (in.w > 0 && den > 0) {
-            float ls = k1 * 12 * logf(1.0 + in.w * k2) / in.w;
+            float ls = k1 * logf(1.0f + in.w * k2) / in.w;
             in.x *= ls;
             in.y *= ls;
             in.z *= ls;
@@ -200,19 +200,6 @@ void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
             atomicAdd(out+3, de_a[si]);
         }
 
-        if (threadIdx.y == 5000) {
-            for (int i = threadIdx.x; i < FW; i += 32) {
-                idx = {{features.acc_stride}} * (imrow + 32)
-                    + blockIdx.x * 32 + i + W2;
-                int si = 32 * FW + i;
-                float *out = reinterpret_cast<float*>(&outbuf[idx]);
-                atomicAdd(out,   0.2 + de_r[si]);
-                atomicAdd(out+1, de_g[si]);
-                atomicAdd(out+2, de_b[si]);
-                atomicAdd(out+3, de_a[si]);
-            }
-        }
-
         __syncthreads();
         // TODO: shift instead of copying
         int tid = threadIdx.y * 32 + threadIdx.x;
@@ -239,9 +226,11 @@ void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
     def invoke(self, mod, abufd, obufd, dbufd):
         # TODO: add no-est version
         # TODO: come up with a general way to average these parameters
+
         k1 = self.cp.brightness * 268 / 256
-        area = self.features.width * self.features.height / self.cp.ppu ** 2
+        area = self.features.acc_width * self.features.acc_height / self.cp.ppu ** 2
         k2 = 1 / (area * self.cp.adj_density)
+        print k1, k2, area
 
         if self.cp.estimator == 0:
             fun = mod.get_function("logscale")
@@ -251,7 +240,7 @@ void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
         else:
             fun = mod.get_function("density_est")
             t = fun(abufd, obufd, dbufd, np.float32(k1), np.float32(k2),
-                    block=(32, 32, 1), grid=(self.features.acc_stride/32 - 1, 1),
+                    block=(32, 32, 1), grid=(self.features.acc_width/32, 1),
                     time_kernel=True)
             print "Density estimation: %g" % t
 

@@ -44,6 +44,10 @@ def main(args):
         genomes = Genome.from_string(fp.read())
     anim = Animation(genomes)
     accum, den = render(anim.features, genomes)
+    accum = np.delete(accum, np.s_[:16], axis=0)
+    accum = np.delete(accum, np.s_[:16], axis=1)
+    accum = np.delete(accum, np.s_[-16:], axis=0)
+    accum = np.delete(accum, np.s_[-16:], axis=1)
 
     noalpha = np.delete(accum, 3, axis=2)
     scipy.misc.imsave('rendered.png', noalpha)
