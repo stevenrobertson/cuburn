@@ -14,6 +14,8 @@ from ctypes import *
 from fr0stlib.pyflam3 import constants
 from fr0stlib.pyflam3._flam3 import *
 
+from cuburn import render
+
 flam3_nvariations = constants.flam3_nvariations = 99
 
 BaseXForm._fields_ = [('var', c_double * flam3_nvariations)

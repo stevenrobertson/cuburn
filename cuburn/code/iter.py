@@ -2,20 +2,13 @@
 The main iteration loop.
 """
 
-from ctypes import byref, memset, sizeof
-
-import pycuda.driver as cuda
-from pycuda.driver import In, Out, InOut
-from pycuda.compiler import SourceModule
-import numpy as np
-from scipy import ndimage
-
-from fr0stlib.pyflam3 import flam3_interpolate
-from cuburn.code import mwc, variations, filter
+from cuburn.code import mwc, variations
 from cuburn.code.util import *
-from cuburn.render import Genome
 
 class IterCode(HunkOCode):
+    # The number of threads per block
+    NTHREADS = 512
+
     def __init__(self, features):
         self.features = features
         self.packer = DataPacker('iter_info')
@@ -69,14 +62,14 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
     iter_info *info_glob = &(infos[blockIdx.x]);
 
     // load info to shared memory cooperatively
-    for (int i = threadIdx.y * 32 + threadIdx.x;
+    for (int i = threadIdx.y * blockDim.x + threadIdx.x;
          i * 4 < sizeof(iter_info); i += blockDim.x * blockDim.y)
         reinterpret_cast<float*>(&info)[i] =
             reinterpret_cast<float*>(info_glob)[i];
 
     int consec_bad = -{{features.fuse}};
-    // TODO: make nsteps adjustable via genome
-    int nsamps = {{packer.get('cp.width * cp.height / 512000. * cp.adj_density')}};
+    // TODO: remove '512' constant
+    int nsamps = {{packer.get('cp.width * cp.height / (cp.ntemporal_samples * 512.) * cp.adj_density')}};
 
     float x, y, color;
     x = mwc_next_11(&rctx);
@@ -156,87 +149,4 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
                 features = self.features,
                 packer = self.packer.view('info'),
                 **globals())
-
-def render(features, cps):
-    # TODO: make this adjustable via genome
-    nsteps = 1000
-    abuf = np.zeros((features.acc_height, features.acc_stride, 4), dtype=np.float32)
-    dbuf = np.zeros((features.acc_height, features.acc_stride), dtype=np.float32)
-    seeds = mwc.MWC.make_seeds(512 * nsteps)
-
-    iter = IterCode(features)
-    de = filter.DensityEst(features, cps[0])
-    code = assemble_code(BaseCode, mwc.MWC, iter.packer, iter,
-                         filter.ColorClip, de)
-
-    for lno, line in enumerate(code.split('\n')):
-        print '%3d %s' % (lno, line)
-    mod = SourceModule(code,
-            options=['-use_fast_math', '-maxrregcount', '32'])
-
-    cps_as_array = (Genome * len(cps))()
-    for i, cp in enumerate(cps):
-        cps_as_array[i] = cp
-
-    infos = []
-    pal = np.empty((16, 256, 4), dtype=np.uint8)
-
-    # TODO: move this into a common function
-    if len(cps) > 1:
-        cp = Genome()
-        memset(byref(cp), 0, sizeof(cp))
-
-        sampAt = [int(i/15.*(nsteps-1)) for i in range(16)]
-        for n in range(nsteps):
-            flam3_interpolate(cps_as_array, 2, float(n)/nsteps - 0.5,
-                              0, byref(cp))
-            cp._init()
-            if n in sampAt:
-                pidx = sampAt.index(n)
-                for i, e in enumerate(cp.palette.entries):
-                    pal[pidx][i] = np.uint8(np.array(e.color) * 255.0)
-            infos.append(iter.packer.pack(cp=cp, cp_step_frac=float(n)/nsteps))
-    else:
-        for i, e in enumerate(cps[0].palette.entries):
-            pal[0][i] = np.uint8(np.array(e.color) * 255.0)
-        pal[1:] = pal[0]
-        infos.append(iter.packer.pack(cp=cps[0], cp_step_frac=0))
-        infos *= nsteps
-
-    infos = np.concatenate(infos)
-
-    dpal = cuda.make_multichannel_2d_array(pal, 'C')
-    tref = mod.get_texref('palTex')
-    tref.set_array(dpal)
-    tref.set_format(cuda.array_format.UNSIGNED_INT8, 4)
-    tref.set_flags(cuda.TRSF_NORMALIZED_COORDINATES)
-    tref.set_filter_mode(cuda.filter_mode.LINEAR)
-
-    abufd = cuda.to_device(abuf)
-    dbufd = cuda.to_device(dbuf)
-
-    fun = mod.get_function("iter")
-    fun.set_cache_config(cuda.func_cache.PREFER_L1)
-    t = fun(InOut(seeds), InOut(infos), abufd, dbufd,
-        block=(32,16,1), grid=(nsteps,1), time_kernel=True)
-    print "Completed render in %g seconds" % t
-
-    f = np.float32
-
-    npix = features.acc_width * features.acc_height
-
-    # TODO: just allocate
-    obufd = cuda.to_device(abuf)
-    dbuf = cuda.from_device_like(dbufd, dbuf)
-    dbuf = ndimage.filters.gaussian_filter(dbuf, 0.6)
-    dbufd = cuda.to_device(dbuf)
-    de.invoke(mod, abufd, obufd, dbufd)
-
-    fun = mod.get_function("colorclip")
-    t = fun(obufd, f(1 / cp.gamma), f(cp.vibrancy), f(cp.highlight_power),
-        block=(256,1,1), grid=(npix/256,1), time_kernel=True)
-    print "Completed color filtering in %g seconds" % t
-
-    abuf = cuda.from_device_like(obufd, abuf)
-    return abuf, dbuf
 

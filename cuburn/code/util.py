@@ -66,7 +66,25 @@ int trunca(float f) {
     asm("cvt.rni.s32.f32    %0,     %1;" : "=r"(ret) : "f"(f));
     return ret;
 }
+
+__global__
+void zero_dptr(float* dptr, int size) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < size) {
+        dptr[i] = 0.0f;
+    }
+}
 """
+
+    @staticmethod
+    def zero_dptr(mod, dptr, size, stream=None):
+        """
+        A memory zeroer which can be embedded in a stream. Size is the
+        number of 4-byte words in the pointer.
+        """
+        zero = mod.get_function("zero_dptr")
+        zero(dptr, np.int32(size), stream=stream,
+             block=(1024, 1, 1), grid=(size/1024+1, 1))
 
 class DataPackerView(object):
     """

@@ -22,13 +22,10 @@ import scipy
 import pyglet
 import pycuda.autoinit
 
-from fr0stlib.pyflam3 import *
-from fr0stlib.pyflam3._flam3 import *
-
 import cuburn._pyflam3_hacks
+from fr0stlib import pyflam3
 from cuburn.render import *
 from cuburn.code.mwc import MWCTest
-from cuburn.code.iter import render, membench
 
 # Required on my system; CUDA doesn't yet work with GCC 4.5
 os.environ['PATH'] = ('/usr/x86_64-pc-linux-gnu/gcc-bin/4.4.5:'
@@ -37,24 +34,22 @@ os.environ['PATH'] = ('/usr/x86_64-pc-linux-gnu/gcc-bin/4.4.5:'
 def main(args):
     if '-t' in args:
         MWCTest.test_mwc()
-        membench()
-
 
     with open(args[1]) as fp:
-        genomes = Genome.from_string(fp.read())
+        genome_ptr, ngenomes = pyflam3.Genome.from_string(fp.read())
+        genomes = cast(genome_ptr, POINTER(pyflam3.Genome*ngenomes)).contents
     anim = Animation(genomes)
-    accum, den = render(anim.features, genomes)
-    accum = np.delete(accum, np.s_[:16], axis=0)
-    accum = np.delete(accum, np.s_[:16], axis=1)
-    accum = np.delete(accum, np.s_[-16:], axis=0)
-    accum = np.delete(accum, np.s_[-16:], axis=1)
+    anim.compile()
+    anim.load()
+    for n, out in enumerate(anim.render_frames()):
+        noalpha = np.delete(out, 3, axis=2)
+        scipy.misc.imsave('rendered_%03d.png' % n, noalpha)
+        scipy.misc.imsave('rendered_%03d.jpg' % n, noalpha)
 
-    noalpha = np.delete(accum, 3, axis=2)
-    scipy.misc.imsave('rendered.png', noalpha)
-    scipy.misc.imsave('rendered.jpg', noalpha)
+    return
 
-    if '-g' not in args:
-        return
+    #if '-g' not in args:
+    #    return
 
     window = pyglet.window.Window(anim.features.width, anim.features.height)
     imgbuf = (np.minimum(accum * 255, 255)).astype(np.uint8)

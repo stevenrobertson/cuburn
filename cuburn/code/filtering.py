@@ -223,24 +223,22 @@ void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
 
 """)
 
-    def invoke(self, mod, abufd, obufd, dbufd):
+    def invoke(self, mod, abufd, obufd, dbufd, stream=None):
         # TODO: add no-est version
         # TODO: come up with a general way to average these parameters
 
         k1 = self.cp.brightness * 268 / 256
         area = self.features.acc_width * self.features.acc_height / self.cp.ppu ** 2
         k2 = 1 / (area * self.cp.adj_density)
-        print k1, k2, area
 
         if self.cp.estimator == 0:
             fun = mod.get_function("logscale")
             t = fun(abufd, obufd, np.float32(k1), np.float32(k2),
                     block=(self.features.acc_width, 1, 1),
-                    grid=(self.features.acc_height, 1), time_kernel=True)
+                    grid=(self.features.acc_height, 1), stream=stream)
         else:
             fun = mod.get_function("density_est")
-            t = fun(abufd, obufd, dbufd, np.float32(k1), np.float32(k2),
-                    block=(32, 32, 1), grid=(self.features.acc_width/32, 1),
-                    time_kernel=True)
-            print "Density estimation: %g" % t
+            fun(abufd, obufd, dbufd, np.float32(k1), np.float32(k2),
+                block=(32, 32, 1), grid=(self.features.acc_width/32, 1),
+                stream=stream)
 
