@@ -57,15 +57,15 @@ var(7, 'heart', """
     float sq = sqrtf(tx*tx + ty*ty);
     float a = sq * atan2f(tx, ty);
     float r = w * sq;
-    ox += r * sinf(a)
-    oy -= r * cosf(a)
+    ox += r * sinf(a);
+    oy -= r * cosf(a);
     """)
 
 var(8, 'disc', """
     float a = w * atan2f(tx, ty) * M_1_PI;
     float r = M_PI * sqrtf(tx*tx + ty*ty);
-    ox += sinf(r) * a
-    oy += cosf(r) * a
+    ox += sinf(r) * a;
+    oy += cosf(r) * a;
     """)
 
 var(9, 'spiral', """
