@@ -103,7 +103,7 @@ class Animation(object):
         # TODO: autoload dependent modules?
         self.src = util.assemble_code(util.BaseCode, mwc.MWC, self._iter.packer,
                                       self._iter, filtering.ColorClip, self._de)
-        self.cubin = pycuda.compiler.compile(self.src, keep=False,
+        self.cubin = pycuda.compiler.compile(self.src, keep=keep,
                                              options=list(cmp_options))
         return self.src
 
@@ -356,10 +356,11 @@ class _AnimRenderer(object):
         obuf_dim = (a.features.acc_height, a.features.acc_stride, 4)
         out = cuda.from_device(self.d_out, obuf_dim, np.float32)
         # TODO: performance?
-        out = np.delete(out, np.s_[:16], axis=0)
-        out = np.delete(out, np.s_[:16], axis=1)
-        out = np.delete(out, np.s_[-16:], axis=0)
-        out = np.delete(out, np.s_[-16:], axis=1)
+        g = a.features.gutter
+        out = np.delete(out, np.s_[:g], axis=0)
+        out = np.delete(out, np.s_[:g], axis=1)
+        out = np.delete(out, np.s_[-g:], axis=0)
+        out = np.delete(out, np.s_[a.features.width:], axis=1)
         return out
 
     @staticmethod
