@@ -53,7 +53,7 @@ class Genome(object):
         and height. Assumes that width and height are constant.
         """
         g = Features.gutter
-        return ( affine.translate(0.5 * cp.width + g, 0.5 * cp.height + g)
+        return ( affine.translate(0.5 * (cp.width + g), 0.5 * (cp.height + g))
                * affine.scale(cp.ppu, cp.ppu)
                * affine.translate(-cp._center[0], -cp._center[1])
                * affine.rotate(cp.rotate * 2 * np.pi / 360,
