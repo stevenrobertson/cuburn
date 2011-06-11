@@ -4,8 +4,10 @@ from cuburn.code.util import *
 class ColorClip(HunkOCode):
     defs = """
 __global__
-void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow) {
-    // TODO: test if over an edge of the framebuffer
+void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
+               float linrange, float lingam) {
+    // TODO: test if over an edge of the framebuffer - currently gutters are
+    // used and up to 256 pixels are ignored, which breaks when width<256
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     float4 pix = pixbuf[i];
 
@@ -13,8 +15,12 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow) {
 
     float4 opix = pix;
 
-    // TODO: linearized bottom range
-    float alpha = powf(pix.w, gamma);
+    float alpha = pow(pix.w, gamma);
+    if (pix.w < linrange) {
+        float frac = pix.w / linrange;
+        alpha = (1.0f - frac) * pix.w * lingam / linrange + frac * alpha;
+    }
+
     float ls = vibrancy * alpha / pix.w;
 
     float maxc = fmaxf(pix.x, fmaxf(pix.y, pix.z));

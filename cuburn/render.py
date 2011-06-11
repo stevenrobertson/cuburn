@@ -308,16 +308,18 @@ class _AnimRenderer(object):
                      self.stream)
         self.stream.synchronize()
 
-
-        n = np.float32(self.ncps)
-        gam = np.float32(n / gam)
-        vib = np.float32(vib / n)
-        hipow = np.float32(hipow / n)
+        f = np.float32
+        n = f(self.ncps)
+        gam = f(n / gam)
+        vib = f(vib / n)
+        hipow = f(hipow / n)
+        lin = f(cen_cp.gam_lin_thresh)
+        lingam = f(math.pow(cen_cp.gam_lin_thresh, gam))
 
         # TODO: get block size from colorclip class? It actually does not
         # depend on that being the case
         color_fun = a.mod.get_function("colorclip")
-        color_fun(self.d_out, gam, vib, hipow,
+        color_fun(self.d_out, gam, vib, hipow, lin, lingam,
                   block=(256, 1, 1), grid=(self.nbins / 256, 1),
                   stream=self.stream)
 
