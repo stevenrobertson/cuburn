@@ -22,8 +22,6 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
     if (pix.w < linrange) {
         float frac = pix.w / linrange;
         alpha = (1.0f - frac) * pix.w * lingam + frac * alpha;
-        pixbuf[i] = make_float4(0, 0, 0, 0);
-        return;
     }
 
     float ls = vibrancy * alpha / pix.w;
@@ -39,7 +37,7 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
         pix.x *= newls;
         pix.y *= newls;
         pix.z *= newls;
-        maxc  *= newls;
+        //maxc  *= newls; TODO: check this
 
         // Reduce saturation (according to the HSV model) by proportionally
         // increasing the values of the other colors.
@@ -65,9 +63,9 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
     pix.z += (1.0f - vibrancy) * powf(opix.z, gamma);
 
     if (alpha > 0.0f) {
-        pix.x = fminf(1.0f, pix.x * alpha);
-        pix.y = fminf(1.0f, pix.y * alpha);
-        pix.z = fminf(1.0f, pix.z * alpha);
+        pix.x = fminf(1.0f, pix.x);
+        pix.y = fminf(1.0f, pix.y);
+        pix.z = fminf(1.0f, pix.z);
     } else {
         pix.x = pix.y = pix.z = 0;
         // color pixel green; likewise, don't think this code can be reached

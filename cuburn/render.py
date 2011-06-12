@@ -319,8 +319,8 @@ class _AnimRenderer(object):
         vib = f(vib / n)
         hipow = f(cen_cp.highlight_power)
         lin = f(cen_cp.gam_lin_thresh)
-        lingam = f(math.pow(cen_cp.gam_lin_thresh, gam-1.0))
-        print gam, lin, lingam, cen_cp.gamma
+        lingam = f(math.pow(cen_cp.gam_lin_thresh, gam-1.0)) if lin > 0 else 0
+        print gam, vib, lin, lingam, cen_cp.gamma
 
         # TODO: get block size from colorclip class? It actually does not
         # depend on that being the case
