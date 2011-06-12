@@ -124,6 +124,9 @@ void logscale(float4 *pixbuf, float4 *outbuf, float k1, float k2) {
     outbuf[i] = pix;
 }
 
+#define MIN_SD 0.23299530
+#define MAX_SD 4.33333333
+
 __global__
 void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
                  float est_sd, float neg_est_curve, float est_min,
@@ -147,61 +150,86 @@ void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
             in.z *= ls;
             in.w *= ls;
 
+            // Base index of destination for writes
+            int si = (threadIdx.y + W2) * FW + threadIdx.x + W2;
+
             // Calculate standard deviation of Gaussian kernel. The base SD is
             // then scaled in inverse proportion to the density of the point
             // being scaled.
             float sd = est_sd * powf(den+1.0f, neg_est_curve);
             // Clamp the final standard deviation. Things will go badly if the
             // minimum is undershot.
-            sd = fmaxf(sd, est_min);
+            sd = fminf(MAX_SD, fmaxf(sd, est_min));
 
-            // This five-term polynomial approximates the sum of the filters
-            // with the clamping logic used here. See helpers/filt_err.py.
-            float filtsum;
-            filtsum = -0.20885075f  * sd +  0.90557721f;
-            filtsum = filtsum       * sd +  5.28363054f;
-            filtsum = filtsum       * sd + -0.11733533f;
-            filtsum = filtsum       * sd +  0.35670333f;
-            float filtscale = 1 / filtsum;
+            // Below a certain threshold, only one coeffecient would be
+            // retained anyway; we hop right to it.
+            if (sd <= MIN_SD) {
+                de_add(si, 0,  0, in);
+            } else {
+                // These polynomials approximates the sum of the filters
+                // with the clamping logic used here. See helpers/filt_err.py.
+                float filtsum;
+                if (sd < 0.75) {
+                    filtsum = -352.25061035f;
+                    filtsum = filtsum * sd +    1117.09680176f;
+                    filtsum = filtsum * sd +   -1372.48864746f;
+                    filtsum = filtsum * sd +     779.15478516f;
+                    filtsum = filtsum * sd +    -164.04229736f;
+                    filtsum = filtsum * sd +     -12.04892635f;
+                    filtsum = filtsum * sd +       9.04126644f;
+                    filtsum = filtsum * sd +       0.10304667f;
+                } else {
+                    filtsum = -0.00403376f;
+                    filtsum = filtsum * sd +       0.06608720f;
+                    filtsum = filtsum * sd +      -0.38924992f;
+                    filtsum = filtsum * sd +       0.84797901f;
+                    filtsum = filtsum * sd +       0.34173131f;
+                    filtsum = filtsum * sd +      -4.67077589f;
+                    filtsum = filtsum * sd +      14.34595776f;
+                    filtsum = filtsum * sd +      -5.80082798f;
+                    filtsum = filtsum * sd +       1.54098487f;
+                }
+                float filtscale = 1.0f / filtsum;
 
-            // The reciprocal SD scaling coeffecient in the Gaussian exponent.
-            // exp(-x^2/(2*sd^2)) = exp2f(x^2*rsd)
-            float rsd = -0.5f * CUDART_L2E_F / (sd * sd);
+                // The reciprocal SD scaling coeffecient in the Gaussian
+                // exponent: exp(-x^2/(2*sd^2)) = exp2f(x^2*rsd)
+                float rsd = -0.5f * CUDART_L2E_F / (sd * sd);
 
-            int si = (threadIdx.y + W2) * FW + threadIdx.x + W2;
-            for (int jj = 0; jj <= W2; jj++) {
-                float jj2f = jj;
-                jj2f *= jj2f;
+                for (int jj = 0; jj <= W2; jj++) {
+                    float jj2f = jj;
+                    jj2f *= jj2f;
 
-                float iif = 0;
-                for (int ii = 0; ii <= jj; ii++) {
-                    iif += 1;
+                    float iif = 0;
+                    for (int ii = 0; ii <= jj; ii++) {
 
-                    float coeff = exp2f((jj2f + iif * iif) * rsd) * filtscale;
-                    if (coeff < 0.0001f) break;
+                        float coeff = exp2f((jj2f + iif * iif) * rsd)
+                                    * filtscale;
+                        if (coeff < 0.0001f) break;
 
-                    float4 scaled;
-                    scaled.x = in.x * coeff;
-                    scaled.y = in.y * coeff;
-                    scaled.z = in.z * coeff;
-                    scaled.w = in.w * coeff;
+                        float4 scaled;
+                        scaled.x = in.x * coeff;
+                        scaled.y = in.y * coeff;
+                        scaled.z = in.z * coeff;
+                        scaled.w = in.w * coeff;
 
-                    de_add(si,  ii,  jj, scaled);
-                    if (jj == 0) continue;
-                    de_add(si,  ii, -jj, scaled);
-                    if (ii != 0) {
-                        de_add(si, -ii,  jj, scaled);
-                        de_add(si, -ii, -jj, scaled);
-                        if (ii == jj) continue;
+                        de_add(si,  ii,  jj, scaled);
+                        if (jj == 0) continue;
+                        de_add(si,  ii, -jj, scaled);
+                        if (ii != 0) {
+                            de_add(si, -ii,  jj, scaled);
+                            de_add(si, -ii, -jj, scaled);
+                            if (ii == jj) continue;
+                        }
+                        de_add(si,  jj,  ii, scaled);
+                        de_add(si, -jj,  ii, scaled);
+
+                        if (ii == 0) continue;
+                        de_add(si, -jj, -ii, scaled);
+                        de_add(si,  jj, -ii, scaled);
+
+                        iif += 1;
+                        // TODO: validate that the above avoids bank conflicts
                     }
-                    de_add(si,  jj,  ii, scaled);
-                    de_add(si, -jj,  ii, scaled);
-
-                    if (ii == 0) continue;
-                    de_add(si, -jj, -ii, scaled);
-                    de_add(si,  jj, -ii, scaled);
-
-                    // TODO: validate that the above avoids bank conflicts
                 }
             }
         }
@@ -262,7 +290,7 @@ void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
             # (0.5/1.5)=1/3.
             est_sd = np.float32(cp.estimator / 3.)
             neg_est_curve = np.float32(-cp.estimator_curve)
-            est_min = np.float32(max(cp.estimator_minimum / 3., 0.4))
+            est_min = np.float32(cp.estimator_minimum / 3.)
             fun = mod.get_function("density_est")
             fun(abufd, obufd, dbufd, est_sd, neg_est_curve, est_min, k1, k2,
                 block=(32, 32, 1), grid=(self.features.acc_width/32, 1),
