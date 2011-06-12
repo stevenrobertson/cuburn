@@ -37,18 +37,13 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
         pix.x *= newls;
         pix.y *= newls;
         pix.z *= newls;
-        //maxc  *= newls; TODO: check this
+        maxc  *= newls; // TODO: check this. I think it's right, though.
 
         // Reduce saturation (according to the HSV model) by proportionally
         // increasing the values of the other colors.
-
         pix.x = maxc - (maxc - pix.x) * lsratio;
         pix.y = maxc - (maxc - pix.y) * lsratio;
         pix.z = maxc - (maxc - pix.z) * lsratio;
-        pix.x = 1.0f;
-        pixbuf[i] = pix;
-        return;
-
     } else {
         float adjhlp = -highpow;
         if (adjhlp > 1.0f || maxa <= 1.0f) adjhlp = 1.0f;
@@ -62,15 +57,10 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
     pix.y += (1.0f - vibrancy) * powf(opix.y, gamma);
     pix.z += (1.0f - vibrancy) * powf(opix.z, gamma);
 
-    if (alpha > 0.0f) {
-        pix.x = fminf(1.0f, pix.x);
-        pix.y = fminf(1.0f, pix.y);
-        pix.z = fminf(1.0f, pix.z);
-    } else {
-        pix.x = pix.y = pix.z = 0;
-        // color pixel green; likewise, don't think this code can be reached
-        pix.y = 1.0f;
-    }
+    // Clamp values. I think this is superfluous, but I'm not certain.
+    pix.x = fminf(1.0f, pix.x);
+    pix.y = fminf(1.0f, pix.y);
+    pix.z = fminf(1.0f, pix.z);
 
     pixbuf[i] = pix;
 }
@@ -124,6 +114,8 @@ void logscale(float4 *pixbuf, float4 *outbuf, float k1, float k2) {
     outbuf[i] = pix;
 }
 
+
+// See helpers/filt_err.py for source of these values.
 #define MIN_SD 0.23299530
 #define MAX_SD 4.33333333
 
