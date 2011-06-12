@@ -262,7 +262,7 @@ void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
             # (0.5/1.5)=1/3.
             est_sd = np.float32(cp.estimator / 3.)
             neg_est_curve = np.float32(-cp.estimator_curve)
-            est_min = np.float32(cp.estimator_minimum)
+            est_min = np.float32(max(cp.estimator_minimum / 3., 0.4))
             fun = mod.get_function("density_est")
             fun(abufd, obufd, dbufd, est_sd, neg_est_curve, est_min, k1, k2,
                 block=(32, 32, 1), grid=(self.features.acc_width/32, 1),
