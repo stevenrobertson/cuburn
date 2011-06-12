@@ -90,20 +90,19 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
             denbuf[0] = xfsel;
             break; // TODO: fail here
         }
-        {{if features.final_xform_index}}
-        float fx = x, fy = y, fcolor;
-        apply_xf{{features.final_xform_index}}(&fx, &fy, &fcolor, &rctx);
-        {{endif}}
 
         if (consec_bad < 0) {
             consec_bad++;
             continue;
         }
-
         nsamps--;
 
-        // TODO: this may not optimize well, verify.
+        {{if features.final_xform_index}}
+        float fx = x, fy = y, fcolor;
+        apply_xf{{features.final_xform_index}}(&fx, &fy, &fcolor, &rctx);
+        {{endif}}
 
+        // TODO: this may not optimize well, verify.
         float cx, cy;
         {{if features.final_xform_index}}
         {{apply_affine('fx', 'fy', 'cx', 'cy', packer,
