@@ -53,7 +53,13 @@ class Genome(object):
         and height. Assumes that width and height are constant.
         """
         g = Features.gutter
-        return ( affine.translate(0.5 * (cp.width + g), 0.5 * (cp.height + g))
+        if cp.estimator:
+            # The filter shifts by this amount as a side effect of it being
+            # written in a confusing and sloppy manner
+            # TODO: this will be weird in an animation where one endpoint has
+            # a radius of 0, and the other does not
+            g -= Features.gutter / 2 - 1
+        return ( affine.translate(0.5 * cp.width + g, 0.5 * cp.height + g)
                * affine.scale(cp.ppu, cp.ppu)
                * affine.translate(-cp._center[0], -cp._center[1])
                * affine.rotate(cp.rotate * 2 * np.pi / 360,
@@ -247,7 +253,7 @@ class _AnimRenderer(object):
         iter_fun.set_cache_config(cuda.func_cache.PREFER_L1)
 
         # Must be accumulated over all CPs
-        gam, vib, hipow = 0, 0, 0
+        gam, vib = 0, 0
 
         # This is gross, but there are a lot of fiddly corner cases with any
         # index-based iteration scheme.
@@ -262,7 +268,6 @@ class _AnimRenderer(object):
                     infos.append(info)
                     gam += cp.gamma
                     vib += cp.vibrancy
-                    hipow += cp.highlight_power
             else:
                 # Can't interpolate normally; just pack copies
                 # TODO: this still packs the genome 20 times or so instead of
@@ -271,7 +276,6 @@ class _AnimRenderer(object):
                 infos = [packed] * len(block_times)
                 gam += a.genomes[0].gamma * len(block_times)
                 vib += a.genomes[0].vibrancy * len(block_times)
-                hipow += a.genomes[0].highlight_power * len(block_times)
 
             infos = np.concatenate(infos)
             offset = b * packer.align * self.cps_per_block
@@ -304,7 +308,8 @@ class _AnimRenderer(object):
         util.BaseCode.zero_dptr(a.mod, self.d_out, 4 * self.nbins,
                                 self.stream)
         self.stream.synchronize()
-        a._de.invoke(a.mod, self.d_accum, self.d_out, self.d_den,
+        a._de.invoke(a.mod, Genome(cen_cp),
+                     self.d_accum, self.d_out, self.d_den,
                      self.stream)
         self.stream.synchronize()
 
@@ -312,9 +317,10 @@ class _AnimRenderer(object):
         n = f(self.ncps)
         gam = f(n / gam)
         vib = f(vib / n)
-        hipow = f(hipow / n)
+        hipow = f(cen_cp.highlight_power)
         lin = f(cen_cp.gam_lin_thresh)
-        lingam = f(math.pow(cen_cp.gam_lin_thresh, gam))
+        lingam = f(math.pow(cen_cp.gam_lin_thresh, gam-1.0))
+        print gam, lin, lingam, cen_cp.gamma
 
         # TODO: get block size from colorclip class? It actually does not
         # depend on that being the case

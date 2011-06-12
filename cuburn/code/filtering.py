@@ -11,23 +11,29 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     float4 pix = pixbuf[i];
 
-    if (pix.w <= 0) return;
+    if (pix.w <= 0) {
+        pixbuf[i] = make_float4(0, 0, 0, 0);
+        return;
+    }
 
     float4 opix = pix;
 
-    float alpha = pow(pix.w, gamma);
+    float alpha = powf(pix.w, gamma);
     if (pix.w < linrange) {
         float frac = pix.w / linrange;
-        alpha = (1.0f - frac) * pix.w * lingam / linrange + frac * alpha;
+        alpha = (1.0f - frac) * pix.w * lingam + frac * alpha;
+        pixbuf[i] = make_float4(0, 0, 0, 0);
+        return;
     }
 
     float ls = vibrancy * alpha / pix.w;
+    alpha = fminf(1.0f, fmaxf(0.0f, alpha));
 
     float maxc = fmaxf(pix.x, fmaxf(pix.y, pix.z));
-    float newls = 1 / maxc;
+    float maxa = maxc * ls;
+    float newls = 1.0f / maxc;
 
-    if (maxc * ls > 1 && highpow >= 0) {
-        // TODO: does CUDA autopromote the int here to a float before GPU?
+    if (maxa > 1.0f && highpow >= 0.0f) {
         float lsratio = powf(newls / ls, highpow);
 
         pix.x *= newls;
@@ -41,19 +47,32 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
         pix.x = maxc - (maxc - pix.x) * lsratio;
         pix.y = maxc - (maxc - pix.y) * lsratio;
         pix.z = maxc - (maxc - pix.z) * lsratio;
+        pix.x = 1.0f;
+        pixbuf[i] = pix;
+        return;
 
     } else {
-        highpow = -highpow;
-        if (highpow > 1 || maxc * ls <= 1) highpow = 1;
-        float adj = ((1.0 - highpow) * newls + highpow * ls);
+        float adjhlp = -highpow;
+        if (adjhlp > 1.0f || maxa <= 1.0f) adjhlp = 1.0f;
+        float adj = ((1.0f - adjhlp) * newls + adjhlp * ls);
         pix.x *= adj;
         pix.y *= adj;
         pix.z *= adj;
     }
 
-    pix.x = fminf(1.0, pix.x + (1.0 - vibrancy) * powf(opix.x, gamma));
-    pix.y = fminf(1.0, pix.y + (1.0 - vibrancy) * powf(opix.y, gamma));
-    pix.z = fminf(1.0, pix.z + (1.0 - vibrancy) * powf(opix.z, gamma));
+    pix.x += (1.0f - vibrancy) * powf(opix.x, gamma);
+    pix.y += (1.0f - vibrancy) * powf(opix.y, gamma);
+    pix.z += (1.0f - vibrancy) * powf(opix.z, gamma);
+
+    if (alpha > 0.0f) {
+        pix.x = fminf(1.0f, pix.x * alpha);
+        pix.y = fminf(1.0f, pix.y * alpha);
+        pix.z = fminf(1.0f, pix.z * alpha);
+    } else {
+        pix.x = pix.y = pix.z = 0;
+        // color pixel green; likewise, don't think this code can be reached
+        pix.y = 1.0f;
+    }
 
     pixbuf[i] = pix;
 }
@@ -62,7 +81,7 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
 class DensityEst(HunkOCode):
     """
     NOTE: for now, this *must* be invoked with a block size of (32,32,1), and
-    a grid size of (W/32,1). At least 7 pixel gutters are required, and the
+    a grid size of (W/32,1). At least 15 pixel gutters are required, and the
     stride and height probably need to be multiples of 32.
     """
 
@@ -98,7 +117,7 @@ void logscale(float4 *pixbuf, float4 *outbuf, float k1, float k2) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     float4 pix = pixbuf[i];
 
-    float ls = fmaxf(0, k1 * logf(1.0 + pix.w * k2) / pix.w);
+    float ls = fmaxf(0, k1 * logf(1.0f + pix.w * k2) / pix.w);
     pix.x *= ls;
     pix.y *= ls;
     pix.z *= ls;
@@ -109,6 +128,7 @@ void logscale(float4 *pixbuf, float4 *outbuf, float k1, float k2) {
 
 __global__
 void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
+                 float est_sd, float neg_est_curve, float est_min,
                  float k1, float k2) {
     for (int i = threadIdx.x + 32*threadIdx.y; i < FW2; i += 32)
         de_r[i] = de_g[i] = de_b[i] = de_a[i] = 0.0f;
@@ -129,22 +149,16 @@ void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
             in.z *= ls;
             in.w *= ls;
 
-            // Calculate standard deviation of Gaussian kernel.
-            // flam3_gaussian_filter() uses an implicit standard deviation of 0.5,
-            // but the DE filters scale filter distance by the default spatial
-            // support factor of 1.5, so the effective base SD is (0.5/1.5)=1/3.
-            float sd = {{cp.estimator / 3.}};
-
-            // The base SD is then scaled in inverse proportion to the density of
-            // the point being scaled.
-            sd *= powf(den+1.0f, {{-cp.estimator_curve}});
-
+            // Calculate standard deviation of Gaussian kernel. The base SD is
+            // then scaled in inverse proportion to the density of the point
+            // being scaled.
+            float sd = est_sd * powf(den+1.0f, neg_est_curve);
             // Clamp the final standard deviation. Things will go badly if the
             // minimum is undershot.
-            sd = fmaxf(sd, {{max(cp.estimator_minimum / 3., 0.3)}} );
+            sd = fmaxf(sd, est_min);
 
-            // This five-term polynomial approximates the sum of the filters with
-            // the clamping logic used here. See helpers/filt_err.py.
+            // This five-term polynomial approximates the sum of the filters
+            // with the clamping logic used here. See helpers/filt_err.py.
             float filtsum;
             filtsum = -0.20885075f  * sd +  0.90557721f;
             filtsum = filtsum       * sd +  5.28363054f;
@@ -229,22 +243,30 @@ void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
 
 """)
 
-    def invoke(self, mod, abufd, obufd, dbufd, stream=None):
+    def invoke(self, mod, cp, abufd, obufd, dbufd, stream=None):
         # TODO: add no-est version
         # TODO: come up with a general way to average these parameters
 
-        k1 = self.cp.brightness * 268 / 256
-        area = self.features.acc_width * self.features.acc_height / self.cp.ppu ** 2
-        k2 = 1 / (area * self.cp.adj_density)
+        k1 = np.float32(cp.brightness * 268 / 256)
+        area = self.features.width * self.features.height / cp.ppu ** 2
+        k2 = np.float32(1 / (area * cp.adj_density))
+        print k1, k2
 
         if self.cp.estimator == 0:
+            nbins = self.features.acc_height * self.features.acc_stride
             fun = mod.get_function("logscale")
-            t = fun(abufd, obufd, np.float32(k1), np.float32(k2),
-                    block=(self.features.acc_width, 1, 1),
-                    grid=(self.features.acc_height, 1), stream=stream)
+            t = fun(abufd, obufd, k1, k2,
+                    block=(512, 1, 1), grid=(nbins/512, 1), stream=stream)
         else:
+            # flam3_gaussian_filter() uses an implicit standard deviation of
+            # 0.5, but the DE filters scale filter distance by the default
+            # spatial support factor of 1.5, so the effective base SD is
+            # (0.5/1.5)=1/3.
+            est_sd = np.float32(cp.estimator / 3.)
+            neg_est_curve = np.float32(-cp.estimator_curve)
+            est_min = np.float32(cp.estimator_minimum)
             fun = mod.get_function("density_est")
-            fun(abufd, obufd, dbufd, np.float32(k1), np.float32(k2),
+            fun(abufd, obufd, dbufd, est_sd, neg_est_curve, est_min, k1, k2,
                 block=(32, 32, 1), grid=(self.features.acc_width/32, 1),
                 stream=stream)
 
