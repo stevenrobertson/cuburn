@@ -161,7 +161,7 @@ void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
                 // These polynomials approximates the sum of the filters
                 // with the clamping logic used here. See helpers/filt_err.py.
                 float filtsum;
-                if (sd < 0.75) {
+                if (sd < 0.75f) {
                     filtsum = -352.25061035f;
                     filtsum = filtsum * sd +    1117.09680176f;
                     filtsum = filtsum * sd +   -1372.48864746f;
