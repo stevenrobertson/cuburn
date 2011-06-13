@@ -11,7 +11,7 @@ this may become unnecessary.
 """
 
 from ctypes import *
-from fr0stlib.pyflam3 import constants
+from fr0stlib.pyflam3 import constants, _flam3
 from fr0stlib.pyflam3._flam3 import *
 
 from cuburn import render
@@ -169,4 +169,7 @@ BaseXForm._fields_ = [('var', c_double * flam3_nvariations)
                , ('num_motion', c_int)
                # It seems I'm missing something in the current version.
                , ('mysterious_padding', c_double * 2) ]
+
+libflam3.flam3_align.argtypes = [POINTER(BaseGenome), POINTER(BaseGenome), c_int]
+flam3_align = libflam3.flam3_align
 

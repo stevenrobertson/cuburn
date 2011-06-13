@@ -1,6 +1,7 @@
 import sys
 import math
 import re
+import time
 from itertools import cycle, repeat, chain, izip
 from ctypes import *
 from cStringIO import StringIO
@@ -85,8 +86,9 @@ class Animation(object):
     interpolated sequence between one or two genomes.
     """
     def __init__(self, ctypes_genome_array):
-        self._g_arr = ctypes_genome_array
-        self.genomes = map(Genome, ctypes_genome_array)
+        self._g_arr = type(ctypes_genome_array)()
+        libflam3.flam3_align(self._g_arr, ctypes_genome_array, len(ctypes_genome_array))
+        self.genomes = map(Genome, self._g_arr)
         self.features = Features(self.genomes)
         self._iter = self._de = self.src = self.cubin = self.mod = None
 
@@ -165,7 +167,7 @@ class Animation(object):
 
         # Zip up each genome with an alternating renderer, plus enough empty
         # genomes at the end to flush all pending tasks
-        times = times or [cp.time for cp in self.genomes]
+        times = times if times is not None else [cp.time for cp in self.genomes]
         exttimes = chain(times, repeat(None, NRENDERERS))
         for rdr, time in izip(cycle(rdrs), exttimes):
             if rdr.wait():
@@ -374,7 +376,7 @@ class _AnimRenderer(object):
     @staticmethod
     def _mk_dts(cen_time, cen_cp, ncps):
         w = cen_cp.temporal_filter_width
-        return [w * (t / (ncps - 1.0) - 0.5) for t in range(ncps)]
+        return [cen_time + w * (t / (ncps - 1.0) - 0.5) for t in range(ncps)]
 
 class Features(object):
     """
@@ -413,8 +415,8 @@ class Features(object):
         self.xforms = [XFormFeatures([cp.xforms[i] for cp in genomes], i)
                        for i in range(self.nxforms)]
         if any(lambda cp: cp.final_xform_enable):
-            if not reduce(lambda a, b: a == b,
-                          [cp.final_xform_index for cp in genomes]):
+            if not all([cp.final_xform_index == genomes[0].final_xform_index
+                        for cp in genomes]):
                 raise ValueError("Differing final xform indexes")
             self.final_xform_index = genomes[0].final_xform_index
         else:
