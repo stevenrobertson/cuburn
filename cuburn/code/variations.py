@@ -250,7 +250,7 @@ var(30, 'perspective', """
     float pvfcos = {{px.get(
         'xf.perspective_dist*np.cos(xf.perspective_angle*np.pi/2)', 'pvfcos')}};
 
-    float t = 1.0 / (pdist - ty * pvsin);
+    float t = 1.0f / (pdist - ty * pvsin);
     ox += w * pdist * tx * t;
     oy += w * pvfcos * ty * t;
     """)
@@ -503,7 +503,7 @@ var(55, 'bipolar', """
     float t = x2y2 + 1.0f;
     float x2 = tx * 2.0f;
     float ps = -M_PI_2 * {{px.get('xf.bipolar_shift')}}
-    float y = 0.5 * atan2f(2.0f * ty, x2y2 - 1.0f) + ps;
+    float y = 0.5f * atan2f(2.0f * ty, x2y2 - 1.0f) + ps;
 
     if (y > M_PI_2)
         y = -M_PI_2 + fmodf(y + M_PI_2, M_PI);
@@ -873,7 +873,7 @@ var(85, 'cos', """
     """)
 
 var(86, 'tan', """
-    float tanden = 1.0f/(cosf(2.0*tx) + coshf(2.0f*ty));
+    float tanden = 1.0f/(cosf(2.0f*tx) + coshf(2.0f*ty));
     ox += w * tanden * sinf(2.0f*tx);
     oy += w * tanden * sinhf(2.0f*ty);
     """)

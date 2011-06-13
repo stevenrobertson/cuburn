@@ -116,8 +116,8 @@ void logscale(float4 *pixbuf, float4 *outbuf, float k1, float k2) {
 
 
 // See helpers/filt_err.py for source of these values.
-#define MIN_SD 0.23299530
-#define MAX_SD 4.33333333
+#define MIN_SD 0.23299530f
+#define MAX_SD 4.33333333f
 
 __global__
 void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
