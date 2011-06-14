@@ -112,10 +112,16 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
                        'cp.camera_transform', 'cam')}}
         {{endif}}
 
-        float ditherwidth = {{packer.get('0.5 * cp.spatial_filter_radius')}};
-        float ditherx = mwc_next_11(&rctx) * ditherwidth;
-        float dithery = mwc_next_11(&rctx) * ditherwidth;
+        // TODO: verify that constants get premultiplied
+        float ditherwidth = {{packer.get('0.33 * cp.spatial_filter_radius')}};
+        float u0 = mwc_next_01(&rctx);
+        float r = ditherwidth * sqrt(-2.0f * log2f(u0) / M_LOG2E);
 
+        // TODO: provide mwc_next_0_2pi()
+        float u1 = 2.0f * M_PI * mwc_next_01(&rctx);
+
+        float ditherx = r * cos(u1);
+        float dithery = r * sin(u1);
         int ix = trunca(cx+ditherx), iy = trunca(cy+dithery);
 
         if (ix < 0 || ix >= {{features.acc_width}} ||
