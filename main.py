@@ -11,6 +11,7 @@
 
 import os
 import sys
+from subprocess import Popen
 
 from pprint import pprint
 from ctypes import *
@@ -43,9 +44,10 @@ def main(args):
     anim.load()
     for n, out in enumerate(anim.render_frames()):
         noalpha = np.delete(out, 3, axis=2)
-        scipy.misc.imsave('rendered_%03d.png' % n, noalpha)
-        scipy.misc.imsave('rendered_%03d.jpg' % n, noalpha)
-
+        name = 'rendered_%03d' % n
+        scipy.misc.imsave(name+'.png', noalpha)
+        # Convert using imagemagick, to set custom quality
+        Popen(['convert', name+'.png', '-quality', '90', name+'.jpg'])
     return
 
     #if '-g' not in args:
