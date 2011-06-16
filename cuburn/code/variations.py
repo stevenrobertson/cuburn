@@ -130,8 +130,8 @@ var(15, 'waves', """
     float dx2 = 1.0f / (dx * dx);
     float dy2 = 1.0f / (dy * dy);
 
-    ox += w * (tx + c10 + sinf(ty * dx2));
-    oy += w * (ty + c11 + sinf(tx * dy2));
+    ox += w * (tx + c10 * sinf(ty * dx2));
+    oy += w * (ty + c11 * sinf(tx * dy2));
     """)
 
 var(16, 'fisheye', """
