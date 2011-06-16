@@ -102,15 +102,11 @@ var(12, 'ex', """
     """)
 
 var(13, 'julia', """
-    float power = 2.0f;
-    float t_rnd = truncf(mwc_next_01(rctx) * fabsf(power));
-    float a = atan2f(tx, ty);
-    float tmpr = (a + 2.0f * M_PI * t_rnd) / power;
-    float cn = 0.5f;
-    float r = w * powf(tx * tx + ty * ty, cn);
-
-    ox += r * cosf(tmpr);
-    oy += r * sinf(tmpr);
+    float a = 0.5f * atan2f(tx, ty);
+    if (mwc_next(rctx) & 1) a += M_PI;
+    float r = w * sqrtf(sqrtf(tx*tx + ty*ty)); // TODO: fastest?
+    ox += r * cosf(a);
+    oy += r * sinf(a);
     """)
 
 var(14, 'bent', """
