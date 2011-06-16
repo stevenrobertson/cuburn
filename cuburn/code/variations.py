@@ -102,11 +102,15 @@ var(12, 'ex', """
     """)
 
 var(13, 'julia', """
-    float a = 0.5f * atan2f(tx, ty);
-    if (mwc_next(rctx) & 1) a += M_PI;
-    float r = w * sqrtf(tx*tx + ty*ty);
-    ox += r * cosf(a);
-    oy += r * sinf(a);
+    float power = 2.0f;
+    float t_rnd = truncf(mwc_next_01(rctx) * fabsf(power));
+    float a = atan2f(tx, ty);
+    float tmpr = (a + 2.0f * M_PI * t_rnd) / power;
+    float cn = 0.5f;
+    float r = w * powf(tx * tx + ty * ty, cn);
+
+    ox += r * cosf(tmpr);
+    oy += r * sinf(tmpr);
     """)
 
 var(14, 'bent', """
@@ -188,8 +192,8 @@ var(22, 'fan', """
 var(23, 'blob', """
     float r = sqrtf(tx*tx + ty*ty);
     float a = atan2f(tx, ty);
-    float bdiff = 0.5f * ({{px.get('xf.blob_high - xf.blob_low','blob_diff'}})
-    r *= w * ({{px.get('xf.blob_low')}} + bdiff * (1.0f + sinf({{px.get('xf.blob_waves')}} * a)))
+    float bdiff = 0.5f * ({{px.get('xf.blob_high - xf.blob_low','blob_diff')}});
+    r *= w * ({{px.get('xf.blob_low')}} + bdiff * (1.0f + sinf({{px.get('xf.blob_waves')}} * a)));
     ox += sinf(a) * r;
     oy += cosf(a) * r;
     """)
@@ -209,6 +213,7 @@ var(25, 'fan2', """
     float dx2 = 0.5f * dx;
     float a = atan2f(tx, ty);
     float r = w * sqrtf(tx*tx + ty*ty);
+    float t = a + dy - dx * truncf((a + dy)/dx);
     if (t > dx2)
         a -= dx2;
     else
@@ -309,7 +314,7 @@ var(36, 'radial_blur', """
     float blur_angle = {{px.get('xf.radial_blur_angle')}} * M_PI * 0.5f;
     float spinvar = sinf(blur_angle);
     float zoomvar = cosf(blur_angle);
-    float r = weight * ( mwc_next_01(rctx) + mwc_next_01(rctx)
+    float r = w * ( mwc_next_01(rctx) + mwc_next_01(rctx)
                    + mwc_next_01(rctx) + mwc_next_01(rctx) - 2.0f );
     float ra = sqrtf(tx*tx + ty*ty);
     float tmpa = atan2f(ty, tx) + spinvar * r;
@@ -322,17 +327,17 @@ var(37, 'pie', """
     float slices = {{px.get('xf.pie_slices')}};
     float sl = truncf(mwc_next_01(rctx) * slices + 0.5f);
     float a = {{px.get('xf.pie_rotation')}} +
-                2.0f * M_PI * (sl + mwc_next_01(rctx) + {{px.get('xf.pie_thickness')}} / slices;
+                2.0f * M_PI * (sl + mwc_next_01(rctx) + {{px.get('xf.pie_thickness')}}) / slices;
     float r = w * mwc_next_01(rctx);
     ox += r * cosf(a);
     oy += r * sinf(a);
     """)
 
 var(38, 'ngon', """
-    float power = {{px.get('xf.ngon_power')}} * 0.5f
-    float b = 2.0f * M_PI / {{px.get('xf.ngon_sides')}}
-    float corners = {{px.get('xf.ngon_corners')}}
-    float circle = {{px.get('xf.ngon_circle')}}
+    float power = {{px.get('xf.ngon_power')}} * 0.5f;
+    float b = 2.0f * M_PI / {{px.get('xf.ngon_sides')}};
+    float corners = {{px.get('xf.ngon_corners')}};
+    float circle = {{px.get('xf.ngon_circle')}};
 
     float r_factor = powf(tx*tx + ty*ty, power);
     float theta = atan2f(ty, tx);
@@ -353,7 +358,7 @@ var(39, 'curl', """
     float r = w / (re*re + im*im);
 
     ox += r * (tx*re + ty*im);
-    oy += r * (ty*re + tx*im);
+    oy += r * (ty*re - tx*im);
     """)
 
 var(40, 'rectangles', """
@@ -417,7 +422,8 @@ var(48, 'cross', """
 
 var(49, 'disc2', """
     float twist = {{px.get('xf.disc2_twist')}};
-    float rotpi = {{px.get('xf.disc2_rot * M_PI', 'disc2_rotpi')}};
+    float rotpi = {{px.get('xf.disc2_rot', 'disc2_rotpi')}};
+    rotpi *= M_PI;
 
     float sintwist = sinf(twist);
     float costwist = cosf(twist) - 1.0f;
@@ -502,7 +508,7 @@ var(55, 'bipolar', """
     float x2y2 = tx*tx + ty*ty;
     float t = x2y2 + 1.0f;
     float x2 = tx * 2.0f;
-    float ps = -M_PI_2 * {{px.get('xf.bipolar_shift')}}
+    float ps = -M_PI_2 * {{px.get('xf.bipolar_shift')}};
     float y = 0.5f * atan2f(2.0f * ty, x2y2 - 1.0f) + ps;
 
     if (y > M_PI_2)
