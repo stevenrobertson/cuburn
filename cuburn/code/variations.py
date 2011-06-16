@@ -327,7 +327,7 @@ var(37, 'pie', """
     float slices = {{px.get('xf.pie_slices')}};
     float sl = truncf(mwc_next_01(rctx) * slices + 0.5f);
     float a = {{px.get('xf.pie_rotation')}} +
-                2.0f * M_PI * (sl + mwc_next_01(rctx) + {{px.get('xf.pie_thickness')}}) / slices;
+                2.0f * M_PI * (sl + mwc_next_01(rctx) * {{px.get('xf.pie_thickness')}}) / slices;
     float r = w * mwc_next_01(rctx);
     ox += r * cosf(a);
     oy += r * sinf(a);
