@@ -458,7 +458,7 @@ var(50, 'super_shape', """
     float d = sqrtf(tx*tx+ty*ty);
 
     float r = w * ((myrnd*mwc_next_01(rctx) + (1.0f-myrnd)*d) - {{px.get('xf.super_shape_holes')}})
-                * powf(t1+t2, {{px.get('-1.0 / xf.super_shape_holes', 'super_shape_pneg')}}) / d;
+                * powf(t1+t2, {{px.get('-1.0 / xf.super_shape_n1', 'super_shape_pneg')}}) / d;
 
     ox += r * tx;
     oy += r * ty;
