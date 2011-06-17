@@ -592,7 +592,7 @@ var(58, 'cell', """
 
 var(59, 'cpow', """
     float a = atan2f(ty, tx);
-    float lnr = 0.5f * logf(tx*tx+ty*ty));
+    float lnr = 0.5f * logf(tx*tx+ty*ty);
     float power = {{px.get('xf.cpow_power')}};
     float va = 2.0f * M_PI / power;
     float vc = {{px.get('xf.cpow_r')}} / power;
