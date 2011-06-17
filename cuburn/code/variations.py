@@ -769,7 +769,7 @@ var(69, 'oscope', """
 
 var(70, 'polar2', """
     float p2v = w / M_PI;
-    ox += p2v * atan2f(x,y);
+    ox += p2v * atan2f(tx,ty);
     oy += 0.5f * p2v * logf(tx*tx + ty*ty);
     """)
 
@@ -794,14 +794,14 @@ var(73, 'separation', """
     float sy2 = {{px.get('xf.separation_y * xf.separation_y', 'sy2')}};
 
     if (tx > 0.0f)
-        ox += w * (sqrtf(tx*tx + sx2) - tx*{{ps.get('xf.separation_xinside')}});
+        ox += w * (sqrtf(tx*tx + sx2) - tx*{{px.get('xf.separation_xinside')}});
     else
-        ox -= w * (sqrtf(tx*tx + sx2) + tx*{{ps.get('xf.separation_xinside')}});
+        ox -= w * (sqrtf(tx*tx + sx2) + tx*{{px.get('xf.separation_xinside')}});
 
     if (ty > 0.0f)
-        oy += w * (sqrtf(ty*ty + sy2) - ty*{{ps.get('xf.separation_yinside')}});
+        oy += w * (sqrtf(ty*ty + sy2) - ty*{{px.get('xf.separation_yinside')}});
     else
-        oy -= w * (sqrtf(ty*ty + sy2) + ty*{{ps.get('xf.separation_yinside')}});
+        oy -= w * (sqrtf(ty*ty + sy2) + ty*{{px.get('xf.separation_yinside')}});
     """)
 
 var(74, 'split', """
@@ -818,39 +818,39 @@ var(74, 'split', """
 
 var(75, 'splits', """
     if (tx >= 0.0f)
-        ox += w*(tx + {{ps.get('xf.splits_x')}});
+        ox += w*(tx + {{px.get('xf.splits_x')}});
     else
-        ox += w*(tx - {{ps.get('xf.splits_x')}});
+        ox += w*(tx - {{px.get('xf.splits_x')}});
 
-    if (f->ty >= 0)
-        oy += w*(ty + {{ps.get('xf.splits_y')}});
+    if (ty >= 0)
+        oy += w*(ty + {{px.get('xf.splits_y')}});
     else
-        oy += w*(ty - {{ps.get('xf.splits_y')}});
+        oy += w*(ty - {{px.get('xf.splits_y')}});
     """)
 
 var(76, 'stripes', """
     float roundx = floorf(tx + 0.5f);
     float offsetx = tx - roundx;
-    ox += w * (offsetx * (1.0f - {{ps.get('xf.stripes_space')}}) + roundx);
-    oy += w * (ty + offsetx*offsetx*{{ps.get('xf.stripes_warp')}});
+    ox += w * (offsetx * (1.0f - {{px.get('xf.stripes_space')}}) + roundx);
+    oy += w * (ty + offsetx*offsetx*{{px.get('xf.stripes_warp')}});
     """)
 
 var(77, 'wedge', """
     float r = sqrtf(tx*tx + ty*ty);
-    float a = atan2f(ty, tx) + {{ps.get('xf.wedge_swirl')}} * r;
-    float wc = {{ps.get('xf.wedge_count')}};
-    float wa = {{ps.get('xf.wedge_angle')}};
+    float a = atan2f(ty, tx) + {{px.get('xf.wedge_swirl')}} * r;
+    float wc = {{px.get('xf.wedge_count')}};
+    float wa = {{px.get('xf.wedge_angle')}};
     float c = floorf((wc * a + M_PI) * M_1_PI * 0.5f);
     float comp_fac = 1 - wa * wc * M_1_PI * 0.5f;
     a = a * comp_fac + c * wa;
-    r = w * (r + {{ps.get('xf.wedge_hole')}});
+    r = w * (r + {{px.get('xf.wedge_hole')}});
     ox += r * cosf(a);
     oy += r * sinf(a);
     """)
 
 var(81, 'waves2', """
-    ox += w*(tx + {{ps.get('xf.waves2_scalex')}}*sinf(ty * {{ps.get('xf.waves2_freqx')}}));
-    oy += w*(ty + {{ps.get('xf.waves2_scaley')}}*sinf(tx * {{ps.get('xf.waves2_freqy')}}));
+    ox += w*(tx + {{px.get('xf.waves2_scalex')}}*sinf(ty * {{px.get('xf.waves2_freqx')}}));
+    oy += w*(ty + {{px.get('xf.waves2_scaley')}}*sinf(tx * {{px.get('xf.waves2_freqy')}}));
     """)
 
 var(82, 'exp', """
