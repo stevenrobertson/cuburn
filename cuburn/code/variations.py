@@ -556,7 +556,7 @@ var(57, 'butterfly', """
     """)
 
 var(58, 'cell', """
-    float cell_size = {{px.get('xf.cell_size')}}
+    float cell_size = {{px.get('xf.cell_size')}};
     float inv_cell_size = 1.0f/cell_size;
 
     /* calculate input cell */
@@ -592,7 +592,7 @@ var(58, 'cell', """
 
 var(59, 'cpow', """
     float a = atan2f(ty, tx);
-    float lnr = 0.5f * logf(sqrtf(tx*tx+ty*ty));
+    float lnr = 0.5f * logf(tx*tx+ty*ty));
     float power = {{px.get('xf.cpow_power')}};
     float va = 2.0f * M_PI / power;
     float vc = {{px.get('xf.cpow_r')}} / power;
@@ -611,7 +611,7 @@ var(60, 'curve', """
     if (pc_ylen<1E-20f) pc_ylen = 1E-20f;
 
     ox += w * (tx + {{px.get('xf.curve_xamp')}} * expf(-ty*ty/pc_xlen));
-    ox += w * (ty + {{px.get('xf.curve_yamp')}} * expf(-tx*tx/pc_ylen));
+    oy += w * (ty + {{px.get('xf.curve_yamp')}} * expf(-tx*tx/pc_ylen));
     """)
 
 var(61, 'edisc', """
@@ -629,7 +629,7 @@ var(61, 'edisc', """
     if (ty > 0.0f) snv = -snv;
 
     ox += neww * coshf(a2) * csv;
-    oy += neww * sinhf(s2) * snv;
+    oy += neww * sinhf(a2) * snv;
     """)
 
 var(62, 'elliptic', """
@@ -732,8 +732,8 @@ var(67, 'pre_blur', """
     """)
 
 var(68, 'modulus', """
-    float mx = {{px.get('xf.modulus_x')}}
-    float my = {{px.get('xf.modulus_y')}}
+    float mx = {{px.get('xf.modulus_x')}};
+    float my = {{px.get('xf.modulus_y')}};
     float xr = 2.0f*mx;
     float yr = 2.0f*my;
 
