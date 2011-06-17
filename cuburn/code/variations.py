@@ -854,7 +854,7 @@ var(81, 'waves2', """
     """)
 
 var(82, 'exp', """
-    float expe = expf(f->tx);
+    float expe = expf(tx);
     ox += w * expe * cosf(ty);
     oy += w * expe * sinf(ty);
     """)
