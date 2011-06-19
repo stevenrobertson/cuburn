@@ -2,17 +2,20 @@
 from cuburn.code.util import *
 
 class ColorClip(HunkOCode):
-    defs = """
+    def __init__(self, features):
+        self.defs = self.defs_tmpl.substitute(features=features)
+
+    defs_tmpl = Template("""
 __global__
 void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
-               float linrange, float lingam) {
+               float linrange, float lingam, float3 bkgd) {
     // TODO: test if over an edge of the framebuffer - currently gutters are
     // used and up to 256 pixels are ignored, which breaks when width<256
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     float4 pix = pixbuf[i];
 
     if (pix.w <= 0) {
-        pixbuf[i] = make_float4(0, 0, 0, 0);
+        pixbuf[i] = make_float4(bkgd.x, bkgd.y, bkgd.z, 0);
         return;
     }
 
@@ -57,6 +60,18 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
     pix.y += (1.0f - vibrancy) * powf(opix.y, gamma);
     pix.z += (1.0f - vibrancy) * powf(opix.z, gamma);
 
+    {{if features.alpha_output_channel}}
+    float 1_alpha = 1 / alpha;
+    pix.x *= 1_alpha;
+    pix.y *= 1_alpha;
+    pix.z *= 1_alpha;
+    {{else}}
+    pix.x += (1.0f - alpha) * bkgd.x;
+    pix.y += (1.0f - alpha) * bkgd.y;
+    pix.z += (1.0f - alpha) * bkgd.z;
+    {{endif}}
+    pix.w = alpha;
+
     // Clamp values. I think this is superfluous, but I'm not certain.
     pix.x = fminf(1.0f, pix.x);
     pix.y = fminf(1.0f, pix.y);
@@ -64,7 +79,7 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
 
     pixbuf[i] = pix;
 }
-"""
+""")
 
 class DensityEst(HunkOCode):
     """

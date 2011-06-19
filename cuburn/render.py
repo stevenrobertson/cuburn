@@ -14,6 +14,7 @@ from fr0stlib.pyflam3.constants import *
 
 import pycuda.compiler
 import pycuda.driver as cuda
+from pycuda.gpuarray import vec
 
 from cuburn import affine
 from cuburn.code import util, mwc, iter, filtering
@@ -107,10 +108,11 @@ class Animation(object):
         """
         self._iter = iter.IterCode(self.features)
         self._de = filtering.DensityEst(self.features, self.genomes[0])
+        cclip = filtering.ColorClip(self.features)
         # TODO: make choice of filtering explicit
         # TODO: autoload dependent modules?
         self.src = util.assemble_code(util.BaseCode, mwc.MWC, self._iter.packer,
-                                      self._iter, filtering.ColorClip, self._de)
+                                      self._iter, cclip, self._de)
         self.cubin = pycuda.compiler.compile(self.src, keep=keep,
                                              options=list(cmp_options))
         return self.src
@@ -256,6 +258,7 @@ class _AnimRenderer(object):
 
         # Must be accumulated over all CPs
         gam, vib = 0, 0
+        bkgd = np.zeros(3)
 
         # This is gross, but there are a lot of fiddly corner cases with any
         # index-based iteration scheme.
@@ -270,6 +273,7 @@ class _AnimRenderer(object):
                     infos.append(info)
                     gam += cp.gamma
                     vib += cp.vibrancy
+                    bkgd += np.array(cp.background)
             else:
                 # Can't interpolate normally; just pack copies
                 # TODO: this still packs the genome 20 times or so instead of
@@ -278,6 +282,7 @@ class _AnimRenderer(object):
                 infos = [packed] * len(block_times)
                 gam += a.genomes[0].gamma * len(block_times)
                 vib += a.genomes[0].vibrancy * len(block_times)
+                bkgd += np.array(a.genomes[0].background) * len(block_times)
 
             infos = np.concatenate(infos)
             offset = b * packer.align * self.cps_per_block
@@ -293,7 +298,7 @@ class _AnimRenderer(object):
             # TODO: get block config from IterCode
             # TODO: print timing information
             iter_fun(self.d_seeds[b], np.uint64(d_info_off),
-                     self.d_accum, self.d_den,
+                     self.d_accum, self.d_den, texrefs=[tref],
                      block=(32, 16, 1), grid=(len(block_times), 1),
                      stream=self.stream)
 
@@ -301,19 +306,17 @@ class _AnimRenderer(object):
         # stream here. Later, once we've decided on a density-buffer prefilter,
         # we will move it to the GPU, allowing it to be embedded in the stream
         # and letting the remaining code be asynchronous.
-        self.stream.synchronize()
-        dbuf_dim = (a.features.acc_height, a.features.acc_stride)
-        dbuf = cuda.from_device(self.d_den, dbuf_dim, np.float32)
-        dbuf = ndimage.filters.gaussian_filter(dbuf, 0.6)
-        cuda.memcpy_htod(self.d_den, dbuf)
+        #self.stream.synchronize()
+        #dbuf_dim = (a.features.acc_height, a.features.acc_stride)
+        #dbuf = cuda.from_device(self.d_den, dbuf_dim, np.float32)
+        #dbuf = ndimage.filters.gaussian_filter(dbuf, 0.6)
+        #cuda.memcpy_htod(self.d_den, dbuf)
 
         util.BaseCode.zero_dptr(a.mod, self.d_out, 4 * self.nbins,
                                 self.stream)
-        self.stream.synchronize()
         a._de.invoke(a.mod, Genome(cen_cp),
                      self.d_accum, self.d_out, self.d_den,
                      self.stream)
-        self.stream.synchronize()
 
         f = np.float32
         n = f(self.ncps)
@@ -322,12 +325,12 @@ class _AnimRenderer(object):
         hipow = f(cen_cp.highlight_power)
         lin = f(cen_cp.gam_lin_thresh)
         lingam = f(math.pow(cen_cp.gam_lin_thresh, gam-1.0) if lin > 0 else 0)
-        print gam, vib, lin, lingam, cen_cp.gamma
+        bkgd = vec.make_float3(*(bkgd / n))
 
         # TODO: get block size from colorclip class? It actually does not
         # depend on that being the case
         color_fun = a.mod.get_function("colorclip")
-        color_fun(self.d_out, gam, vib, hipow, lin, lingam,
+        color_fun(self.d_out, gam, vib, hipow, lin, lingam, bkgd,
                   block=(256, 1, 1), grid=(self.nbins / 256, 1),
                   stream=self.stream)
 
@@ -401,6 +404,12 @@ class Features(object):
     # amount of padding applied. Note that, for now, this must not be changed!
     # The filtering code makes deep assumptions about this value.
     gutter = 16
+
+    # TODO: for now, we always throw away the alpha channel before writing.
+    # All code is in place to not do this, we just need to find a way to expose
+    # this preference via the API (or push alpha blending entirely on the client,
+    # which I'm not opposed to)
+    alpha_output_channel = False
 
     def __init__(self, genomes):
         any = lambda l: bool(filter(None, map(l, genomes)))
