@@ -31,6 +31,7 @@ __shared__ iter_info info;
 __device__
 void apply_xf{{xfid}}(float *ix, float *iy, float *icolor, mwc_st *rctx) {
     float tx, ty, ox = *ix, oy = *iy;
+
     {{apply_affine_flam3('ox', 'oy', 'tx', 'ty', px, 'xf.c', 'pre')}}
 
     ox = 0;
