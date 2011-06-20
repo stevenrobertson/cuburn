@@ -28,6 +28,89 @@ void prefix_scan_8_0_shmem(unsigned char *keys, int nitems, int *pfxs) {
 }
 
 __global__
+void prefix_scan_8_0_shmem_lessconf(unsigned char *keys, int nitems, int *pfxs) {
+    __shared__ int sh_pfxs_banked[256][32];
+
+    for (int i = threadIdx.y; i < 256; i += blockDim.y)
+        sh_pfxs_banked[i][threadIdx.x] = 0;
+
+    __syncthreads();
+
+    int blksz = blockDim.x * blockDim.y;
+    int cap = nitems * (blockIdx.x + 1);
+
+    for (int i = threadIdx.y * 32 + threadIdx.x + nitems * blockIdx.x;
+         i < cap; i += blksz) {
+        int value = keys[i];
+        atomicAdd(&(sh_pfxs_banked[value][threadIdx.x]), 1);
+    }
+
+    __syncthreads();
+
+    for (int i = threadIdx.y; i < 256; i += blockDim.y) {
+        for (int j = 16; j > 0; j = j >> 1)
+            if (j > threadIdx.x)
+                sh_pfxs_banked[i][threadIdx.x] += sh_pfxs_banked[i][j+threadIdx.x];
+        __syncthreads();
+    }
+
+    if (threadIdx.y < 8) {
+        int off = threadIdx.y * 32 + threadIdx.x;
+        atomicAdd(pfxs + off, sh_pfxs_banked[off][0]);
+    }
+
+}
+
+__global__
+void prefix_scan_5_0_popc(unsigned char *keys, int nitems, int *pfxs) {
+    __shared__ int sh_pfxs[32];
+
+    if (threadIdx.y == 0) sh_pfxs[threadIdx.x] = 0;
+
+    __syncthreads();
+
+    int blksz = blockDim.x * blockDim.y;
+    int cap = nitems * (blockIdx.x + 1);
+
+    int sum = 0;
+
+    for (int i = threadIdx.y * 32 + threadIdx.x + nitems * blockIdx.x;
+         i < cap; i += blksz) {
+
+        int value = keys[i];
+        int test = __ballot(value & 1);
+        if (!(threadIdx.x & 1)) test = ~test;
+
+        int popc_res = __ballot(value & 2);
+        if (!(threadIdx.x & 2)) popc_res = ~popc_res;
+        test &= popc_res;
+
+        popc_res = __ballot(value & 4);
+        if (!(threadIdx.x & 4)) popc_res = ~popc_res;
+        test &= popc_res;
+
+        popc_res = __ballot(value & 8);
+        if (!(threadIdx.x & 8)) popc_res = ~popc_res;
+        test &= popc_res;
+
+        popc_res = __ballot(value & 16);
+        if (!(threadIdx.x & 16)) popc_res = ~popc_res;
+        test &= popc_res;
+
+        sum += __popc(test);
+    }
+
+    atomicAdd(sh_pfxs + threadIdx.x + 0,   sum);
+    __syncthreads();
+
+    if (threadIdx.y == 0) {
+        int off = threadIdx.x;
+        atomicAdd(pfxs + off, sh_pfxs[off]);
+    }
+}
+
+
+__global__
 void prefix_scan_8_0_popc(unsigned char *keys, int nitems, int *pfxs) {
     __shared__ int sh_pfxs[256];
 

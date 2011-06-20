@@ -31,6 +31,13 @@ def go(scale, block, test_cpu):
     if test_cpu:
         print 'it worked? %s' % (np.all(shmem_pfxs == cpu_pfxs))
 
+    fun = mod.get_function('prefix_scan_8_0_shmem_lessconf')
+    shmeml_pfxs = np.zeros(256, dtype=np.int32)
+    t = fun(cuda.In(data), np.int32(block), cuda.InOut(shmeml_pfxs),
+            block=(32, 32, 1), grid=(scale, 1), time_kernel=True)
+    print 'shmeml took %g secs.' % t
+    print 'it worked? %s' % (np.all(shmeml_pfxs == shmem_pfxs))
+
     fun = mod.get_function('prefix_scan_8_0_popc')
     popc_pfxs = np.zeros(256, dtype=np.int32)
     t = fun(cuda.In(data), np.int32(block), cuda.InOut(popc_pfxs),
@@ -38,8 +45,18 @@ def go(scale, block, test_cpu):
     print 'popc took %g secs.' % t
     print 'it worked? %s' % (np.all(shmem_pfxs == popc_pfxs))
 
+    fun = mod.get_function('prefix_scan_5_0_popc')
+    popc5_pfxs = np.zeros(32, dtype=np.int32)
+    t = fun(cuda.In(data), np.int32(block), cuda.InOut(popc5_pfxs),
+            block=(32, 16, 1), grid=(scale, 1), time_kernel=True)
+    print 'popc5 took %g secs.' % t
+    print popc5_pfxs
+
+
+
 def main():
-    go(8, 512<<10, True)
+    # shmem is known good; disable the CPU run to get better info from cuprof
+    #go(8, 512<<10, True)
     go(1024, 512<<10, False)
 
 
