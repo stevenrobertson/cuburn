@@ -31,16 +31,28 @@ __shared__ iter_info info;
 __device__
 void apply_xf{{xfid}}(float *ix, float *iy, float *icolor, mwc_st *rctx) {
     float tx, ty, ox = *ix, oy = *iy;
+
     {{apply_affine_flam3('ox', 'oy', 'tx', 'ty', px, 'xf.c', 'pre')}}
 
     ox = 0;
     oy = 0;
 
     {{for v in xform.vars}}
+    {{if variations.var_nos[v].startswith('pre_')}}
     if (1) {
         float w = {{px.get('xf.var[%d]' % v)}};
         {{variations.var_code[variations.var_nos[v]].substitute(locals())}}
     }
+    {{endif}}
+    {{endfor}}
+
+    {{for v in xform.vars}}
+    {{if not variations.var_nos[v].startswith('pre_')}}
+    if (1) {
+        float w = {{px.get('xf.var[%d]' % v)}};
+        {{variations.var_code[variations.var_nos[v]].substitute(locals())}}
+    }
+    {{endif}}
     {{endfor}}
 
     *ix = ox;
