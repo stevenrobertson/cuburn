@@ -37,10 +37,21 @@ void apply_xf{{xfid}}(float *ix, float *iy, float *icolor, mwc_st *rctx) {
     oy = 0;
 
     {{for v in xform.vars}}
+    {{if variations.var_nos[v].startswith('pre_')}}
     if (1) {
         float w = {{px.get('xf.var[%d]' % v)}};
         {{variations.var_code[variations.var_nos[v]].substitute(locals())}}
     }
+    {{endif}}
+    {{endfor}}
+
+    {{for v in xform.vars}}
+    {{if not variations.var_nos[v].startswith('pre_')}}
+    if (1) {
+        float w = {{px.get('xf.var[%d]' % v)}};
+        {{variations.var_code[variations.var_nos[v]].substitute(locals())}}
+    }
+    {{endif}}
     {{endfor}}
 
     *ix = ox;
