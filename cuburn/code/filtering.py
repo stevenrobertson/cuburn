@@ -5,7 +5,7 @@ class ColorClip(HunkOCode):
     def __init__(self, features):
         self.defs = self.defs_tmpl.substitute(features=features)
 
-    defs_tmpl = Template("""
+    defs_tmpl = Template('''
 __global__
 void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
                float linrange, float lingam, float3 bkgd) {
@@ -13,6 +13,11 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
     // used and up to 256 pixels are ignored, which breaks when width<256
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     float4 pix = pixbuf[i];
+
+    if (i == 58905) {
+        printf("pix = %f %f %f %f\\n",pix.w,pix.x,pix.y,pix.z);
+    }
+
 
     if (pix.w <= 0) {
         pixbuf[i] = make_float4(bkgd.x, bkgd.y, bkgd.z, 0);
@@ -28,6 +33,12 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
     }
 
     float ls = vibrancy * alpha / pix.w;
+
+    if (i == 58905) {
+        printf("alpha = %f, ls = %f\\n",alpha, ls);
+    }
+
+
     alpha = fminf(1.0f, fmaxf(0.0f, alpha));
 
     float maxc = fmaxf(pix.x, fmaxf(pix.y, pix.z));
@@ -50,10 +61,12 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
     } else {
         float adjhlp = -highpow;
         if (adjhlp > 1.0f || maxa <= 1.0f) adjhlp = 1.0f;
-        float adj = ((1.0f - adjhlp) * newls + adjhlp * ls);
-        pix.x *= adj;
-        pix.y *= adj;
-        pix.z *= adj;
+        if (maxc > 0.0f) {
+            float adj = ((1.0f - adjhlp) * newls + adjhlp * ls);
+            pix.x *= adj;
+            pix.y *= adj;
+            pix.z *= adj;
+        }
     }
 
     pix.x += (1.0f - vibrancy) * powf(opix.x, gamma);
@@ -79,7 +92,7 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
 
     pixbuf[i] = pix;
 }
-""")
+''')
 
 class DensityEst(HunkOCode):
     """
