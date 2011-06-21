@@ -14,11 +14,6 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     float4 pix = pixbuf[i];
 
-    if (i == 58905) {
-        printf("pix = %f %f %f %f\\n",pix.w,pix.x,pix.y,pix.z);
-    }
-
-
     if (pix.w <= 0) {
         pixbuf[i] = make_float4(bkgd.x, bkgd.y, bkgd.z, 0);
         return;
@@ -33,11 +28,6 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
     }
 
     float ls = vibrancy * alpha / pix.w;
-
-    if (i == 58905) {
-        printf("alpha = %f, ls = %f\\n",alpha, ls);
-    }
-
 
     alpha = fminf(1.0f, fmaxf(0.0f, alpha));
 
