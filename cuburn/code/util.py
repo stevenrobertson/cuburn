@@ -47,6 +47,7 @@ class BaseCode(HunkOCode):
     headers = """
 #include<cuda.h>
 #include<stdint.h>
+#include<stdio.h>
 """
 
     defs = """
