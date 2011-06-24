@@ -102,7 +102,7 @@ class DensityEst(HunkOCode):
     def defs(self):
         return self.defs_tmpl.substitute(features=self.features, cp=self.cp)
 
-    defs_tmpl = Template("""
+    defs_tmpl = Template('''
 #define W 15        // Filter width (regardless of standard deviation chosen)
 #define W2 7        // Half of filter width, rounded down
 #define FW 46       // Width of local result storage (NW+W2+W2)
@@ -277,7 +277,7 @@ void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
     }
 }
 
-""")
+''')
 
     def invoke(self, mod, cp, abufd, obufd, dbufd, stream=None):
         # TODO: add no-est version
@@ -285,8 +285,7 @@ void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
 
         k1 = np.float32(cp.brightness * 268 / 256)
         area = self.features.width * self.features.height / cp.ppu ** 2
-        k2 = np.float32(1 / (area * cp.adj_density))
-        print k1, k2
+        k2 = np.float32(1 / (area * cp.adj_density ))
 
         if self.cp.estimator == 0:
             nbins = self.features.acc_height * self.features.acc_stride

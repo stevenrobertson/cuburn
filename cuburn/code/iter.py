@@ -67,7 +67,7 @@ void apply_xf{{xfid}}(float *ix, float *iy, float *icolor, mwc_st *rctx) {
         return tmpl.substitute(g)
 
     def _iterbody(self):
-        tmpl = Template(r"""
+        tmpl = Template('''
 __global__
 void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
     mwc_st rctx = msts[gtid()];
@@ -81,9 +81,10 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
 
     int consec_bad = -{{features.fuse}};
     // TODO: remove '512' constant
-    int nsamps = {{packer.get('cp.width * cp.height / (cp.ntemporal_samples * 512.) * cp.adj_density')}};
+    int nsamps = {{packer.get("cp.width * cp.height / (cp.ntemporal_samples * 512.) * cp.adj_density")}};
 
     float x, y, color;
+    int last_xf_used = 0;
     x = mwc_next_11(&rctx);
     y = mwc_next_11(&rctx);
     color = mwc_next_01(&rctx);
@@ -91,14 +92,17 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
     while (nsamps > 0) {
         float xfsel = mwc_next_01(&rctx);
 
-        {{for xfid, xform in enumerate(features.xforms)}}
-        {{if xfid != features.final_xform_index}}
-        if (xfsel <= {{packer.get('cp.norm_density[%d]' % xfid)}}) {
-            apply_xf{{xfid}}(&x, &y, &color, &rctx);
+        {{for density_row_idx, prior_xform_idx in enumerate(features.std_xforms)}}
+        {{for density_col_idx,  this_xform_idx in enumerate(features.std_xforms)}}
+        if (last_xf_used == {{prior_xform_idx}} && 
+                xfsel < {{packer.get("cp.chaos_densities[%d][%d]" % (density_row_idx, density_col_idx))}}) {
+            apply_xf{{this_xform_idx}}(&x, &y, &color, &rctx);
+            last_xf_used = {{this_xform_idx}};
         } else
-        {{endif}}
+        {{endfor}}
         {{endfor}}
         {
+            //printf("%d ",last_xf_used);
             denbuf[0] = xfsel;
             break; // TODO: fail here
         }
@@ -125,7 +129,7 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
         {{endif}}
 
         // TODO: verify that constants get premultiplied
-        float ditherwidth = {{packer.get('0.33 * cp.spatial_filter_radius')}};
+        float ditherwidth = {{packer.get("0.33 * cp.spatial_filter_radius")}};
         float u0 = mwc_next_01(&rctx);
         float r = ditherwidth * sqrt(-2.0f * log2f(u0) / M_LOG2E);
 
@@ -150,7 +154,7 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
 
         int i = iy * {{features.acc_stride}} + ix;
 
-        float4 outcol = tex2D(palTex, color, {{packer.get('cp_step_frac')}});
+        float4 outcol = tex2D(palTex, color, {{packer.get("cp_step_frac")}});
         float4 pix = accbuf[i];
         pix.x += outcol.x;
         pix.y += outcol.y;
@@ -161,7 +165,7 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
     }
     asm volatile ("membar.cta;");
 }
-""")
+''')
         return tmpl.substitute(
                 features = self.features,
                 packer = self.packer.view('info'),

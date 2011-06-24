@@ -41,8 +41,19 @@ class Genome(object):
         self.xforms = [self.xform[i] for i in range(self.num_xforms)]
         dens = np.array([x.density for i, x in enumerate(self.xforms)
                          if i != self.final_xform_index])
-        dens /= np.sum(dens)
-        self.norm_density = [np.sum(dens[:i+1]) for i in range(len(dens))]
+
+        ###############
+        # Chaos support
+        num_std_xf = len(dens)
+        self.chaos_densities = np.zeros( (num_std_xf,num_std_xf) )
+        for r in range(num_std_xf):
+            chaos_row = np.array([ctypes_genome.chaos[r][c] for c in range(num_std_xf)])
+            chaos_row = chaos_row * dens
+            chaos_row /= np.sum(chaos_row)
+            chaos_row = [np.sum(chaos_row[:i+1]) for i in range(len(dens))]
+            self.chaos_densities[r,:] = chaos_row
+        ###############
+
         self.camera_transform = self.calc_camera_transform()
 
     scale = property(lambda cp: 2.0 ** cp.zoom)
@@ -368,6 +379,9 @@ class _AnimRenderer(object):
         g = a.features.gutter
         obuf_dim = (a.features.acc_height, a.features.acc_stride, 4)
         out = cuda.from_device(self.d_out, obuf_dim, np.float32)
+        #dacc = cuda.from_device(self.d_accum, obuf_dim, np.float32)
+        #daccw = dacc[:,:,3]
+        #print daccw.sum()
         # TODO: performance?
         g = a.features.gutter
         out = np.delete(out, np.s_[:g], axis=0)
@@ -438,6 +452,7 @@ class Features(object):
         self.acc_width = genomes[0].width + 2 * self.gutter
         self.acc_height = genomes[0].height + 2 * self.gutter
         self.acc_stride = 32 * int(math.ceil(self.acc_width / 32.))
+        self.std_xforms = filter(lambda v: v != self.final_xform_index, range(self.nxforms))
 
 class XFormFeatures(object):
     def __init__(self, xforms, xform_id):
