@@ -92,6 +92,7 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
     while (nsamps > 0) {
         float xfsel = mwc_next_01(&rctx);
 
+        {{if packer.get("cp.chaos_used")==True}}
         {{for density_row_idx, prior_xform_idx in enumerate(features.std_xforms)}}
         {{for density_col_idx,  this_xform_idx in enumerate(features.std_xforms)}}
         if (last_xf_used == {{prior_xform_idx}} && 
@@ -101,6 +102,13 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
         } else
         {{endfor}}
         {{endfor}}
+        {{else}}
+        {{for density_col_idx,  this_xform_idx in enumerate(features.std_xforms)}}
+        if (xfsel < {{packer.get("cp.norm_density[%d]" % (density_col_idx))}}) {
+            apply_xf{{this_xform_idx}}(&x, &y, &color, &rctx);
+        } else
+        {{endfor}}
+        {{endif}}
         {
             //printf("%d ",last_xf_used);
             denbuf[0] = xfsel;

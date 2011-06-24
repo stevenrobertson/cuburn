@@ -46,14 +46,19 @@ class Genome(object):
         # Chaos support
         num_std_xf = len(dens)
         self.chaos_densities = np.zeros( (num_std_xf,num_std_xf) )
+        self.chaos_used = False
         for r in range(num_std_xf):
             chaos_row = np.array([ctypes_genome.chaos[r][c] for c in range(num_std_xf)])
+            if np.any(chaos_row != 1.0):
+                self.chaos_used = True
             chaos_row = chaos_row * dens
             chaos_row /= np.sum(chaos_row)
             chaos_row = [np.sum(chaos_row[:i+1]) for i in range(len(dens))]
             self.chaos_densities[r,:] = chaos_row
         ###############
 
+        dens /= np.sum(dens)
+        self.norm_density = [np.sum(dens[:i+1]) for i in range(len(dens))]
         self.camera_transform = self.calc_camera_transform()
 
     scale = property(lambda cp: 2.0 ** cp.zoom)
