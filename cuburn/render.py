@@ -46,11 +46,8 @@ class Genome(object):
         # Chaos support
         num_std_xf = len(dens)
         self.chaos_densities = np.zeros( (num_std_xf,num_std_xf) )
-        self.chaos_used = False
         for r in range(num_std_xf):
             chaos_row = np.array([ctypes_genome.chaos[r][c] for c in range(num_std_xf)])
-            if np.any(chaos_row != 1.0):
-                self.chaos_used = True
             chaos_row = chaos_row * dens
             chaos_row /= np.sum(chaos_row)
             chaos_row = [np.sum(chaos_row[:i+1]) for i in range(len(dens))]
@@ -458,6 +455,14 @@ class Features(object):
         self.acc_height = genomes[0].height + 2 * self.gutter
         self.acc_stride = 32 * int(math.ceil(self.acc_width / 32.))
         self.std_xforms = filter(lambda v: v != self.final_xform_index, range(self.nxforms))
+        self.chaos_used = False
+        for cp in genomes:
+            for r in range(len(self.std_xforms)):
+                for c in range(len(self.std_xforms)):
+                    if cp.chaos[r][c] != 1.0:
+                        self.chaos_used = True
+
+
 
 class XFormFeatures(object):
     def __init__(self, xforms, xform_id):
