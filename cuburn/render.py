@@ -267,7 +267,7 @@ class _AnimRenderer(object):
         packer = a._iter.packer
 
         iter_fun = a.mod.get_function("iter")
-        iter_fun.set_cache_config(cuda.func_cache.PREFER_L1)
+        #iter_fun.set_cache_config(cuda.func_cache.PREFER_L1)
 
         # Must be accumulated over all CPs
         gam, vib = 0, 0
@@ -454,7 +454,8 @@ class Features(object):
         self.acc_width = genomes[0].width + 2 * self.gutter
         self.acc_height = genomes[0].height + 2 * self.gutter
         self.acc_stride = 32 * int(math.ceil(self.acc_width / 32.))
-        self.std_xforms = filter(lambda v: v != self.final_xform_index, range(self.nxforms))
+        self.std_xforms = filter(lambda v: v != self.final_xform_index,
+                                 range(self.nxforms))
         self.chaos_used = False
         for cp in genomes:
             for r in range(len(self.std_xforms)):
@@ -473,5 +474,4 @@ class XFormFeatures(object):
         for x in xforms:
             self.vars = (
                 self.vars.union(set([i for i, v in enumerate(x.var) if v])))
-
 

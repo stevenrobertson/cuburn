@@ -67,9 +67,10 @@ void apply_xf{{xfid}}(float *ix, float *iy, float *icolor, mwc_st *rctx) {
         return tmpl.substitute(g)
 
     def _iterbody(self):
-        tmpl = Template('''
+        tmpl = Template(r'''
 __global__
 void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
+    __shared__ int nsamps;
     mwc_st rctx = msts[gtid()];
     iter_info *info_glob = &(infos[blockIdx.x]);
 
@@ -79,47 +80,89 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
         reinterpret_cast<float*>(&info)[i] =
             reinterpret_cast<float*>(info_glob)[i];
 
+    if (threadIdx.y == 0 && threadIdx.x == 0)
+        nsamps = {{packer.get("cp.width * cp.height / cp.ntemporal_samples * cp.adj_density")}};
+
+    __syncthreads();
     int consec_bad = -{{features.fuse}};
-    // TODO: remove '512' constant
-    int nsamps = {{packer.get("cp.width * cp.height / (cp.ntemporal_samples * 512.) * cp.adj_density")}};
 
     float x, y, color;
-    int last_xf_used = 0;
     x = mwc_next_11(&rctx);
     y = mwc_next_11(&rctx);
     color = mwc_next_01(&rctx);
 
-    while (nsamps > 0) {
+    {{if features.chaos_used}}
+    int last_xf_used = 0;
+    {{else}}
+    // Size can be reduced by a factor of four using a slower 4-stage reduce
+    __shared__ float swap[2048];
+    __shared__ float cosel[16];
+    {{endif}}
+
+    while (1) {
+        {{if features.chaos_used}}
+        // For now, we can't use the swap buffer with chaos enabled
         float xfsel = mwc_next_01(&rctx);
+        // Needed to match the behavior of the loop with swapping
+        __syncthreads();
+        {{else}}
+        if (threadIdx.y == 0 && threadIdx.x < 16) {
+            cosel[threadIdx.x] = mwc_next_01(&rctx);
+        }
+        __syncthreads();
+        float xfsel = cosel[threadIdx.y];
+        {{endif}}
+
+        // This is moved from outside the conditional to avoid needing an extra
+        // __syncthreads on every loop
+        if (nsamps < 0) break;
 
         {{if features.chaos_used}}
         {{for density_row_idx, prior_xform_idx in enumerate(features.std_xforms)}}
         {{for density_col_idx,  this_xform_idx in enumerate(features.std_xforms)}}
-        if (last_xf_used == {{prior_xform_idx}} && 
-                xfsel < {{packer.get("cp.chaos_densities[%d][%d]" % (density_row_idx, density_col_idx))}}) {
+        if (last_xf_used == {{prior_xform_idx}} &&
+                xfsel <= {{packer.get("cp.chaos_densities[%d][%d]" % (density_row_idx, density_col_idx))}}) {
             apply_xf{{this_xform_idx}}(&x, &y, &color, &rctx);
             last_xf_used = {{this_xform_idx}};
         } else
         {{endfor}}
         {{endfor}}
         {{else}}
-        {{for density_col_idx,  this_xform_idx in enumerate(features.std_xforms)}}
-        if (xfsel < {{packer.get("cp.norm_density[%d]" % (density_col_idx))}}) {
+        {{for density_col_idx, this_xform_idx in enumerate(features.std_xforms)}}
+        if (xfsel <= {{packer.get("cp.norm_density[%d]" % (density_col_idx))}}) {
             apply_xf{{this_xform_idx}}(&x, &y, &color, &rctx);
         } else
         {{endfor}}
         {{endif}}
         {
-            //printf("%d ",last_xf_used);
-            denbuf[0] = xfsel;
-            break; // TODO: fail here
+            printf("Reached trap, aborting execution! %g (%d,%d,%d)\n",
+                   xfsel, blockIdx.x, threadIdx.y, threadIdx.x);
+            asm volatile ("trap;");
         }
+
+        {{if not features.chaos_used}}
+        // Swap thread states here so that writeback skipping logic doesn't die
+        int sw = (threadIdx.y * 32 + threadIdx.x * 33) & 0x1ff;
+        int sr = threadIdx.y * 32 + threadIdx.x;
+
+        swap[sw] = consec_bad;
+        swap[sw+512] = x;
+        swap[sw+1024] = y;
+        swap[sw+1536] = color;
+        __syncthreads();
+        consec_bad = swap[sr];
+        x = swap[sr+512];
+        y = swap[sr+1024];
+        color = swap[sr+1536];
+        {{endif}}
 
         if (consec_bad < 0) {
             consec_bad++;
             continue;
         }
-        nsamps--;
+
+        int remain = __popc(__ballot(1));
+        if (threadIdx.x == 0) atomicSub(&nsamps, remain);
 
         {{if features.final_xform_index}}
         float fx = x, fy = y, fcolor;
