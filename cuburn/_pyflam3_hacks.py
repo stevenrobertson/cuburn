@@ -142,6 +142,8 @@ BaseXForm._fields_ = [('var', c_double * flam3_nvariations)
                , ('mobius_im_b', c_double)
                , ('mobius_re_c', c_double)
                , ('mobius_im_c', c_double)
+               , ('mobius_re_d', c_double)
+               , ('mobius_im_d', c_double)
                , ('persp_vsin', c_double)
                , ('persp_vfcos', c_double)
                , ('julian_rN', c_double)
@@ -166,9 +168,7 @@ BaseXForm._fields_ = [('var', c_double * flam3_nvariations)
                , ('motion_freq', c_int)
                , ('motion_func', c_int)
                , ('motion', POINTER(BaseXForm))
-               , ('num_motion', c_int)
-               # It seems I'm missing something in the current version.
-               , ('mysterious_padding', c_double * 2) ]
+               , ('num_motion', c_int)]
 
 libflam3.flam3_align.argtypes = [POINTER(BaseGenome), POINTER(BaseGenome), c_int]
 flam3_align = libflam3.flam3_align
