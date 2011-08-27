@@ -27,30 +27,51 @@ void prefix_scan_8_0_shmem(unsigned char *keys, int nitems, int *pfxs) {
     }
 }
 
+#define GRP_RDX_FACTOR (GRPSZ / RDXSZ)
+#define GRP_BLK_FACTOR (GRPSZ / BLKSZ)
+#define GRPSZ 8192
+#define RDXSZ 256
+#define BLKSZ 512
 
+__global__
+void prefix_scan(unsigned short *keys, int *pfxs, const int shift) {
+    const int tid = threadIdx.y * 32 + threadIdx.x;
+    __shared__ int shr_pfxs[BLKSZ];
+
+    shr_pfxs[tid] = 0;
+    __syncthreads();
+    int i = tid + GRPSZ * blockIdx.x;
+
+    for (int j = 0; j < GRP_BLK_FACTOR; j++) {
+        int value = (keys[i] >> shift) && 0xff;
+        atomicAdd(shr_pfxs + value, 1);
+        i += BLKSZ;
+    }
+
+    __syncthreads();
+    pfxs[tid + BLKSZ * blockIdx.x] = shr_pfxs[tid];
+}
 
 __global__
 void prefix_scan_8_0_shmem_shortseg(unsigned char *keys, int *pfxs) {
-    const int blksz = 256;
-    const int grpsz = 8192;
     const int tid = threadIdx.y * 32 + threadIdx.x;
-    __shared__ int shr_pfxs[blksz];
+    __shared__ int shr_pfxs[RDXSZ];
 
-    shr_pfxs[tid] = 0;
+    if (tid < RDXSZ) shr_pfxs[tid] = 0;
     __syncthreads();
 
     // TODO: this introduces a hard upper limit of 512M keys (3GB) sorted in a
     // pass. It'll be a while before we get the 8GB cards needed to do this.
-    int i = tid + grpsz * blockIdx.x;
+    int i = tid + GRPSZ * blockIdx.x;
 
-    for (int j = 0; j < 32; j++) {
+    for (int j = 0; j < GRP_BLK_FACTOR; j++) {
         int value = keys[i];
         atomicAdd(shr_pfxs + value, 1);
-        i += blksz;
+        i += BLKSZ;
     }
 
     __syncthreads();
-    pfxs[tid + blksz * blockIdx.x] = shr_pfxs[tid];
+    if (tid < RDXSZ) pfxs[tid + RDXSZ * blockIdx.x] = shr_pfxs[tid];
 }
 
 __global__
@@ -67,9 +88,63 @@ void crappy_split(int *pfxs, int *pfxs_out) {
 }
 
 __global__
+void better_split(int *pfxs_out, const int *pfxs) {
+    // This one must be launched as 32x1, regardless of BLKSZ.
+    const int tid = threadIdx.x;
+    const int tid5 = tid << 5;
+    __shared__ int swap[1024];
+
+    int base = RDXSZ * 32 * blockIdx.x;
+
+    int value = 0;
+
+    // Performs a fast "split" (don't know why I called it that, will rename
+    // soon). For each entry in pfxs (corresponding to the number of elements
+    // per radix in a group), this writes the exclusive prefix sum for that
+    // group. This is in fact a bunch of serial prefix sums in parallel, and
+    // not a parallel prefix sum.
+    //
+    // The contents of 32 group radix counts are loaded in 32-element chunks
+    // into shared memory, rotated by 1 unit each group to avoid bank
+    // conflicts. Each thread in the warp sums across each group serially,
+    // updating the values as it goes, then the results are written coherently
+    // to global memory.
+    //
+    // This leaves the processor extremely compute-starved, as this only allows
+    // 12 warps per SM. It might be better to halve the chunk size and lose
+    // some coalescing efficiency; need to benchmark. It's a relatively cheap
+    // step overall though.
+
+    for (int j = 0; j < 8; j++) {
+        int jj = j << 5;
+        for (int i = 0; i < 32; i++) {
+            int base_offset = (i << 8) + jj + base + tid;
+            int swap_offset = (i << 5) + ((i + tid) & 0x1f);
+            swap[swap_offset] = pfxs[base_offset];
+        }
+
+#pragma unroll
+        for (int i = 0; i < 32; i++) {
+            int swap_offset = tid5 + ((i + tid) & 0x1f);
+            int tmp = swap[swap_offset];
+            swap[swap_offset] = value;
+            value += tmp;
+        }
+
+        for (int i = 0; i < 32; i++) {
+            int base_offset = (i << 8) + jj + base + tid;
+            int swap_offset = (i << 5) + ((i + tid) & 0x1f);
+            pfxs_out[base_offset] = swap[swap_offset];
+        }
+    }
+}
+
+__global__
 void prefix_sum(int *pfxs, int nitems, int *out_pfxs, int *out_sums) {
-    const int blksz = 256;
+    // Needs optimizing (later). Should be rolled into split.
+    // Must launch 32x8.
     const int tid = threadIdx.y * 32 + threadIdx.x;
+    const int blksz = 256;
     int val = 0;
     for (int i = tid; i < nitems; i += blksz) val += pfxs[i];
 
@@ -99,54 +174,73 @@ void prefix_sum(int *pfxs, int nitems, int *out_pfxs, int *out_sums) {
 
 __global__
 void sort_8(unsigned char *keys, int *sorted_keys, int *pfxs) {
-    const int grpsz = 8192;
-    const int blksz = 256;
     const int tid = threadIdx.y * 32 + threadIdx.x;
-    const int blk_offset = grpsz * blockIdx.x;
-    __shared__ int shr_pfxs[blksz];
+    const int blk_offset = GRPSZ * blockIdx.x;
+    __shared__ int shr_pfxs[RDXSZ];
 
-    if (threadIdx.y < 8) {
-        int pfx_i = blksz * blockIdx.x + tid;
-        shr_pfxs[tid] = pfxs[pfx_i];
-    }
+    if (tid < RDXSZ) shr_pfxs[tid] = pfxs[RDXSZ * blockIdx.x + tid];
     __syncthreads();
 
     int i = tid;
-    for (int j = 0; j < 32; j++) {
+    for (int j = 0; j < GRP_BLK_FACTOR; j++) {
         int value = keys[i+blk_offset];
         int offset = atomicAdd(shr_pfxs + value, 1);
         sorted_keys[offset] = value;
-        i += blksz;
+        i += BLKSZ;
     }
 }
 
+#undef BLKSZ
+#define BLKSZ 1024
 __global__
-void sort_8_a(unsigned char *keys, int *sorted_keys, int *pfxs, int *split) {
-    const int grpsz = 8192;
-    const int blksz = 256;
+void sort_8_a(unsigned char *keys, int *sorted_keys,
+              const int *pfxs, const int *split) {
     const int tid = threadIdx.y * 32 + threadIdx.x;
-    const int blk_offset = grpsz * blockIdx.x;
-    __shared__ int shr_pfxs[blksz];
-    __shared__ int shr_offs[blksz];
-    __shared__ int defer[grpsz];
+    const int blk_offset = GRPSZ * blockIdx.x;
+    __shared__ int shr_offs[RDXSZ];
+    __shared__ int defer[GRPSZ];
 
-    const int pfx_i = blksz * blockIdx.x + tid;
-    shr_pfxs[tid] = pfxs[pfx_i];
-    shr_offs[tid] = split[pfx_i];
+    const int pfx_i = RDXSZ * blockIdx.x + tid;
+    if (tid < RDXSZ) shr_offs[tid] = split[pfx_i];
     __syncthreads();
 
-    for (int i = tid; i < grpsz; i += blksz) {
+    for (int i = tid; i < GRPSZ; i += BLKSZ) {
         int value = keys[i+blk_offset];
         int offset = atomicAdd(shr_offs + value, 1);
         defer[offset] = value;
     }
-    //shr_pfxs[tid] = pfxs[pfx_i];
     __syncthreads();
 
-    for (int i = tid; i < grpsz; i += blksz) {
+    // This calculation is a bit odd.
+    //
+    // For a given radix value 'r', shr_offs[r] currently holds the first index
+    // of the *next* radix in defer[] (i.e.  if there are 28 '0'-radix values
+    // in defer[], shr_offs[0]==28). We want to get back to a normal exclusive
+    // prefix, so we subtract shr_offs[0] from everything.
+    //
+    // In the next block, we want to be able to find the correct position for a
+    // value in defer[], given that value's index 'i' and its radix 'r'. This
+    // requires two values: the destination index in sorted_keys[] of the first
+    // value in the group with radix 'r' (given by pfxs[BASE + r]), and the
+    // number of radix-'r' values before this one in defer[]. So, ultimately,
+    // we want an equation in the inner loop below that looks like this:
+    //
+    //      int dst_offset = pfxs[r] + i - (shr_offs[r] - shr_offs[0]);
+    //      sorted_keys[dst_offset] = defer[i];
+    //
+    // Of course, this generates tons of memory lookups and bank conflicts so
+    // we precombine some of this here.
+    int off0 = shr_offs[0];
+    if (tid < RDXSZ) shr_offs[tid] = pfxs[0] - (shr_offs[tid] - off0);
+    __syncthreads();
+
+    int i = tid;
+#pragma unroll
+    for (int j = 0; j < GRP_BLK_FACTOR; j++) {
         int value = defer[i];
-        int offset = shr_pfxs[value] + i - (shr_offs[value] - shr_offs[0]);
+        int offset = shr_offs[value] + i;
         sorted_keys[offset] = value;
+        i += BLKSZ;
     }
 }
 
