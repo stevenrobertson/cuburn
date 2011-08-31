@@ -14,7 +14,7 @@ os.environ['PATH'] = ('/usr/x86_64-pc-linux-gnu/gcc-bin/4.4.6:'
 i32 = np.int32
 
 with open('sortbench.cu') as f: src = f.read()
-mod = pycuda.compiler.SourceModule(src, keep=True)
+mod = pycuda.compiler.SourceModule(src, keep=True, options=[])
 
 def launch(name, *args, **kwargs):
     fun = mod.get_function(name)
@@ -103,9 +103,9 @@ def py_radix_sort_maybe(keys, offsets, pfxs, split, shift):
 def go_sort(count, stream=None):
     grids = count / 8192
 
-    #keys = np.fromstring(np.random.bytes(count*2), dtype=np.uint16)
-    keys = np.arange(count, dtype=np.uint16)
-    np.random.shuffle(keys)
+    keys = np.fromstring(np.random.bytes(count*2), dtype=np.uint16)
+    #keys = np.arange(count, dtype=np.uint16)
+    #np.random.shuffle(keys)
     mkeys = np.reshape(keys, (grids, 8192))
     vals = np.arange(count, dtype=np.uint32)
     dkeys = cuda.to_device(keys)
@@ -114,9 +114,8 @@ def go_sort(count, stream=None):
 
     dpfxs = cuda.mem_alloc(grids * 256 * 4)
     doffsets = cuda.mem_alloc(count * 2)
-    launch('prefix_scan', doffsets, dpfxs, dkeys, i32(0),
+    launch('prefix_scan_8_0', doffsets, dpfxs, dkeys,
             block=(512, 1, 1), grid=(grids, 1), stream=stream, l1=1)
-    print cuda.from_device(dpfxs, (2, 256), np.uint32)
 
     dsplit = cuda.mem_alloc(grids * 256 * 4)
     launch('better_split', dsplit, dpfxs,
@@ -125,7 +124,6 @@ def go_sort(count, stream=None):
     # This stage will be rejiggered along with the split
     launch('prefix_sum', dpfxs, np.int32(grids * 256),
             block=(256, 1, 1), grid=(1, 1), stream=stream, l1=1)
-    print cuda.from_device(dpfxs, (2, 256), np.uint32)
 
     launch('convert_offsets', doffsets, dsplit, dkeys, i32(0),
             block=(1024, 1, 1), grid=(grids, 1), stream=stream)
@@ -134,7 +132,7 @@ def go_sort(count, stream=None):
         split = cuda.from_device(dsplit, (grids, 256), np.uint32)
         pfxs = cuda.from_device(dpfxs, (grids, 256), np.uint32)
         tkeys = py_radix_sort_maybe(mkeys, offsets, pfxs, split, 0)
-        print frle(tkeys & 0xff)
+        #print frle(tkeys & 0xff)
 
     d_skeys = cuda.mem_alloc(count * 2)
     d_svals = cuda.mem_alloc(count * 4)
@@ -157,8 +155,6 @@ def go_sort(count, stream=None):
         else:
             print 'FAIL'
 
-        print frle(skeys & 0xff)
-
     dkeys, d_skeys = d_skeys, dkeys
     dvals, d_svals = d_svals, dvals
 
@@ -166,13 +162,14 @@ def go_sort(count, stream=None):
         cuda.memset_d32(d_skeys, 0, count/2)
         cuda.memset_d32(d_svals, 0xffffffff, count)
 
-    launch('prefix_scan', doffsets, dpfxs, dkeys, i32(8),
+    launch('prefix_scan_8_8', doffsets, dpfxs, dkeys,
             block=(512, 1, 1), grid=(grids, 1), stream=stream, l1=1)
     launch('better_split', dsplit, dpfxs,
             block=(32, 1, 1), grid=(grids / 32, 1), stream=stream)
     launch('prefix_sum', dpfxs, np.int32(grids * 256),
             block=(256, 1, 1), grid=(1, 1), stream=stream, l1=1)
-    pre_offsets = cuda.from_device(doffsets, (grids, 8192), np.uint16)
+    if not stream:
+        pre_offsets = cuda.from_device(doffsets, (grids, 8192), np.uint16)
     launch('convert_offsets', doffsets, dsplit, dkeys, i32(8),
             block=(1024, 1, 1), grid=(grids, 1), stream=stream)
     if not stream:
@@ -182,13 +179,9 @@ def go_sort(count, stream=None):
         tkeys = np.reshape(tkeys, (grids, 8192))
 
         new_offs = py_convert_offsets(pre_offsets, split, tkeys, 8)
-        print new_offs[:3]
-        print offsets[:3]
         print np.nonzero(new_offs != offsets)
-
         fkeys = py_radix_sort_maybe(tkeys, new_offs, pfxs, split, 8)
-        print frle(fkeys)
-
+        #print frle(fkeys)
 
     launch('radix_sort_maybe', d_skeys, d_svals,
             dkeys, dvals, doffsets, dpfxs, dsplit, i32(8),
@@ -213,11 +206,7 @@ def go_sort(count, stream=None):
         # correctness, so this test should be made "soft".)
         print 'Order: ', 'pass' if np.all(skeys == sorted_keys) else 'FAIL'
 
-        print frle(skeys)
-        print fkeys
-        print skeys
-        print np.nonzero(fkeys != skeys)[0]
-
+        #print frle(skeys, 5120)
 
 def go_sort_old(count, stream=None):
     data = np.fromstring(np.random.bytes(count), dtype=np.uint8)
@@ -273,7 +262,7 @@ def main():
     #go(1024, 512<<8, False)
     #go(32768, 8192, False)
     stream = cuda.Stream() if '-s' in sys.argv else None
-    go_sort(1<<20, stream)
+    go_sort(1<<25, stream)
     if stream:
         stream.synchronize()
 

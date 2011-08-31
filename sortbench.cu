@@ -36,8 +36,8 @@ void prefix_scan_8_0_shmem(unsigned char *keys, int nitems, int *pfxs) {
 #define BLKSZ 512
 
 __global__
-void prefix_scan(unsigned short *offsets, int *pfxs,
-                 const unsigned short *keys, const int shift) {
+void prefix_scan_8_0(unsigned short *offsets, int *pfxs,
+                     const unsigned short *keys) {
     const int tid = threadIdx.x;
     __shared__ int shr_pfxs[RDXSZ];
 
@@ -49,9 +49,64 @@ void prefix_scan(unsigned short *offsets, int *pfxs,
         // TODO: compiler smart enough to turn this into a BFE?
         // TODO: should this just be two functions with fixed shifts?
         // TODO: separate or integrated loop vars? unrolling?
-        int value = (keys[i] >> shift) & 0xff;
+        int value = keys[i] & 0xff;
         offsets[i] = atomicAdd(shr_pfxs + value, 1);
         i += BLKSZ;
+    }
+
+    __syncthreads();
+    if (tid < RDXSZ) pfxs[tid + RDXSZ * blockIdx.x] = shr_pfxs[tid];
+}
+
+__global__
+void prefix_scan_8_8(unsigned short *offsets, int *pfxs,
+                     const unsigned short *keys) {
+    const int tid = threadIdx.x;
+    const int blk_offset = GRPSZ * blockIdx.x;
+    __shared__ int shr_pfxs[RDXSZ];
+    __shared__ int shr_lo_radix;
+    __shared__ int shr_rerun;
+
+    if (tid < RDXSZ) {
+        shr_pfxs[tid] = 0;
+        if (tid == 0) {
+            shr_lo_radix = keys[GRPSZ * blockIdx.x] & 0xff;
+            shr_rerun = 0;
+        }
+    }
+    __syncthreads();
+
+    int ran = 0;
+
+    int i = tid;
+    while (i < GRPSZ) {
+        int value = keys[i + blk_offset];
+        int lo_radix = value & 0xff;
+        if (shr_lo_radix < lo_radix) {
+            shr_rerun = 1;
+        } else if (shr_lo_radix == lo_radix) {
+            int radix = (value >> 8) & 0xff;
+            offsets[i + blk_offset] = atomicAdd(shr_pfxs + radix, 1);
+            ran = 1;
+        } else if (shr_lo_radix > lo_radix && !ran) {
+            // For reasons I have yet to bother assessing, the optimizer
+            // mangles this function unless it also includes code that runs on
+            // this case. This code should never actually run, though. In
+            // fact, 'ran' could be eliminated entirely, but for this.
+            offsets[i] = offsets[i];
+        }
+
+        __syncthreads();
+        if (shr_rerun) {
+            if (tid == 0) {
+                shr_lo_radix += 1;
+                shr_rerun = 0;
+            }
+            __syncthreads();
+        } else {
+            i += blockDim.x;
+            ran = 0;
+        }
     }
 
     __syncthreads();
@@ -263,7 +318,11 @@ void convert_offsets(
     for (int i = tid; i < GRPSZ; i += BLKSZ) {
         int r = (keys[blk_offset + i] >> shift) & 0xff;
         int o = shr_split[r] + offsets[blk_offset + i];
-        shr_offsets[o] = i;
+        if (o < GRPSZ)
+            shr_offsets[o] = i;
+        else
+            printf("\nWTF b:%4x i:%4x r:%2x o:%4x s:%4x og:%4x",
+                    blockIdx.x, i, r, o, shr_split[r], offsets[blk_offset+i]);
     }
     __syncthreads();
 
