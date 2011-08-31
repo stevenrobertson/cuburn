@@ -1,6 +1,8 @@
 #include <cuda.h>
 #include <stdio.h>
 
+#define s(x) #x
+
 __global__
 void prefix_scan_8_0_shmem(unsigned char *keys, int nitems, int *pfxs) {
     __shared__ int sh_pfxs[256];
@@ -34,22 +36,26 @@ void prefix_scan_8_0_shmem(unsigned char *keys, int nitems, int *pfxs) {
 #define BLKSZ 512
 
 __global__
-void prefix_scan(unsigned short *keys, int *pfxs, const int shift) {
-    const int tid = threadIdx.y * 32 + threadIdx.x;
-    __shared__ int shr_pfxs[BLKSZ];
+void prefix_scan(unsigned short *offsets, int *pfxs,
+                 const unsigned short *keys, const int shift) {
+    const int tid = threadIdx.x;
+    __shared__ int shr_pfxs[RDXSZ];
 
-    shr_pfxs[tid] = 0;
+    if (tid < RDXSZ) shr_pfxs[tid] = 0;
     __syncthreads();
     int i = tid + GRPSZ * blockIdx.x;
 
     for (int j = 0; j < GRP_BLK_FACTOR; j++) {
-        int value = (keys[i] >> shift) && 0xff;
-        atomicAdd(shr_pfxs + value, 1);
+        // TODO: compiler smart enough to turn this into a BFE?
+        // TODO: should this just be two functions with fixed shifts?
+        // TODO: separate or integrated loop vars? unrolling?
+        int value = (keys[i] >> shift) & 0xff;
+        offsets[i] = atomicAdd(shr_pfxs + value, 1);
         i += BLKSZ;
     }
 
     __syncthreads();
-    pfxs[tid + BLKSZ * blockIdx.x] = shr_pfxs[tid];
+    if (tid < RDXSZ) pfxs[tid + RDXSZ * blockIdx.x] = shr_pfxs[tid];
 }
 
 __global__
@@ -110,10 +116,9 @@ void better_split(int *pfxs_out, const int *pfxs) {
     // updating the values as it goes, then the results are written coherently
     // to global memory.
     //
-    // This leaves the processor extremely compute-starved, as this only allows
-    // 12 warps per SM. It might be better to halve the chunk size and lose
-    // some coalescing efficiency; need to benchmark. It's a relatively cheap
-    // step overall though.
+    // This leaves the SM underloaded, as this only allows 12 warps per SM. It
+    // might be better to halve the chunk size and lose some coalescing
+    // efficiency; need to benchmark. It's a relatively cheap step, though.
 
     for (int j = 0; j < 8; j++) {
         int jj = j << 5;
@@ -139,16 +144,15 @@ void better_split(int *pfxs_out, const int *pfxs) {
     }
 }
 
+
 __global__
-void prefix_sum(int *pfxs, int nitems, int *out_pfxs, int *out_sums) {
+void prefix_sum(int *pfxs, const int nitems) {
     // Needs optimizing (later). Should be rolled into split.
-    // Must launch 32x8.
-    const int tid = threadIdx.y * 32 + threadIdx.x;
+    // Must launch 256 threads.
+    const int tid = threadIdx.x;
     const int blksz = 256;
     int val = 0;
     for (int i = tid; i < nitems; i += blksz) val += pfxs[i];
-
-    out_pfxs[tid] = val;
 
     // I know there's a better way to implement this summing network,
     // but it's not a time-critical piece of code.
@@ -158,23 +162,18 @@ void prefix_sum(int *pfxs, int nitems, int *out_pfxs, int *out_sums) {
     __syncthreads();
     // Intentionally exclusive indexing here, val{0} should be 0
     for (int i = 0; i < tid; i++) val += sh_pfxs[i];
-    out_sums[tid] = val;
 
-    // Here we shift things over by 1, to make retrieving the
-    // indices and differences easier in the sorting step.
     int i;
     for (i = tid; i < nitems; i += blksz) {
         int t = pfxs[i];
         pfxs[i] = val;
         val += t;
     }
-    // Now write the last column and we're done.
-    pfxs[i] = val;
 }
 
 __global__
 void sort_8(unsigned char *keys, int *sorted_keys, int *pfxs) {
-    const int tid = threadIdx.y * 32 + threadIdx.x;
+    const int tid = threadIdx.x;
     const int blk_offset = GRPSZ * blockIdx.x;
     __shared__ int shr_pfxs[RDXSZ];
 
@@ -190,12 +189,13 @@ void sort_8(unsigned char *keys, int *sorted_keys, int *pfxs) {
     }
 }
 
+
 #undef BLKSZ
 #define BLKSZ 1024
 __global__
 void sort_8_a(unsigned char *keys, int *sorted_keys,
               const int *pfxs, const int *split) {
-    const int tid = threadIdx.y * 32 + threadIdx.x;
+    const int tid = threadIdx.x;
     const int blk_offset = GRPSZ * blockIdx.x;
     __shared__ int shr_offs[RDXSZ];
     __shared__ int defer[GRPSZ];
@@ -244,6 +244,109 @@ void sort_8_a(unsigned char *keys, int *sorted_keys,
     }
 }
 
+__global__
+void convert_offsets(
+        unsigned short *offsets,    // input and output
+        const int *split,
+        const unsigned short *keys,
+        const int shift
+    ) {
+    const int tid = threadIdx.x;
+    const int blk_offset = GRPSZ * blockIdx.x;
+    const int rdx_offset = RDXSZ * blockIdx.x;
+    __shared__ int shr_offsets[GRPSZ];
+    __shared__ int shr_split[RDXSZ];
+
+    if (tid < RDXSZ) shr_split[tid] = split[rdx_offset + tid];
+    __syncthreads();
+
+    for (int i = tid; i < GRPSZ; i += BLKSZ) {
+        int r = (keys[blk_offset + i] >> shift) & 0xff;
+        int o = shr_split[r] + offsets[blk_offset + i];
+        shr_offsets[o] = i;
+    }
+    __syncthreads();
+
+    for (int i = tid; i < GRPSZ; i += BLKSZ)
+        offsets[blk_offset + i] = shr_offsets[i];
+}
+
+__global__
+void radix_sort_maybe(
+        unsigned short *sorted_keys,
+        int *sorted_values,
+        const unsigned short *keys,
+        const unsigned int *values,
+        const unsigned short *offsets,
+        const int *pfxs,
+        const int *split,
+        const int shift
+    ) {
+    const int tid = threadIdx.x;
+    const int blk_offset = GRPSZ * blockIdx.x;
+    const int rdx_offset = RDXSZ * blockIdx.x;
+    __shared__ int shr_offs[RDXSZ];
+
+    if (tid < RDXSZ)
+        shr_offs[tid] = pfxs[rdx_offset + tid] - split[rdx_offset + tid];
+    __syncthreads();
+
+    int i = tid;
+    for (int j = 0; j < GRP_BLK_FACTOR; j++) {
+        int offset = offsets[blk_offset + i];
+        int key = keys[blk_offset + offset];
+        int radix = (key >> shift) & 0xff;
+        int glob_offset = shr_offs[radix] + i;
+        /*if (sorted_values[glob_offset] != 0xffffffff)
+            printf("\nbad offset pos:%6x off:%4x gloff:%6x key:%4x "
+                   "okey:%4x val:%8x oval:%8x",
+                    i+blk_offset, offset, glob_offset, key,
+                    sorted_keys[glob_offset], sorted_values[glob_offset]);*/
+        sorted_keys[glob_offset] = key;
+        sorted_values[glob_offset] = values[blk_offset + offset];
+        i += BLKSZ;
+    }
+}
+
+__global__
+void radix_sort(unsigned short *sorted_keys, int *sorted_values,
+                const unsigned short *keys, const unsigned int *values,
+                const int *pfxs, const int *offsets, const int *split,
+                const int shift) {
+    const int tid = threadIdx.x;
+    const int blk_offset = GRPSZ * blockIdx.x;
+    __shared__ int shr_offs[RDXSZ];
+    __shared__ int defer[GRPSZ];
+    __shared__ unsigned char radishes[GRPSZ];
+
+    const int pfx_i = RDXSZ * blockIdx.x + tid;
+    if (tid < RDXSZ) shr_offs[tid] = split[pfx_i];
+    __syncthreads();
+
+    for (int i = tid; i < GRPSZ; i += BLKSZ) {
+        int idx = i + blk_offset;
+        int value = keys[idx];
+        int radix = radishes[i] = (value >> shift) & 0xff;
+        int offset = offsets[idx] + split[radix];
+        defer[offset] = value;
+    }
+    __syncthreads();
+
+    if (tid < RDXSZ) shr_offs[tid] = pfxs[tid] - shr_offs[tid];
+    __syncthreads();
+
+    // Faster to reload these or to recompute them in shmem? Need to see if we
+    // can safely stash both
+
+    int i = tid;
+#pragma unroll
+    for (int j = 0; j < GRP_BLK_FACTOR; j++) {
+        int value = defer[i];
+        int offset = shr_offs[value] + i;
+        sorted_keys[offset] = value;
+        i += BLKSZ;
+    }
+}
 
 
 __global__

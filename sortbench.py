@@ -5,10 +5,13 @@ import pycuda.compiler
 import pycuda.driver as cuda
 
 import numpy as np
+np.set_printoptions(precision=5, edgeitems=20, linewidth=100, threshold=9000)
 
 import sys, os
 os.environ['PATH'] = ('/usr/x86_64-pc-linux-gnu/gcc-bin/4.4.6:'
                      + os.environ['PATH'])
+
+i32 = np.int32
 
 with open('sortbench.cu') as f: src = f.read()
 mod = pycuda.compiler.SourceModule(src, keep=True)
@@ -62,12 +65,161 @@ def go(scale, block, test_cpu):
             cuda.In(data), np.int32(block), cuda.InOut(popc5_pfxs),
             block=(32, 16, 1), grid=(scale, 1), l1=1)
 
-def rle(a):
+def rle(a, n=512):
     pos, = np.where(np.diff(a))
-    lens = np.diff(np.concatenate((pos, [len(a)])))
-    return [(a[p], p, l) for p, l in zip(pos, lens)[:5000]]
+    pos = np.concatenate(([0], pos+1, [len(a)]))
+    lens = np.diff(pos)
+    return [(a[p], p, l) for p, l in zip(pos, lens)[:n]]
+
+
+def frle(a, n=512):
+    return ''.join(['\n\t%4x %6x %6x' % v for v in rle(a, n)])
+
+# Some reference implementations follow for debugging.
+def py_convert_offsets(offsets, split, keys, shift):
+    grids = len(offsets)
+    new_offs = np.empty((grids, 8192), dtype=np.int32)
+    for i in range(grids):
+        rdxs = (keys[i] >> shift) & 0xff
+        o = split[i][rdxs] + offsets[i]
+        new_offs[i][o] = np.arange(8192, dtype=np.int32)
+    return new_offs
+
+def py_radix_sort_maybe(keys, offsets, pfxs, split, shift):
+    grids = len(offsets)
+    idxs = np.arange(8192)
+
+    okeys = np.empty(grids*8192, dtype=np.int32)
+    okeys.fill(-1)
+
+    for i in range(grids):
+        offs = pfxs[i] - split[i]
+        lkeys = keys[i][offsets[i]]
+        rdxs = (lkeys >> shift) & 0xff
+        glob_offsets = offs[rdxs] + idxs
+        okeys[glob_offsets] = lkeys
+    return okeys
 
 def go_sort(count, stream=None):
+    grids = count / 8192
+
+    #keys = np.fromstring(np.random.bytes(count*2), dtype=np.uint16)
+    keys = np.arange(count, dtype=np.uint16)
+    np.random.shuffle(keys)
+    mkeys = np.reshape(keys, (grids, 8192))
+    vals = np.arange(count, dtype=np.uint32)
+    dkeys = cuda.to_device(keys)
+    dvals = cuda.to_device(vals)
+    print 'Done seeding'
+
+    dpfxs = cuda.mem_alloc(grids * 256 * 4)
+    doffsets = cuda.mem_alloc(count * 2)
+    launch('prefix_scan', doffsets, dpfxs, dkeys, i32(0),
+            block=(512, 1, 1), grid=(grids, 1), stream=stream, l1=1)
+    print cuda.from_device(dpfxs, (2, 256), np.uint32)
+
+    dsplit = cuda.mem_alloc(grids * 256 * 4)
+    launch('better_split', dsplit, dpfxs,
+            block=(32, 1, 1), grid=(grids / 32, 1), stream=stream)
+
+    # This stage will be rejiggered along with the split
+    launch('prefix_sum', dpfxs, np.int32(grids * 256),
+            block=(256, 1, 1), grid=(1, 1), stream=stream, l1=1)
+    print cuda.from_device(dpfxs, (2, 256), np.uint32)
+
+    launch('convert_offsets', doffsets, dsplit, dkeys, i32(0),
+            block=(1024, 1, 1), grid=(grids, 1), stream=stream)
+    if not stream:
+        offsets = cuda.from_device(doffsets, (grids, 8192), np.uint16)
+        split = cuda.from_device(dsplit, (grids, 256), np.uint32)
+        pfxs = cuda.from_device(dpfxs, (grids, 256), np.uint32)
+        tkeys = py_radix_sort_maybe(mkeys, offsets, pfxs, split, 0)
+        print frle(tkeys & 0xff)
+
+    d_skeys = cuda.mem_alloc(count * 2)
+    d_svals = cuda.mem_alloc(count * 4)
+    if not stream:
+        cuda.memset_d32(d_skeys, 0, count/2)
+        cuda.memset_d32(d_svals, 0xffffffff, count)
+    launch('radix_sort_maybe', d_skeys, d_svals,
+            dkeys, dvals, doffsets, dpfxs, dsplit, i32(0),
+            block=(1024, 1, 1), grid=(grids, 1), stream=stream, l1=1)
+
+    if not stream:
+        skeys = cuda.from_device_like(d_skeys, keys)
+        svals = cuda.from_device_like(d_svals, vals)
+
+        # Test integrity of sort (keys and values kept together):
+        #   skeys[i] = keys[svals[i]] for all i
+        print 'Integrity: ',
+        if np.all(svals < len(keys)) and np.all(skeys == keys[svals]):
+            print 'pass'
+        else:
+            print 'FAIL'
+
+        print frle(skeys & 0xff)
+
+    dkeys, d_skeys = d_skeys, dkeys
+    dvals, d_svals = d_svals, dvals
+
+    if not stream:
+        cuda.memset_d32(d_skeys, 0, count/2)
+        cuda.memset_d32(d_svals, 0xffffffff, count)
+
+    launch('prefix_scan', doffsets, dpfxs, dkeys, i32(8),
+            block=(512, 1, 1), grid=(grids, 1), stream=stream, l1=1)
+    launch('better_split', dsplit, dpfxs,
+            block=(32, 1, 1), grid=(grids / 32, 1), stream=stream)
+    launch('prefix_sum', dpfxs, np.int32(grids * 256),
+            block=(256, 1, 1), grid=(1, 1), stream=stream, l1=1)
+    pre_offsets = cuda.from_device(doffsets, (grids, 8192), np.uint16)
+    launch('convert_offsets', doffsets, dsplit, dkeys, i32(8),
+            block=(1024, 1, 1), grid=(grids, 1), stream=stream)
+    if not stream:
+        offsets = cuda.from_device(doffsets, (grids, 8192), np.uint16)
+        split = cuda.from_device(dsplit, (grids, 256), np.uint32)
+        pfxs = cuda.from_device(dpfxs, (grids, 256), np.uint32)
+        tkeys = np.reshape(tkeys, (grids, 8192))
+
+        new_offs = py_convert_offsets(pre_offsets, split, tkeys, 8)
+        print new_offs[:3]
+        print offsets[:3]
+        print np.nonzero(new_offs != offsets)
+
+        fkeys = py_radix_sort_maybe(tkeys, new_offs, pfxs, split, 8)
+        print frle(fkeys)
+
+
+    launch('radix_sort_maybe', d_skeys, d_svals,
+            dkeys, dvals, doffsets, dpfxs, dsplit, i32(8),
+            block=(1024, 1, 1), grid=(grids, 1), stream=stream, l1=1)
+
+    if not stream:
+        #print cuda.from_device(doffsets, (4, 8192), np.uint16)
+        #print cuda.from_device(dkeys, (4, 8192), np.uint16)
+        #print cuda.from_device(d_skeys, (4, 8192), np.uint16)
+
+        skeys = cuda.from_device_like(d_skeys, keys)
+        svals = cuda.from_device_like(d_svals, vals)
+
+        print 'Integrity: ',
+        if np.all(svals < len(keys)) and np.all(skeys == keys[svals]):
+            print 'pass'
+        else:
+            print 'FAIL'
+
+        sorted_keys = np.sort(keys)
+        # Test that ordering is correct. (Note that we don't need 100%
+        # correctness, so this test should be made "soft".)
+        print 'Order: ', 'pass' if np.all(skeys == sorted_keys) else 'FAIL'
+
+        print frle(skeys)
+        print fkeys
+        print skeys
+        print np.nonzero(fkeys != skeys)[0]
+
+
+def go_sort_old(count, stream=None):
     data = np.fromstring(np.random.bytes(count), dtype=np.uint8)
     ddata = cuda.to_device(data)
     print 'Done seeding'
@@ -115,16 +267,13 @@ def go_sort(count, stream=None):
 
         print 'is_sorted?', np.all(sorted == sorted_np)
 
-    #data = np.fromstring(np.random.bytes(scale*block), dtype=np.uint16)
-
-
 def main():
     # shmem is known good; disable the CPU run to get better info from cuprof
     #go(8, 512<<10, True)
     #go(1024, 512<<8, False)
     #go(32768, 8192, False)
     stream = cuda.Stream() if '-s' in sys.argv else None
-    go_sort(128<<20, stream)
+    go_sort(1<<20, stream)
     if stream:
         stream.synchronize()
 
