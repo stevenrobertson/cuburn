@@ -40,7 +40,11 @@ def main(args):
         genome_ptr, ngenomes = pyflam3.Genome.from_string(fp.read())
         genomes = cast(genome_ptr, POINTER(pyflam3.Genome*ngenomes)).contents
     anim = Animation(genomes)
-    anim.compile()
+    if '-g' in args:
+        anim.compile(keep=True,
+                 cmp_options=('-use_fast_math', '-maxrregcount', '32', '-G'))
+    else:
+        anim.compile()
     anim.load()
     for n, out in enumerate(anim.render_frames()):
         noalpha = np.delete(out, 3, axis=2)
