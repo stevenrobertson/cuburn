@@ -29,8 +29,8 @@ __shared__ iter_info info;
 
         tmpl = Template("""
 __device__
-void apply_xf{{xfid}}(float *ix, float *iy, float *icolor, mwc_st *rctx) {
-    float tx, ty, ox = *ix, oy = *iy;
+void apply_xf{{xfid}}(float &ox, float &oy, float &color, mwc_st &rctx) {
+    float tx, ty;
 
     {{apply_affine_flam3('ox', 'oy', 'tx', 'ty', px, 'xf.c', 'pre')}}
 
@@ -55,11 +55,8 @@ void apply_xf{{xfid}}(float *ix, float *iy, float *icolor, mwc_st *rctx) {
     {{endif}}
     {{endfor}}
 
-    *ix = ox;
-    *iy = oy;
-
     float csp = {{px.get('xf.color_speed')}};
-    *icolor = *icolor * (1.0f - csp) + {{px.get('xf.color')}} * csp;
+    color = color * (1.0f - csp) + {{px.get('xf.color')}} * csp;
 };
 """)
         g = dict(globals())
@@ -87,9 +84,9 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
     int consec_bad = -{{features.fuse}};
 
     float x, y, color;
-    x = mwc_next_11(&rctx);
-    y = mwc_next_11(&rctx);
-    color = mwc_next_01(&rctx);
+    x = mwc_next_11(rctx);
+    y = mwc_next_11(rctx);
+    color = mwc_next_01(rctx);
 
     {{if features.chaos_used}}
     int last_xf_used = 0;
@@ -102,12 +99,12 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
     while (1) {
         {{if features.chaos_used}}
         // For now, we can't use the swap buffer with chaos enabled
-        float xfsel = mwc_next_01(&rctx);
+        float xfsel = mwc_next_01(rctx);
         // Needed to match the behavior of the loop with swapping
         __syncthreads();
         {{else}}
         if (threadIdx.y == 0 && threadIdx.x < 16) {
-            cosel[threadIdx.x] = mwc_next_01(&rctx);
+            cosel[threadIdx.x] = mwc_next_01(rctx);
         }
         __syncthreads();
         float xfsel = cosel[threadIdx.y];
@@ -122,7 +119,7 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
         {{for density_col_idx,  this_xform_idx in enumerate(features.std_xforms)}}
         if (last_xf_used == {{prior_xform_idx}} &&
                 xfsel <= {{packer.get("cp.chaos_densities[%d][%d]" % (density_row_idx, density_col_idx))}}) {
-            apply_xf{{this_xform_idx}}(&x, &y, &color, &rctx);
+            apply_xf{{this_xform_idx}}(x, y, color, rctx);
             last_xf_used = {{this_xform_idx}};
         } else
         {{endfor}}
@@ -130,7 +127,7 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
         {{else}}
         {{for density_col_idx, this_xform_idx in enumerate(features.std_xforms)}}
         if (xfsel <= {{packer.get("cp.norm_density[%d]" % (density_col_idx))}}) {
-            apply_xf{{this_xform_idx}}(&x, &y, &color, &rctx);
+            apply_xf{{this_xform_idx}}(x, y, color, rctx);
         } else
         {{endfor}}
         {{endif}}
@@ -166,7 +163,7 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
 
         {{if features.final_xform_index}}
         float fx = x, fy = y, fcolor;
-        apply_xf{{features.final_xform_index}}(&fx, &fy, &fcolor, &rctx);
+        apply_xf{{features.final_xform_index}}(fx, fy, fcolor, rctx);
         {{endif}}
 
         // TODO: this may not optimize well, verify.
@@ -181,11 +178,11 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
 
         // TODO: verify that constants get premultiplied
         float ditherwidth = {{packer.get("0.33 * cp.spatial_filter_radius")}};
-        float u0 = mwc_next_01(&rctx);
+        float u0 = mwc_next_01(rctx);
         float r = ditherwidth * sqrt(-2.0f * log2f(u0) / M_LOG2E);
 
         // TODO: provide mwc_next_0_2pi()
-        float u1 = 2.0f * M_PI * mwc_next_01(&rctx);
+        float u1 = 2.0f * M_PI * mwc_next_01(rctx);
 
         float ditherx = r * cos(u1);
         float dithery = r * sin(u1);
@@ -195,9 +192,9 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
             iy < 0 || iy >= {{features.acc_height}} ) {
             consec_bad++;
             if (consec_bad > {{features.max_oob}}) {
-                x = mwc_next_11(&rctx);
-                y = mwc_next_11(&rctx);
-                color = mwc_next_01(&rctx);
+                x = mwc_next_11(rctx);
+                y = mwc_next_11(rctx);
+                color = mwc_next_01(rctx);
                 consec_bad = -{{features.fuse}};
             }
             continue;
@@ -214,7 +211,6 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
         accbuf[i] = pix;    // TODO: atomic operations (or better)
         denbuf[i] += 1.0f;
     }
-    asm volatile ("membar.cta;");
 }
 ''')
         return tmpl.substitute(
