@@ -104,13 +104,24 @@ void zero_dptr(float* dptr, int size) {
     }
 }
 
+/* read_half and write_half decode and encode, respectively, two
+ * floating-point values from a 32-bit value (typed as a 'float' for
+ * convenience but not really). The values are packed into u16s as a
+ * proportion of a third value, as in 'ux = u16( x / d * (2^16-1) )'.
+ * This is used during accumulation.
+ *
+ * TODO: also write a function that will efficiently add a value to the packed
+ * values while incrementing the density, to improve the speed of this
+ * approach when the alpha channel is present.
+ */
+
 __device__
 void read_half(float &x, float &y, float xy, float den) {
     asm("\n\t{"
         "\n\t   .reg .u16       x, y;"
         "\n\t   .reg .f32       rc;"
         "\n\t   mov.b32         {x, y},     %2;"
-        "\n\t   mul.f32         rc,         %3,     0f37800000;" // 1/65536.
+        "\n\t   mul.f32         rc,         %3,     0f37800080;" // 1/65535.
         "\n\t   cvt.rn.f32.u16     %0,         x;"
         "\n\t   cvt.rn.f32.u16     %1,         y;"
         "\n\t   mul.f32         %0,         %0,     rc;"
@@ -125,7 +136,7 @@ void write_half(float &xy, float x, float y, float den) {
         "\n\t   .reg .u16       x, y;"
         "\n\t   .reg .f32       rc, xf, yf;"
         "\n\t   rcp.approx.f32  rc,         %3;"
-        "\n\t   mul.f32         rc,         rc,     65536.0;"
+        "\n\t   mul.f32         rc,         rc,     65535.0;"
         "\n\t   mul.f32         xf,         %1,     rc;"
         "\n\t   mul.f32         yf,         %2,     rc;"
         "\n\t   cvt.rni.u16.f32 x,  xf;"
