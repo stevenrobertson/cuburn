@@ -100,6 +100,16 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
     if (threadIdx.y == 0 && threadIdx.x == 0)
         nsamps = {{packer.get("cp.width * cp.height / cp.ntemporal_samples * cp.adj_density")}};
 
+    {{if features.chaos_used}}
+    int last_xf_used = 0;
+    {{else}}
+    // Size can be reduced by a factor of four using a slower 4-stage reduce
+    __shared__ float swap[2048];
+    __shared__ float cosel[16];
+    if (threadIdx.y == 0 && threadIdx.x < 16)
+        cosel[threadIdx.x] = mwc_next_01(rctx);
+    {{endif}}
+
     __syncthreads();
     int consec_bad = -{{features.fuse}};
 
@@ -108,31 +118,13 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
     y = mwc_next_11(rctx);
     color = mwc_next_01(rctx);
 
-    {{if features.chaos_used}}
-    int last_xf_used = 0;
-    {{else}}
-    // Size can be reduced by a factor of four using a slower 4-stage reduce
-    __shared__ float swap[2048];
-    __shared__ float cosel[16];
-    {{endif}}
-
     while (1) {
         {{if features.chaos_used}}
         // For now, we can't use the swap buffer with chaos enabled
         float xfsel = mwc_next_01(rctx);
-        // Needed to match the behavior of the loop with swapping
-        __syncthreads();
         {{else}}
-        if (threadIdx.y == 0 && threadIdx.x < 16) {
-            cosel[threadIdx.x] = mwc_next_01(rctx);
-        }
-        __syncthreads();
         float xfsel = cosel[threadIdx.y];
         {{endif}}
-
-        // This is moved from outside the conditional to avoid needing an extra
-        // __syncthreads on every loop
-        if (nsamps < 0) break;
 
         {{if features.chaos_used}}
         {{for density_row_idx, prior_xform_idx in enumerate(features.std_xforms)}}
@@ -167,6 +159,16 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
         swap[sw+1024] = y;
         swap[sw+1536] = color;
         __syncthreads();
+        // This is in the middle of the function so that only one sync is
+        // required per loop.
+        if (nsamps < 0) break;
+
+        {{if not features.chaos_used}}
+        // Similarly, we select the next xforms here.
+        if (threadIdx.y == 0 && threadIdx.x < 16)
+            cosel[threadIdx.x] = mwc_next_01(rctx);
+        {{endif}}
+
         consec_bad = swap[sr];
         x = swap[sr+512];
         y = swap[sr+1024];
