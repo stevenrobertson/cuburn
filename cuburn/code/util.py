@@ -50,7 +50,7 @@ class BaseCode(HunkOCode):
 #include<stdio.h>
 """
 
-    defs = """
+    defs = r"""
 #undef M_E
 #undef M_LOG2E
 #undef M_LOG10E
@@ -103,6 +103,39 @@ void zero_dptr(float* dptr, int size) {
         dptr[i] = 0.0f;
     }
 }
+
+__device__
+void read_half(float &x, float &y, float xy, float den) {
+    asm("\n\t{"
+        "\n\t   .reg .u16       x, y;"
+        "\n\t   .reg .f32       rc;"
+        "\n\t   mov.b32         {x, y},     %2;"
+        "\n\t   mul.f32         rc,         %3,     0f37800000;" // 1/65536.
+        "\n\t   cvt.rn.f32.u16     %0,         x;"
+        "\n\t   cvt.rn.f32.u16     %1,         y;"
+        "\n\t   mul.f32         %0,         %0,     rc;"
+        "\n\t   mul.f32         %1,         %1,     rc;"
+        "\n\t}"
+        : "=f"(x), "=f"(y) : "f"(xy), "f"(den));
+}
+
+__device__
+void write_half(float &xy, float x, float y, float den) {
+    asm("\n\t{"
+        "\n\t   .reg .u16       x, y;"
+        "\n\t   .reg .f32       rc, xf, yf;"
+        "\n\t   rcp.approx.f32  rc,         %3;"
+        "\n\t   mul.f32         rc,         rc,     65536.0;"
+        "\n\t   mul.f32         xf,         %1,     rc;"
+        "\n\t   mul.f32         yf,         %2,     rc;"
+        "\n\t   cvt.rni.u16.f32 x,  xf;"
+        "\n\t   cvt.rni.u16.f32 y,  yf;"
+        "\n\t   mov.b32         %0,         {x, y};"
+        "\n\t}"
+        : "=f"(xy) : "f"(x), "f"(y), "f"(den));
+}
+
+
 """
 
     @staticmethod

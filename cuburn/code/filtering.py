@@ -15,7 +15,7 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
     float4 pix = pixbuf[i];
 
     if (pix.w <= 0) {
-        pixbuf[i] = make_float4(bkgd.x, bkgd.y, bkgd.z, 0);
+        pixbuf[i] = make_float4(bkgd.x, bkgd.y, bkgd.z, 0.0f);
         return;
     }
 
@@ -121,7 +121,9 @@ __device__ void de_add(int ibase, int ii, int jj, float4 scaled) {
 __global__
 void logscale(float4 *pixbuf, float4 *outbuf, float k1, float k2) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
+    float den;
     float4 pix = pixbuf[i];
+    read_pix(pix, den);
 
     float ls = fmaxf(0, k1 * logf(1.0f + pix.w * k2) / pix.w);
     pix.x *= ls;
@@ -138,7 +140,7 @@ void logscale(float4 *pixbuf, float4 *outbuf, float k1, float k2) {
 #define MAX_SD 4.33333333f
 
 __global__
-void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
+void density_est(float4 *pixbuf, float4 *outbuf,
                  float est_sd, float neg_est_curve, float est_min,
                  float k1, float k2) {
     for (int i = threadIdx.x + 32*threadIdx.y; i < FW2; i += 32)
@@ -151,7 +153,8 @@ void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
                 + blockIdx.x * 32 + threadIdx.x + W2;
 
         float4 in = pixbuf[idx];
-        float den = denbuf[idx];
+        float den;
+        read_pix(in, den);
 
         if (in.w > 0 && den > 0) {
             float ls = k1 * logf(1.0f + in.w * k2) / in.w;
@@ -279,7 +282,7 @@ void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
 
 ''')
 
-    def invoke(self, mod, cp, abufd, obufd, dbufd, stream=None):
+    def invoke(self, mod, cp, abufd, obufd, stream=None):
         # TODO: add no-est version
         # TODO: come up with a general way to average these parameters
 
@@ -301,7 +304,7 @@ void density_est(float4 *pixbuf, float4 *outbuf, float *denbuf,
             neg_est_curve = np.float32(-cp.estimator_curve)
             est_min = np.float32(cp.estimator_minimum / 3.)
             fun = mod.get_function("density_est")
-            fun(abufd, obufd, dbufd, est_sd, neg_est_curve, est_min, k1, k2,
+            fun(abufd, obufd, est_sd, neg_est_curve, est_min, k1, k2,
                 block=(32, 32, 1), grid=(self.features.acc_width/32, 1),
                 stream=stream)
 

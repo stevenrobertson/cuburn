@@ -16,12 +16,32 @@ class IterCode(HunkOCode):
         bodies = [self._xfbody(i,x) for i,x in enumerate(self.features.xforms)]
         bodies.append(iterbody)
         self.defs = '\n'.join(bodies)
+        self.decls += self.pix_helpers.substitute(features=features)
 
     decls = """
 // Note: for normalized lookups, uchar4 actually returns floats
 texture<uchar4, cudaTextureType2D, cudaReadModeNormalizedFloat> palTex;
 __shared__ iter_info info;
+
 """
+
+    pix_helpers = Template("""
+__device__
+void read_pix(float4 &pix, float &den) {
+    den = pix.w;
+    {{if features.pal_has_alpha}}
+    read_half(pix.z, pix.w, pix.z, den);
+    {{endif}}
+}
+
+__device__
+void write_pix(float4 &pix, float den) {
+    {{if features.pal_has_alpha}}
+    write_half(pix.z, pix.z, pix.w, den);
+    {{endif}}
+    pix.w = den;
+}
+""")
 
     def _xfbody(self, xfid, xform):
         px = self.packer.view('info', 'xf%d_' % xfid)
@@ -204,12 +224,17 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
 
         float4 outcol = tex2D(palTex, color, {{packer.get("cp_step_frac")}});
         float4 pix = accbuf[i];
+        float den;
+        // TODO: unify read/write_pix cycle when alpha is needed
+        read_pix(pix, den);
         pix.x += outcol.x;
         pix.y += outcol.y;
         pix.z += outcol.z;
         pix.w += outcol.w;
-        accbuf[i] = pix;    // TODO: atomic operations (or better)
-        denbuf[i] += 1.0f;
+        den += 1.0f;
+
+        write_pix(pix, den);
+        accbuf[i] = pix;
     }
 }
 ''')

@@ -229,7 +229,6 @@ class _AnimRenderer(object):
         memset(byref(self._cen_cp), 0, sizeof(self._cen_cp))
 
         self.nbins = anim.features.acc_height * anim.features.acc_stride
-        self.d_den = cuda.mem_alloc(4 * self.nbins)
         self.d_accum = cuda.mem_alloc(16 * self.nbins)
         self.d_out = cuda.mem_alloc(16 * self.nbins)
         self.d_infos = cuda.mem_alloc(anim._iter.packer.align * self.ncps)
@@ -245,8 +244,6 @@ class _AnimRenderer(object):
         a._interp(cen_time, cen_cp)
         palette = self._interp_colors(cen_time, cen_cp)
 
-        util.BaseCode.zero_dptr(a.mod, self.d_den, self.nbins,
-                                self.stream)
         util.BaseCode.zero_dptr(a.mod, self.d_accum, 4 * self.nbins,
                                 self.stream)
 
@@ -311,7 +308,7 @@ class _AnimRenderer(object):
             # TODO: get block config from IterCode
             # TODO: print timing information
             iter_fun(self.d_seeds[b], np.uint64(d_info_off),
-                     self.d_accum, self.d_den, texrefs=[tref],
+                     self.d_accum, texrefs=[tref],
                      block=(32, 16, 1), grid=(len(block_times), 1),
                      stream=self.stream)
 
@@ -327,8 +324,7 @@ class _AnimRenderer(object):
 
         util.BaseCode.zero_dptr(a.mod, self.d_out, 4 * self.nbins,
                                 self.stream)
-        a._de.invoke(a.mod, Genome(cen_cp),
-                     self.d_accum, self.d_out, self.d_den,
+        a._de.invoke(a.mod, Genome(cen_cp), self.d_accum, self.d_out,
                      self.stream)
 
         f = np.float32
@@ -381,11 +377,6 @@ class _AnimRenderer(object):
         g = a.features.gutter
         obuf_dim = (a.features.acc_height, a.features.acc_stride, 4)
         out = cuda.from_device(self.d_out, obuf_dim, np.float32)
-        #dacc = cuda.from_device(self.d_accum, obuf_dim, np.float32)
-        #daccw = dacc[:,:,3]
-        #print daccw.sum()
-        # TODO: performance?
-        g = a.features.gutter
         out = np.delete(out, np.s_[:g], axis=0)
         out = np.delete(out, np.s_[:g], axis=1)
         out = np.delete(out, np.s_[-g:], axis=0)
@@ -446,6 +437,10 @@ class Features(object):
             self.final_xform_index = genomes[0].final_xform_index
         else:
             self.final_xform_index = None
+
+        alphas = np.array([c.color[3] for g in genomes
+                           for c in g.palette.entries])
+        self.pal_has_alpha = np.any(alphas != 1.0)
 
         self.max_cps = max([cp.ntemporal_samples for cp in genomes])
 
