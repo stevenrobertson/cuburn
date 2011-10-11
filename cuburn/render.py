@@ -14,6 +14,7 @@ from fr0stlib.pyflam3.constants import *
 
 import pycuda.compiler
 import pycuda.driver as cuda
+import pycuda.tools
 from pycuda.gpuarray import vec
 
 from cuburn import affine
@@ -175,10 +176,12 @@ class Animation(object):
         """
         # Don't see this changing, but empirical tests could prove me wrong
         NRENDERERS = 2
+        # This could be shared too?
+        pool = pycuda.tools.PageLockedMemoryPool()
         # TODO: under a slightly modified sequencing, certain buffers can be
         # shared (though this may be unimportant if a good AA technique which
         # doesn't require full SS can be found)
-        rdrs = [_AnimRenderer(self) for i in range(NRENDERERS)]
+        rdrs = [_AnimRenderer(self, pool) for i in range(NRENDERERS)]
 
         # Zip up each genome with an alternating renderer, plus enough empty
         # genomes at the end to flush all pending tasks
@@ -211,8 +214,9 @@ class _AnimRenderer(object):
     PAL_HEIGHT = 16
 
 
-    def __init__(self, anim):
+    def __init__(self, anim, pool):
         self.anim = anim
+        self.pool = pool
         self.pending = False
         self.stream = cuda.Stream()
 
@@ -232,8 +236,13 @@ class _AnimRenderer(object):
         self.d_accum = cuda.mem_alloc(16 * self.nbins)
         self.d_out = cuda.mem_alloc(16 * self.nbins)
         self.d_infos = cuda.mem_alloc(anim._iter.packer.align * self.ncps)
-        # Defer allocation until first needed
-        self.d_seeds = [None] * self.nblocks
+        # Defer generation of seeds until they're first needed
+        self.d_seeds = None
+
+        # During the main rendering loop, we alternate between two streams and
+        # two sets of seeds, synchronizing them at the end of rendering.
+        self.alt_stream = cuda.Stream()
+        self.d_alt_seeds = None
 
     def render(self, cen_time):
         assert not self.pending, "Tried to render with results pending!"
@@ -246,13 +255,9 @@ class _AnimRenderer(object):
 
         util.BaseCode.zero_dptr(a.mod, self.d_accum, 4 * self.nbins,
                                 self.stream)
+        # Ensure all main stream tasks are done before starting alt stream
+        self.alt_stream.wait_for_event(cuda.Event().record(self.stream))
 
-        # ------------------------------------------------------------
-        # TODO WARNING TODO WARNING TODO WARNING TODO WARNING TODO
-        # This will replace the palette while it's in use by the other
-        # rendering function. Need to pass palette texref in function
-        # invocation.
-        # ------------------------------------------------------------
         dpal = cuda.make_multichannel_2d_array(palette, 'C')
         tref = a.mod.get_texref('palTex')
         tref.set_array(dpal)
@@ -274,6 +279,23 @@ class _AnimRenderer(object):
         # index-based iteration scheme.
         times = list(enumerate(self._mk_dts(cen_time, cen_cp, self.ncps)))
         for b, block_times in enumerate(_chunk(times, self.cps_per_block)):
+            on_main = b % 2 == 0
+            stream = self.stream if on_main else self.alt_stream
+            d_seeds = self.d_seeds if on_main else self.d_alt_seeds
+
+            if not d_seeds:
+                seeds = mwc.MWC.make_seeds(iter.IterCode.NTHREADS *
+                                           self.cps_per_block)
+                h_seeds = self.pool.allocate(seeds.shape, seeds.dtype)
+                h_seeds[:] = seeds
+                size = seeds.dtype.itemsize * seeds.size
+                d_seeds = cuda.mem_alloc(size)
+                cuda.memcpy_htod_async(d_seeds, h_seeds, stream)
+                if on_main:
+                    self.d_seeds = d_seeds
+                else:
+                    self.d_alt_seeds = d_seeds
+
             infos = []
             if len(a.genomes) > 1:
                 for n, t in block_times:
@@ -286,8 +308,6 @@ class _AnimRenderer(object):
                     bkgd += np.array(cp.background)
             else:
                 # Can't interpolate normally; just pack copies
-                # TODO: this still packs the genome 20 times or so instead of
-                # once
                 packed = packer.pack(cp=a.genomes[0], cp_step_frac=0)
                 infos = [packed] * len(block_times)
                 gam += a.genomes[0].gamma * len(block_times)
@@ -295,32 +315,21 @@ class _AnimRenderer(object):
                 bkgd += np.array(a.genomes[0].background) * len(block_times)
 
             infos = np.concatenate(infos)
+            h_infos = self.pool.allocate(infos.shape, infos.dtype)
+            h_infos[:] = infos
             offset = b * packer.align * self.cps_per_block
             # TODO: portable across 32/64-bit arches?
             d_info_off = int(self.d_infos) + offset
-            cuda.memcpy_htod(d_info_off, infos)
-
-            if not self.d_seeds[b]:
-                seeds = mwc.MWC.make_seeds(iter.IterCode.NTHREADS *
-                                           self.cps_per_block)
-                self.d_seeds[b] = cuda.to_device(seeds)
+            cuda.memcpy_htod_async(d_info_off, h_infos, stream)
 
             # TODO: get block config from IterCode
             # TODO: print timing information
-            iter_fun(self.d_seeds[b], np.uint64(d_info_off),
-                     self.d_accum, texrefs=[tref],
+            iter_fun(d_seeds, np.uint64(d_info_off), self.d_accum,
                      block=(32, 16, 1), grid=(len(block_times), 1),
-                     stream=self.stream)
+                     texrefs=[tref], stream=stream)
 
-        # MAJOR TODO: for now, we kill almost all parallelism by forcing the
-        # stream here. Later, once we've decided on a density-buffer prefilter,
-        # we will move it to the GPU, allowing it to be embedded in the stream
-        # and letting the remaining code be asynchronous.
-        #self.stream.synchronize()
-        #dbuf_dim = (a.features.acc_height, a.features.acc_stride)
-        #dbuf = cuda.from_device(self.d_den, dbuf_dim, np.float32)
-        #dbuf = ndimage.filters.gaussian_filter(dbuf, 0.6)
-        #cuda.memcpy_htod(self.d_den, dbuf)
+        # Now ensure all alt stream tasks are done before continuing main
+        self.stream.wait_for_event(cuda.Event().record(self.alt_stream))
 
         util.BaseCode.zero_dptr(a.mod, self.d_out, 4 * self.nbins,
                                 self.stream)
