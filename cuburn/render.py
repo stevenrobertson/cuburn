@@ -237,7 +237,6 @@ class _AnimRenderer(object):
         self.nblocks = int(math.ceil(self.ncps / float(self.cps_per_block)))
 
         # These are stored to avoid leaks, not to be stateful in method calls
-        # TODO: ensure proper cleanup is done
         self._dst_cp = pyflam3.Genome()
         memset(byref(self._dst_cp), 0, sizeof(self._dst_cp))
         self._cen_cp = pyflam3.Genome()
@@ -256,6 +255,9 @@ class _AnimRenderer(object):
         # two sets of seeds, synchronizing them at the end of rendering.
         self.alt_stream = cuda.Stream()
         self.d_alt_seeds = None
+
+        # It's less than ideal, but we lock some memory ahead of time
+        self.h_infos_locked = cuda.pagelocked_empty((info_size/4,), np.float32)
 
     def render(self, cen_time):
         assert not self.pending, "Tried to render with results pending!"
@@ -328,15 +330,14 @@ class _AnimRenderer(object):
                 bkgd += np.array(a.genomes[0].background) * len(block_times)
 
             infos = np.concatenate(infos)
-            h_infos = cuda.pagelocked_empty(infos.shape, infos.dtype)
-            h_infos[:] = infos
             offset = b * packer.align * self.cps_per_block
+            h_infos = self.h_infos_locked[offset/4:offset/4+len(infos)]
+            h_infos[:] = infos
             # TODO: portable across 32/64-bit arches?
             d_info_off = int(self.d_infos) + offset
             cuda.memcpy_htod_async(d_info_off, h_infos, stream)
 
             # TODO: get block config from IterCode
-            # TODO: print timing information
             iter_fun(d_seeds, np.uint64(d_info_off), self.d_accum,
                      block=(32, 16, 1), grid=(len(block_times), 1),
                      texrefs=[tref], stream=stream)
@@ -365,6 +366,18 @@ class _AnimRenderer(object):
                   block=(256, 1, 1), grid=(self.nbins / 256, 1),
                   stream=self.stream)
 
+
+        # TODO: The stream seems to sync right here, automatically, before
+        # returning. I think PyCUDA is forcing a sync when something drops out
+        # of scope. Investigate.
+
+    def _pal_to_np(self, cp):
+        # Converting palettes by iteration has an enormous performance
+        # overhead. We cheat massively and dangerously here.
+        pal = cast(pointer(cp.palette), POINTER(c_double * (256 * 5)))
+        val = np.frombuffer(buffer(pal.contents), count=256*5)
+        return np.uint8(np.reshape(val, (256, 5))[:,1:] * 255.0)
+
     def _interp_colors(self, cen_time, cen_cp):
         # TODO: any visible difference between uint8 and richer formats?
         pal = np.empty((self.PAL_HEIGHT, 256, 4), dtype=np.uint8)
@@ -376,14 +389,11 @@ class _AnimRenderer(object):
             times = self._mk_dts(cen_time, cen_cp, self.PAL_HEIGHT)
             for n, t in enumerate(times):
                 a._interp(t, cp)
-                for i, e in enumerate(cp.palette.entries):
-                    pal[n][i] = np.uint8(np.array(e.color) * 255.0)
+                pal[n] = self._pal_to_np(cp)
         else:
             # Cannot call any interp functions on a single genome; rather than
             # have alternate code-paths, just copy the same colors everywhere
-            for i, e in enumerate(a.genomes[0].palette.entries):
-                # TODO: This triggers a RuntimeWarning
-                pal[0][i] = np.uint8(np.array(e.color) * 255.0)
+            pal[0] = self._pal_to_np(a.genomes[0])
             pal[1:] = pal[0]
         return pal
 
