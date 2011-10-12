@@ -170,11 +170,13 @@ class Animation(object):
             self.compile()
         self.mod = cuda.module_from_buffer(self.cubin, jit_options)
 
-    def render_frames(self, times=None):
+    def render_frames(self, times=None, block=True):
         """
         Render a flame for each genome in the iterable value 'genomes'.
-        Returns a Python generator object which will yield one NumPy array
-        for each rendered image.
+        Returns a Python generator object which will yield a 2-tuple of
+        ``(time, buf)``, where ``time`` is the central time of the frame and
+        ``buf`` is a 3D (width, height, channel) NumPy array containing
+        [0,1]-valued RGBA components.
 
         This method produces a considerable amount of side effects, and should
         not be used lightly. Things may go poorly for you if this method is not
@@ -189,6 +191,10 @@ class Animation(object):
 
         ``times`` is a sequence of center times at which to render, or ``None``
         to render one frame for each genome used to create the animation.
+
+        ``block`` will cause this thread to spin, waiting for the GPU to
+        finish the current task. Otherwise, this generator will yield ``None``
+        until the GPU is finished, for filtering later.
         """
         # Don't see this changing, but empirical tests could prove me wrong
         NRENDERERS = 2
@@ -201,11 +207,14 @@ class Animation(object):
         # genomes at the end to flush all pending tasks
         times = times if times is not None else [cp.time for cp in self.genomes]
         exttimes = chain(times, repeat(None, NRENDERERS))
-        for rdr, time in izip(cycle(rdrs), exttimes):
-            if rdr.wait():
+        for rdr, t in izip(cycle(rdrs), exttimes):
+            if rdr.pending:
+                if not block:
+                    while not rdr.done():
+                        yield None
                 yield rdr.get_result()
-            if time is not None:
-                rdr.render(time)
+            if t is not None:
+                rdr.render(t)
 
     def _interp(self, time, cp):
         flam3_interpolate(self._g_arr, len(self._g_arr), time, 0, byref(cp))
@@ -225,10 +234,10 @@ class _AnimRenderer(object):
     # used, no matter the number of time steps.
     PAL_HEIGHT = 16
 
-
     def __init__(self, anim):
         self.anim = anim
         self.pending = False
+        self.cen_time = None
         self.stream = cuda.Stream()
 
         self._nsms = cuda.Context.get_device().multiprocessor_count
@@ -262,6 +271,7 @@ class _AnimRenderer(object):
     def render(self, cen_time):
         assert not self.pending, "Tried to render with results pending!"
         self.pending = True
+        self.cen_time = cen_time
         a = self.anim
 
         cen_cp = self._cen_cp
@@ -397,23 +407,17 @@ class _AnimRenderer(object):
             pal[1:] = pal[0]
         return pal
 
-    def wait(self):
-        if self.pending:
-            self.stream.synchronize()
-            self.pending = False
-            return True
-        return False
+    def done(self):
+        return self.stream.is_done()
 
     def get_result(self):
+        self.stream.synchronize()
+        self.pending = False
         a = self.anim
-        g = a.features.gutter
         obuf_dim = (a.features.acc_height, a.features.acc_stride, 4)
         out = cuda.from_device(self.d_out, obuf_dim, np.float32)
-        out = np.delete(out, np.s_[:g], axis=0)
-        out = np.delete(out, np.s_[:g], axis=1)
-        out = np.delete(out, np.s_[-g:], axis=0)
-        out = np.delete(out, np.s_[a.features.width:], axis=1)
-        return out
+        g = a.features.gutter
+        return self.cen_time, out[g:-g,g:-g]
 
     @staticmethod
     def _mk_dts(cen_time, cen_cp, ncps):
