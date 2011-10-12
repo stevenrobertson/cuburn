@@ -35,6 +35,7 @@ os.environ['PATH'] = ('/usr/x86_64-pc-linux-gnu/gcc-bin/4.4.5:'
 def main(args):
     if '-t' in args:
         MWCTest.test_mwc()
+        return
 
     with open(args[1]) as fp:
         genome_ptr, ngenomes = pyflam3.Genome.from_string(fp.read())
@@ -44,14 +45,17 @@ def main(args):
         anim.compile(keep=True,
                  cmp_options=('-use_fast_math', '-maxrregcount', '32', '-G'))
     else:
-        anim.compile()
+        anim.compile(keep='-k' in args)
     anim.load()
     for n, out in enumerate(anim.render_frames()):
         noalpha = np.delete(out, 3, axis=2)
-        name = 'rendered_%03d' % n
-        scipy.misc.imsave(name+'.png', noalpha)
-        # Convert using imagemagick, to set custom quality
-        Popen(['convert', name+'.png', '-quality', '90', name+'.jpg'])
+        name = 'rendered_%05d' % n
+        scipy.misc.toimage(noalpha, cmin=0, cmax=1).save(name+'.png')
+
+        if '-j' in args:
+            # Convert using imagemagick, to set custom quality
+            Popen(['convert', name+'.png', '-quality', '90', name+'.jpg'])
+        print 'saved', name, np.min(noalpha), np.max(noalpha)
     return
 
     #if '-g' not in args:
