@@ -72,7 +72,7 @@ class MWCTest(HunkOCode):
 __global__ void test_mwc(mwc_st *msts, uint64_t *sums, float nrounds) {
     mwc_st rctx = msts[gtid()];
     uint64_t sum = 0;
-    for (float i = 0; i < nrounds; i++) sum += mwc_next(&rctx);
+    for (float i = 0; i < nrounds; i++) sum += mwc_next(rctx);
     sums[gtid()] = sum;
     msts[gtid()] = rctx;
 }
