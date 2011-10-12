@@ -107,15 +107,21 @@ class Animation(object):
     In other words, it's best to use exactly one Animation for each
     interpolated sequence between one or two genomes.
     """
+    cmp_options = ('-use_fast_math', '-maxrregcount', '32')
+    keep = False
+
     def __init__(self, ctypes_genome_array):
         self._g_arr = type(ctypes_genome_array)()
-        libflam3.flam3_align(self._g_arr, ctypes_genome_array, len(ctypes_genome_array))
+        libflam3.flam3_align(self._g_arr, ctypes_genome_array,
+                             len(ctypes_genome_array))
         self.genomes = map(Genome, self._g_arr)
         self.features = Features(self.genomes)
         self._iter = self._de = self.src = self.cubin = self.mod = None
 
-    def compile(self, keep=False,
-                cmp_options=('-use_fast_math', '-maxrregcount', '32')):
+        # Ensure class options don't get contaminated on an instance
+        self.cmp_options = list(self.cmp_options)
+
+    def compile(self, keep=None, cmp_options=None):
         """
         Compile a kernel capable of rendering every frame in this animation.
         The resulting compiled kernel is stored in the ``cubin`` property;
@@ -127,15 +133,18 @@ class Animation(object):
         which is a bug); it should therefore be threadsafe as well.
         It is, however, rather slow.
         """
+        keep = self.keep if keep is None else keep
+        cmp_options = self.cmp_options if cmp_options is None else cmp_options
+
         self._iter = iter.IterCode(self.features)
         self._de = filtering.DensityEst(self.features, self.genomes[0])
         cclip = filtering.ColorClip(self.features)
         # TODO: make choice of filtering explicit
-        # TODO: autoload dependent modules?
         self.src = util.assemble_code(util.BaseCode, mwc.MWC, self._iter.packer,
                                       self._iter, cclip, self._de)
-        self.cubin = pycuda.compiler.compile(self.src, keep=keep,
-                                             options=list(cmp_options))
+        self.cubin = pycuda.compiler.compile(
+                self.src, keep=keep, options=cmp_options,
+                cache_dir=False if keep else None)
         return self.src
 
     def copy(self):
