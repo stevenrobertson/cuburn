@@ -43,31 +43,36 @@ class Genome(object):
         dens = np.array([x.density for i, x in enumerate(self.xforms)
                          if i != self.final_xform_index])
 
-        ###############
-        # Chaos support
+
         num_std_xf = len(dens)
         self.chaos_densities = np.zeros( (num_std_xf,num_std_xf) )
         for r in range(num_std_xf):
-            chaos_row = np.array([ctypes_genome.chaos[r][c] for c in range(num_std_xf)])
+            chaos_row = np.array([ctypes_genome.chaos[r][c]
+                                  for c in range(num_std_xf)])
             chaos_row = chaos_row * dens
             chaos_row /= np.sum(chaos_row)
-            chaos_row = [np.sum(chaos_row[:i+1]) for i in range(len(dens))]
+            chaos_row = np.cumsum(chaos_row)
             self.chaos_densities[r,:] = chaos_row
-        ###############
 
         dens /= np.sum(dens)
-        self.norm_density = [np.sum(dens[:i+1]) for i in range(len(dens))]
-        self.camera_transform = self.calc_camera_transform()
+        self.norm_density = np.cumsum(dens)
+
+        # For performance reasons, defer this calculation
+        self._camera_transform = None
 
     scale = property(lambda cp: 2.0 ** cp.zoom)
     adj_density = property(lambda cp: cp.sample_density * (cp.scale ** 2))
     ppu = property(lambda cp: cp.pixels_per_unit * cp.scale)
 
-    def calc_camera_transform(cp):
+    @property
+    def camera_transform(self):
         """
         An affine matrix which will transform IFS coordinates to image width
         and height. Assumes that width and height are constant.
         """
+        cp = self
+        if self._camera_transform is not None:
+            return self._camera_transform
         g = Features.gutter
         if cp.estimator:
             # The filter shifts by this amount as a side effect of it being
@@ -75,12 +80,14 @@ class Genome(object):
             # TODO: this will be weird in an animation where one endpoint has
             # a radius of 0, and the other does not
             g -= Features.gutter / 2 - 1
-        return ( affine.translate(0.5 * cp.width + g, 0.5 * cp.height + g)
+        self._camera_transform = (
+                 affine.translate(0.5 * cp.width + g, 0.5 * cp.height + g)
                * affine.scale(cp.ppu, cp.ppu)
                * affine.translate(-cp._center[0], -cp._center[1])
                * affine.rotate(cp.rotate * 2 * np.pi / 360,
                                cp.rot_center[0],
                                cp.rot_center[1]) )
+        return self._camera_transform
 
 class Animation(object):
     """
