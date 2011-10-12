@@ -230,11 +230,12 @@ class DataPacker(HunkOCode):
 
     def _access(self, view, accessor, name):
         if name in self.packed:
-            pview, paccessor = self.packed[name]
+            pview, paccessor, pcomp = self.packed[name]
             if pview == view and (accessor is None or paccessor == accessor):
                 return
             raise ValueError("Same name, different accessor or view: %s" % name)
-        self.packed[name] = (view, accessor)
+        comp_accessor = compile(accessor, '{{template}}', 'eval')
+        self.packed[name] = (view, accessor, comp_accessor)
         self.packed_order.append(name)
 
     def __len__(self):
@@ -251,11 +252,11 @@ class DataPacker(HunkOCode):
         subbed_nses = {}
 
         for i, name in enumerate(self.packed_order):
-            view, accessor = self.packed[name]
+            view, accessor, comp = self.packed[name]
             if view not in subbed_nses:
                 subbed_nses[view] = view._apply_subs(dict(base_ns))
             try:
-                val = eval(accessor, subbed_nses[view])
+                val = eval(comp, subbed_nses[view])
             except Exception, e:
                 print 'Error while evaluating accessor "%s"' % accessor
                 raise e
