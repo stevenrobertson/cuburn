@@ -176,12 +176,10 @@ class Animation(object):
         """
         # Don't see this changing, but empirical tests could prove me wrong
         NRENDERERS = 2
-        # This could be shared too?
-        pool = pycuda.tools.PageLockedMemoryPool()
         # TODO: under a slightly modified sequencing, certain buffers can be
         # shared (though this may be unimportant if a good AA technique which
         # doesn't require full SS can be found)
-        rdrs = [_AnimRenderer(self, pool) for i in range(NRENDERERS)]
+        rdrs = [_AnimRenderer(self) for i in range(NRENDERERS)]
 
         # Zip up each genome with an alternating renderer, plus enough empty
         # genomes at the end to flush all pending tasks
@@ -195,8 +193,6 @@ class Animation(object):
 
     def _interp(self, time, cp):
         flam3_interpolate(self._g_arr, len(self._g_arr), time, 0, byref(cp))
-
-
 
 class _AnimRenderer(object):
     # Large launches lock the display for a considerable period and may be
@@ -214,9 +210,8 @@ class _AnimRenderer(object):
     PAL_HEIGHT = 16
 
 
-    def __init__(self, anim, pool):
+    def __init__(self, anim):
         self.anim = anim
-        self.pool = pool
         self.pending = False
         self.stream = cuda.Stream()
 
@@ -235,7 +230,9 @@ class _AnimRenderer(object):
         self.nbins = anim.features.acc_height * anim.features.acc_stride
         self.d_accum = cuda.mem_alloc(16 * self.nbins)
         self.d_out = cuda.mem_alloc(16 * self.nbins)
-        self.d_infos = cuda.mem_alloc(anim._iter.packer.align * self.ncps)
+
+        info_size = anim._iter.packer.align * self.ncps
+        self.d_infos = cuda.mem_alloc(info_size)
         # Defer generation of seeds until they're first needed
         self.d_seeds = None
 
@@ -286,7 +283,7 @@ class _AnimRenderer(object):
             if not d_seeds:
                 seeds = mwc.MWC.make_seeds(iter.IterCode.NTHREADS *
                                            self.cps_per_block)
-                h_seeds = self.pool.allocate(seeds.shape, seeds.dtype)
+                h_seeds = cuda.pagelocked_empty(seeds.shape, seeds.dtype)
                 h_seeds[:] = seeds
                 size = seeds.dtype.itemsize * seeds.size
                 d_seeds = cuda.mem_alloc(size)
@@ -315,7 +312,7 @@ class _AnimRenderer(object):
                 bkgd += np.array(a.genomes[0].background) * len(block_times)
 
             infos = np.concatenate(infos)
-            h_infos = self.pool.allocate(infos.shape, infos.dtype)
+            h_infos = cuda.pagelocked_empty(infos.shape, infos.dtype)
             h_infos[:] = infos
             offset = b * packer.align * self.cps_per_block
             # TODO: portable across 32/64-bit arches?

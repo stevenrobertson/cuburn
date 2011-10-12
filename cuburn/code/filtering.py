@@ -241,7 +241,6 @@ void density_est(float4 *pixbuf, float4 *outbuf,
                         de_add(si,  jj, -ii, scaled);
 
                         iif += 1;
-                        // TODO: validate that the above avoids bank conflicts
                     }
                 }
             }
