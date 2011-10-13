@@ -364,7 +364,7 @@ class _AnimRenderer(object):
                 cuda.memcpy_htod_async(d_info_off, h_infos, stream)
 
             # TODO: get block config from IterCode
-            iter_fun(d_seeds, np.uint64(d_info_off), self.d_accum,
+            iter_fun(d_seeds, np.uintp(d_info_off), self.d_accum,
                      block=(32, 16, 1), grid=(len(block_times), 1),
                      texrefs=[tref], stream=stream)
 

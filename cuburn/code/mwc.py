@@ -60,10 +60,9 @@ __device__ float mwc_next_11(mwc_st &st) {
         rand.shuffle(mults)
         seeds[0][:] = mults[:nthreads]
 
-        # Intentionally excludes both 0 and (2^32-1), as they can lead to
-        # degenerate sequences of period 0
-        seeds[1] = rand.randint(1, 0xffffffff, size=nthreads)
-        seeds[2] = rand.randint(1, 0xffffffff, size=nthreads)
+        # Excludes 0xffffffff for 32-bit compatibility with laziness
+        seeds[1] = rand.randint(1, 0x7fffffff, size=nthreads)
+        seeds[2] = rand.randint(1, 0x7fffffff, size=nthreads)
 
         return seeds
 
