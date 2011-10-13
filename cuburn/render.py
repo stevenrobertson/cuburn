@@ -196,25 +196,27 @@ class Animation(object):
         finish the current task. Otherwise, this generator will yield ``None``
         until the GPU is finished, for filtering later.
         """
-        # Don't see this changing, but empirical tests could prove me wrong
-        NRENDERERS = 2
-        # TODO: under a slightly modified sequencing, certain buffers can be
-        # shared (though this may be unimportant if a good AA technique which
-        # doesn't require full SS can be found)
-        rdrs = [_AnimRenderer(self) for i in range(NRENDERERS)]
-
-        # Zip up each genome with an alternating renderer, plus enough empty
-        # genomes at the end to flush all pending tasks
         times = times if times is not None else [cp.time for cp in self.genomes]
-        exttimes = chain(times, repeat(None, NRENDERERS))
-        for rdr, t in izip(cycle(rdrs), exttimes):
-            if rdr.pending:
-                if not block:
+
+        if block:
+            rdr = _AnimRenderer(self)
+            for t in times:
+                rdr.render(t)
+                yield rdr.get_result()
+        else:
+            # TODO: share buffers.
+            rdrs = [_AnimRenderer(self) for i in range(2)]
+
+            # Zip up each genome with an alternating renderer, plus 2 empty
+            # genomes at the end to flush all pending tasks
+            exttimes = times[:] + [None, None]
+            for rdr, t in izip(cycle(rdrs), exttimes):
+                if rdr.pending:
                     while not rdr.done():
                         yield None
-                yield rdr.get_result()
-            if t is not None:
-                rdr.render(t)
+                    yield rdr.get_result()
+                if t is not None:
+                    rdr.render(t)
 
     def _interp(self, time, cp):
         flam3_interpolate(self._g_arr, len(self._g_arr), time, 0, byref(cp))
@@ -236,6 +238,8 @@ class _AnimRenderer(object):
 
     # Use synchronous launches
     sync = False
+    # Delay this long between iterations (only active when sync is True)
+    sleep = None
 
     def __init__(self, anim):
         self.anim = anim
@@ -363,6 +367,9 @@ class _AnimRenderer(object):
             iter_fun(d_seeds, np.uint64(d_info_off), self.d_accum,
                      block=(32, 16, 1), grid=(len(block_times), 1),
                      texrefs=[tref], stream=stream)
+
+            if self.sync and self.sleep:
+                time.sleep(self.sleep)
 
         # Now ensure all alt stream tasks are done before continuing main
         if not self.sync:

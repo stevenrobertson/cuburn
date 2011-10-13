@@ -110,7 +110,9 @@ def main(args):
                  if (args.start is None or t >= args.start)
                  and (args.end is None or t < args.end)]
 
-    render._AnimRenderer.sync = args.sync
+    render._AnimRenderer.sync = args.sync or args.sleep
+    if args.sleep:
+        render._AnimRenderer.sleep = args.sleep / 1000.
     anim = render.Animation(genomes)
     if args.debug:
         anim.cmp_options.append('-G')
@@ -128,7 +130,6 @@ def main(args):
 
         @window.event
         def on_draw():
-            print 'redrawing'
             window.clear()
             image.texture.blit(0, 0)
             label.draw()
@@ -219,7 +220,10 @@ if __name__ == "__main__":
         help='Compile kernel with debugging enabled (implies --keep)')
     debug.add_argument('--sync', action='store_true', dest='sync',
         help='Use synchronous launches whenever possible')
-
+    parser.add_argument('--sleep', metavar='MSEC', type=int, dest='sleep',
+            nargs='?', const='5',
+            help='Sleep between invocations. Keeps a single-card system '
+                 'usable. Implies --sync.')
     args = parser.parse_args()
 
     main(args)
