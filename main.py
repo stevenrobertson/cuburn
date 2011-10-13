@@ -29,11 +29,14 @@ from cuburn.code.mwc import MWCTest
 np.set_printoptions(precision=5, edgeitems=20)
 
 def fmt_time(time):
-    # Stupid precision modifier garbage
-    frac = np.round((time - np.floor(time)) * 1000)
+    # Format time in a lexically-ordered way that doesn't interfere with the
+    # typical case of ascending natural numbers
+    atime = abs(time)
+    dcml = ('-' if time < 0 else '') + ('%05d' % np.floor(atime))
+    frac = np.round((atime - np.floor(atime)) * 1000)
     if frac:
-        return '%05d.%03d' % (np.floor(time), frac)
-    return '%05d' % time
+        return '%s_%03d' % (dcml, frac)
+    return dcml
 
 def save(args, time, raw):
     name = os.path.join(args.dir, '%s_%s' % (args.name, fmt_time(time)))
