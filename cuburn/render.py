@@ -234,6 +234,9 @@ class _AnimRenderer(object):
     # used, no matter the number of time steps.
     PAL_HEIGHT = 16
 
+    # Use synchronous launches
+    sync = False
+
     def __init__(self, anim):
         self.anim = anim
         self.pending = False
@@ -268,6 +271,9 @@ class _AnimRenderer(object):
         # It's less than ideal, but we lock some memory ahead of time
         self.h_infos_locked = cuda.pagelocked_empty((info_size/4,), np.float32)
 
+        if self.sync:
+            self.stream = self.alt_stream = None
+
     def render(self, cen_time):
         assert not self.pending, "Tried to render with results pending!"
         self.pending = True
@@ -281,7 +287,8 @@ class _AnimRenderer(object):
         util.BaseCode.zero_dptr(a.mod, self.d_accum, 4 * self.nbins,
                                 self.stream)
         # Ensure all main stream tasks are done before starting alt stream
-        self.alt_stream.wait_for_event(cuda.Event().record(self.stream))
+        if not self.sync:
+            self.alt_stream.wait_for_event(cuda.Event().record(self.stream))
 
         dpal = cuda.make_multichannel_2d_array(palette, 'C')
         tref = a.mod.get_texref('palTex')
@@ -311,11 +318,14 @@ class _AnimRenderer(object):
             if not d_seeds:
                 seeds = mwc.MWC.make_seeds(iter.IterCode.NTHREADS *
                                            self.cps_per_block)
-                h_seeds = cuda.pagelocked_empty(seeds.shape, seeds.dtype)
-                h_seeds[:] = seeds
-                size = seeds.dtype.itemsize * seeds.size
-                d_seeds = cuda.mem_alloc(size)
-                cuda.memcpy_htod_async(d_seeds, h_seeds, stream)
+                if self.sync:
+                    d_seeds = cuda.to_device(seeds)
+                else:
+                    size = seeds.dtype.itemsize * seeds.size
+                    d_seeds = cuda.mem_alloc(size)
+                    h_seeds = cuda.pagelocked_empty(seeds.shape, seeds.dtype)
+                    h_seeds[:] = seeds
+                    cuda.memcpy_htod_async(d_seeds, h_seeds, stream)
                 if on_main:
                     self.d_seeds = d_seeds
                 else:
@@ -341,11 +351,13 @@ class _AnimRenderer(object):
 
             infos = np.concatenate(infos)
             offset = b * packer.align * self.cps_per_block
-            h_infos = self.h_infos_locked[offset/4:offset/4+len(infos)]
-            h_infos[:] = infos
-            # TODO: portable across 32/64-bit arches?
             d_info_off = int(self.d_infos) + offset
-            cuda.memcpy_htod_async(d_info_off, h_infos, stream)
+            if self.sync:
+                cuda.memcpy_htod(d_info_off, infos)
+            else:
+                h_infos = self.h_infos_locked[offset/4:offset/4+len(infos)]
+                h_infos[:] = infos
+                cuda.memcpy_htod_async(d_info_off, h_infos, stream)
 
             # TODO: get block config from IterCode
             iter_fun(d_seeds, np.uint64(d_info_off), self.d_accum,
@@ -353,7 +365,8 @@ class _AnimRenderer(object):
                      texrefs=[tref], stream=stream)
 
         # Now ensure all alt stream tasks are done before continuing main
-        self.stream.wait_for_event(cuda.Event().record(self.alt_stream))
+        if not self.sync:
+            self.stream.wait_for_event(cuda.Event().record(self.alt_stream))
 
         util.BaseCode.zero_dptr(a.mod, self.d_out, 4 * self.nbins,
                                 self.stream)
@@ -408,10 +421,13 @@ class _AnimRenderer(object):
         return pal
 
     def done(self):
+        if self.sync:
+            return True
         return self.stream.is_done()
 
     def get_result(self):
-        self.stream.synchronize()
+        if not self.sync:
+            self.stream.synchronize()
         self.pending = False
         a = self.anim
         obuf_dim = (a.features.acc_height, a.features.acc_stride, 4)

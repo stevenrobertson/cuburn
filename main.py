@@ -23,7 +23,7 @@ import pycuda.autoinit
 
 import cuburn._pyflam3_hacks
 from fr0stlib import pyflam3
-from cuburn.render import *
+from cuburn import render
 from cuburn.code.mwc import MWCTest
 
 np.set_printoptions(precision=5, edgeitems=20)
@@ -110,7 +110,8 @@ def main(args):
                  if (args.start is None or t >= args.start)
                  and (args.end is None or t < args.end)]
 
-    anim = Animation(genomes)
+    render._AnimRenderer.sync = args.sync
+    anim = render.Animation(genomes)
     if args.debug:
         anim.cmp_options.append('-G')
     anim.keep = args.keep or args.debug
@@ -216,6 +217,8 @@ if __name__ == "__main__":
         help='Keep compilation directory (disables kernel caching)')
     debug.add_argument('--debug', action='store_true', dest='debug',
         help='Compile kernel with debugging enabled (implies --keep)')
+    debug.add_argument('--sync', action='store_true', dest='sync',
+        help='Use synchronous launches whenever possible')
 
     args = parser.parse_args()
 
