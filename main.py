@@ -223,7 +223,7 @@ if __name__ == "__main__":
         help='Compile kernel with debugging enabled (implies --keep)')
     debug.add_argument('--sync', action='store_true', dest='sync',
         help='Use synchronous launches whenever possible')
-    parser.add_argument('--sleep', metavar='MSEC', type=int, dest='sleep',
+    debug.add_argument('--sleep', metavar='MSEC', type=int, dest='sleep',
             nargs='?', const='5',
             help='Sleep between invocations. Keeps a single-card system '
                  'usable. Implies --sync.')
