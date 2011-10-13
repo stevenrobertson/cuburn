@@ -191,28 +191,29 @@ if __name__ == "__main__":
 
         If no options are given, all control points are rendered.""")
     time.add_argument('-s', dest='start', metavar='TIME', type=float,
-        help="Start time of image sequence (inclusive, clamped)")
+        help="Start time of image sequence (inclusive)")
     time.add_argument('-e', dest='end', metavar='TIME', type=float,
-        help="End time of image sequence (exclusive, clamped)")
+        help="End time of image sequence (exclusive)")
     time.add_argument('-k', dest='skip', metavar='TIME', type=float,
         help="Skip time between frames in image sequence. Auto-sets "
              "--tempscale, use '--tempscale 1' to override.")
-    time.add_argument('--renumber', metavar="START", type=float,
+    time.add_argument('--renumber', metavar="TIME", type=float,
         dest='renumber', nargs='?', const=0,
-        help="Renumber frame times monotonically, with the first frame at time "
-             "START. Skip is 1 and default start is 0.")
+        help="Renumber frame times, counting up from the supplied start time "
+             "(default is 0).")
 
     genome = parser.add_argument_group('Genome options')
-    genome.add_argument('--qs', type=float,
-        help="Scale quality and number of temporal samples by this factor")
-    genome.add_argument('--scale', type=float,
-        help="Scale pixels per unit (camera zoom) by this factor")
-    genome.add_argument('--width', type=int,
+    genome.add_argument('--qs', type=float, metavar='SCALE',
+        help="Scale quality and number of temporal samples")
+    genome.add_argument('--scale', type=float, metavar='SCALE',
+        help="Scale pixels per unit (camera zoom)")
+    genome.add_argument('--tempscale', type=float, metavar='SCALE',
+        help="Scale temporal filter width")
+    genome.add_argument('--width', type=int, metavar='PIXELS',
         help="Use this width. Auto-sets scale, use '--scale 1' to override.")
-    genome.add_argument('--height', type=int,
+    genome.add_argument('--height', type=int, metavar='PIXELS',
         help="Use this height (does *not* auto-set scale)")
-    genome.add_argument('--tempscale', type=float,
-        help="Scale temporal filter width by this factor")
+
 
     debug = parser.add_argument_group('Debug options')
     debug.add_argument('--test', action='store_true', dest='test',
