@@ -238,6 +238,7 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
         write_pix(pix, den);
         accbuf[i] = pix;
     }
+    msts[gtid()] = rctx;
 }
 ''')
         return tmpl.substitute(
