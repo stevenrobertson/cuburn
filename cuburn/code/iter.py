@@ -41,6 +41,60 @@ void write_pix(float4 &pix, float den) {
     {{endif}}
     pix.w = den;
 }
+
+__device__
+void update_pix(uint64_t ptr, uint32_t i, float4 c) {
+    {{if features.pal_has_alpha}}
+    asm volatile ({{crep('''
+    {
+        .reg .u16       sz, sw;
+        .reg .u64       base, off;
+        .reg .f32       x, y, z, w, den, rc, tz, tw;
+
+        // TODO: this limits the accumulation buffer to <4GB
+        shl.b32         %0,     %0,     4;
+        cvt.u64.u32     off,    %0;
+        add.u64         base,   %1,     off;
+        ld.cg.v4.f32    {x, y, z, den},         [base];
+        add.f32         x,      x,      %2;
+        add.f32         y,      y,      %3;
+        mov.b32         {sz, sw},       z;
+        cvt.rn.f32.u16  tz,     sz;
+        cvt.rn.f32.u16  tw,     sw;
+        mul.f32         tz,     tz,     den;
+        mul.f32         tw,     tz,     den;
+        fma.f32         tz,     %4,     65535.0,    tz;
+        fma.f32         tw,     %5,     65535.0,    tw;
+        add.f32         den,    1.0;
+        rcp.approx.f32  rc,     den;
+        mul.f32         tz,     tz,     rc;
+        mul.f32         tw,     tw,     rc;
+        cvt.rni.u16.f32 sz,     tz;
+        cvt.rni.u16.f32 sw,     tw;
+        mov.b32         z,      {sz, sw};
+        st.cs.v4.f32    [base], {x, y, z, den};
+    }
+    ''')}} : "+r"(i) : "l"(ptr), "f"(c.x), "f"(c.y), "f"(c.z), "f"(c.w));
+    {{else}}
+    asm volatile ({{crep('''
+    {
+        .reg .u64       base, off;
+        .reg .f32       x, y, z, den;
+
+        // TODO: this limits the accumulation buffer to <4GB
+        shl.b32         %0,     %0,     4;
+        cvt.u64.u32     off,    %0;
+        add.u64         base,   %1,     off;
+        ld.cg.v4.f32    {x, y, z, den},         [base];
+        add.f32         x,      x,      %2;
+        add.f32         y,      y,      %3;
+        add.f32         z,      z,      %4;
+        add.f32         den,    den,    1.0;
+        st.cs.v4.f32    [base], {x, y, z, den};
+    }
+    ''')}} : "+r"(i) : "l"(ptr), "f"(c.x), "f"(c.y), "f"(c.z));
+    {{endif}}
+}
 """)
 
     def _xfbody(self, xfid, xform):
@@ -86,7 +140,7 @@ void apply_xf{{xfid}}(float &ox, float &oy, float &color, mwc_st &rctx) {
     def _iterbody(self):
         tmpl = Template(r'''
 __global__
-void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
+void iter(mwc_st *msts, iter_info *infos, uint64_t accbuf_ptr) {
     __shared__ int nsamps;
     mwc_st rctx = msts[gtid()];
     iter_info *info_glob = &(infos[blockIdx.x]);
@@ -223,18 +277,8 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
         uint32_t i = iy * {{features.acc_stride}} + ix;
 
         float4 outcol = tex2D(palTex, color, {{packer.get("cp_step_frac")}});
-        float4 pix = accbuf[i];
-        float den;
-        // TODO: unify read/write_pix cycle when alpha is needed
-        read_pix(pix, den);
-        pix.x += outcol.x;
-        pix.y += outcol.y;
-        pix.z += outcol.z;
-        pix.w += outcol.w;
-        den += 1.0f;
+        update_pix(accbuf_ptr, i, outcol);
 
-        write_pix(pix, den);
-        accbuf[i] = pix;
     }
     msts[gtid()] = rctx;
 }

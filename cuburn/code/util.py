@@ -5,9 +5,13 @@ Provides tools and miscellaneous functions for building device code.
 import numpy as np
 import tempita
 
+def crep(s):
+    """Escape for PTX assembly"""
+    return '"%s"' % s.encode("string_escape")
+
 class Template(tempita.Template):
     default_namespace = tempita.Template.default_namespace.copy()
-Template.default_namespace.update({'np': np})
+Template.default_namespace.update({'np': np, 'crep': crep})
 
 class HunkOCode(object):
     """An apparently passive container for device code."""

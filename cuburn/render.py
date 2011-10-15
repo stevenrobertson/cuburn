@@ -320,7 +320,7 @@ class _AnimRenderer(object):
             d_seeds = self.d_seeds if on_main else self.d_alt_seeds
 
             if not d_seeds:
-                seeds = mwc.MWC.make_seeds(iter.IterCode.NTHREADS *
+                seeds = mwc.MWC.make_seeds(a._iter.NTHREADS *
                                            self.cps_per_block)
                 if self.sync:
                     d_seeds = cuda.to_device(seeds)
@@ -363,9 +363,9 @@ class _AnimRenderer(object):
                 h_infos[:] = infos
                 cuda.memcpy_htod_async(d_info_off, h_infos, stream)
 
-            # TODO: get block config from IterCode
-            iter_fun(d_seeds, np.uintp(d_info_off), self.d_accum,
-                     block=(32, 16, 1), grid=(len(block_times), 1),
+            iter_fun(d_seeds, np.uintp(d_info_off), np.uint64(self.d_accum),
+                     block=(32, a._iter.NTHREADS/32, 1),
+                     grid=(len(block_times), 1),
                      texrefs=[tref], stream=stream)
 
             if self.sync and self.sleep:
