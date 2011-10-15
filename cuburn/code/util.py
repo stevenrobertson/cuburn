@@ -89,9 +89,10 @@ uint32_t gtid() {
 }
 
 __device__
-int trunca(float f) {
-    // truncate as used in address calculations
-    int ret;
+uint32_t trunca(float f) {
+    // truncate as used in address calculations. note the use of a signed
+    // conversion is intentional here (simplifies image bounds checking).
+    uint32_t ret;
     asm("cvt.rni.s32.f32    %0,     %1;" : "=r"(ret) : "f"(f));
     return ret;
 }

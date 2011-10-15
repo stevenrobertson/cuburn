@@ -110,6 +110,16 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
         cosel[threadIdx.x] = mwc_next_01(rctx);
     {{endif}}
 
+    if (threadIdx.y == 1 && threadIdx.x == 0) {
+        float ditherwidth = {{packer.get("0.33 * cp.spatial_filter_radius")}};
+        float u0 = mwc_next_01(rctx);
+        float r = ditherwidth * sqrt(-2.0f * log2f(u0) / M_LOG2E);
+
+        float u1 = 2.0f * M_PI * mwc_next_01(rctx);
+        info.cam_xo += r * cos(u1);
+        info.cam_yo += r * sin(u1);
+    }
+
     __syncthreads();
     int consec_bad = -{{features.fuse}};
 
@@ -197,21 +207,9 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
         {{apply_affine('x', 'y', 'cx', 'cy', packer,
                        'cp.camera_transform', 'cam')}}
         {{endif}}
+        uint32_t ix = trunca(cx), iy = trunca(cy);
 
-        // TODO: verify that constants get premultiplied
-        float ditherwidth = {{packer.get("0.33 * cp.spatial_filter_radius")}};
-        float u0 = mwc_next_01(rctx);
-        float r = ditherwidth * sqrt(-2.0f * log2f(u0) / M_LOG2E);
-
-        // TODO: provide mwc_next_0_2pi()
-        float u1 = 2.0f * M_PI * mwc_next_01(rctx);
-
-        float ditherx = r * cos(u1);
-        float dithery = r * sin(u1);
-        int ix = trunca(cx+ditherx), iy = trunca(cy+dithery);
-
-        if (ix < 0 || ix >= {{features.acc_width}} ||
-            iy < 0 || iy >= {{features.acc_height}} ) {
+        if (ix >= {{features.acc_width}} || iy >= {{features.acc_height}} ) {
             consec_bad++;
             if (consec_bad > {{features.max_oob}}) {
                 x = mwc_next_11(rctx);
@@ -222,7 +220,7 @@ void iter(mwc_st *msts, iter_info *infos, float4 *accbuf, float *denbuf) {
             continue;
         }
 
-        int i = iy * {{features.acc_stride}} + ix;
+        uint32_t i = iy * {{features.acc_stride}} + ix;
 
         float4 outcol = tex2D(palTex, color, {{packer.get("cp_step_frac")}});
         float4 pix = accbuf[i];
