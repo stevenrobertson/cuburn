@@ -28,6 +28,8 @@ from cuburn.code.mwc import MWCTest
 
 np.set_printoptions(precision=5, edgeitems=20)
 
+real_stdout = sys.stdout
+
 def fmt_time(time):
     # Format time in a lexically-ordered way that doesn't interfere with the
     # typical case of ascending natural numbers
@@ -39,8 +41,12 @@ def fmt_time(time):
     return dcml
 
 def save(args, time, raw):
-    name = os.path.join(args.dir, '%s_%s' % (args.name, fmt_time(time)))
     noalpha = raw[:,:,:3]
+    if args.raw:
+        real_stdout.write(buffer(np.uint8(noalpha * 255.0)))
+        return
+
+    name = os.path.join(args.dir, '%s_%s' % (args.name, fmt_time(time)))
     img = scipy.misc.toimage(noalpha, cmin=0, cmax=1)
     img.save(name+'.png')
 
@@ -56,6 +62,9 @@ def main(args):
     if args.test:
         MWCTest.test_mwc()
         return
+
+    if args.raw:
+        sys.stdout = sys.stderr
 
     genome_ptr, ngenomes = pyflam3.Genome.from_string(args.flame.read())
     genomes = cast(genome_ptr, POINTER(pyflam3.Genome*ngenomes)).contents
@@ -181,6 +190,8 @@ if __name__ == "__main__":
         help="Prefix to use when saving files (default is basename of input)")
     parser.add_argument('-o', metavar='DIR', type=str, dest='dir',
         help="Output directory", default='.')
+    parser.add_argument('--raw', action='store_true', dest='raw',
+        help="Do not write files; instead, send raw RGBA data to stdout.")
 
     time = parser.add_argument_group('Sequence options', description="""
         Control which frames are rendered from a genome sequence. If '-k' is
