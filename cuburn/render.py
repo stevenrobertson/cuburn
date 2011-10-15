@@ -107,7 +107,7 @@ class Animation(object):
     In other words, it's best to use exactly one Animation for each
     interpolated sequence between one or two genomes.
     """
-    cmp_options = ('-use_fast_math', '-maxrregcount', '32')
+    cmp_options = ('-use_fast_math', '-maxrregcount', '42')
     keep = False
 
     def __init__(self, ctypes_genome_array):

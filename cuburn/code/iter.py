@@ -7,7 +7,7 @@ from cuburn.code.util import *
 
 class IterCode(HunkOCode):
     # The number of threads per block
-    NTHREADS = 512
+    NTHREADS = 256
 
     def __init__(self, features):
         self.features = features
@@ -158,9 +158,9 @@ void iter(mwc_st *msts, iter_info *infos, uint64_t accbuf_ptr) {
     int last_xf_used = 0;
     {{else}}
     // Size can be reduced by a factor of four using a slower 4-stage reduce
-    __shared__ float swap[2048];
-    __shared__ float cosel[16];
-    if (threadIdx.y == 0 && threadIdx.x < 16)
+    __shared__ float swap[{{4*NTHREADS}}];
+    __shared__ float cosel[{{NWARPS}}];
+    if (threadIdx.y == 0 && threadIdx.x < {{NWARPS}})
         cosel[threadIdx.x] = mwc_next_01(rctx);
     {{endif}}
 
@@ -215,13 +215,13 @@ void iter(mwc_st *msts, iter_info *infos, uint64_t accbuf_ptr) {
 
         {{if not features.chaos_used}}
         // Swap thread states here so that writeback skipping logic doesn't die
-        int sw = (threadIdx.y * 32 + threadIdx.x * 33) & 0x1ff;
+        int sw = (threadIdx.y * 32 + threadIdx.x * 33) & {{NTHREADS-1}};
         int sr = threadIdx.y * 32 + threadIdx.x;
 
         swap[sw] = consec_bad;
-        swap[sw+512] = x;
-        swap[sw+1024] = y;
-        swap[sw+1536] = color;
+        swap[sw+{{NTHREADS}}] = x;
+        swap[sw+{{2*NTHREADS}}] = y;
+        swap[sw+{{3*NTHREADS}}] = color;
         __syncthreads();
         // This is in the middle of the function so that only one sync is
         // required per loop.
@@ -229,14 +229,14 @@ void iter(mwc_st *msts, iter_info *infos, uint64_t accbuf_ptr) {
 
         {{if not features.chaos_used}}
         // Similarly, we select the next xforms here.
-        if (threadIdx.y == 0 && threadIdx.x < 16)
+        if (threadIdx.y == 0 && threadIdx.x < {{NWARPS}})
             cosel[threadIdx.x] = mwc_next_01(rctx);
         {{endif}}
 
         consec_bad = swap[sr];
-        x = swap[sr+512];
-        y = swap[sr+1024];
-        color = swap[sr+1536];
+        x = swap[sr+{{NTHREADS}}];
+        y = swap[sr+{{2*NTHREADS}}];
+        color = swap[sr+{{3*NTHREADS}}];
         {{endif}}
 
         if (consec_bad < 0) {
@@ -286,5 +286,7 @@ void iter(mwc_st *msts, iter_info *infos, uint64_t accbuf_ptr) {
         return tmpl.substitute(
                 features = self.features,
                 packer = self.packer.view('info'),
+                NTHREADS = self.NTHREADS,
+                NWARPS = self.NTHREADS / 32,
                 **globals())
 
