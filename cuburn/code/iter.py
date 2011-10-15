@@ -164,18 +164,18 @@ void iter(mwc_st *msts, iter_info *infos, uint64_t accbuf_ptr) {
         cosel[threadIdx.x] = mwc_next_01(rctx);
     {{endif}}
 
+    __syncthreads();
+    int consec_bad = -{{features.fuse}};
+
     if (threadIdx.y == 1 && threadIdx.x == 0) {
         float ditherwidth = {{packer.get("0.33 * cp.spatial_filter_radius")}};
-        float u0 = mwc_next_01(rctx) + 0.02f;
-        float r = ditherwidth * sqrt(-2.0f * log2f(u0) / M_LOG2E);
+        float u0 = mwc_next_01(rctx);
+        float r = ditherwidth * sqrtf(-2.0f * log2f(u0) / M_LOG2E);
 
         float u1 = 2.0f * M_PI * mwc_next_01(rctx);
         info.cam_xo += r * cos(u1);
         info.cam_yo += r * sin(u1);
     }
-
-    __syncthreads();
-    int consec_bad = -{{features.fuse}};
 
     float x, y, color;
     x = mwc_next_11(rctx);
