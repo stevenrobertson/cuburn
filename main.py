@@ -118,20 +118,27 @@ def main(args):
     elif np.any(np.diff(cp_times) <= 0):
         error("Genome times are non-monotonic. Try using --renumber.")
 
-    if args.skip:
+    if len(cp_times) > 2:
         if args.start is None:
-            args.start = cp_times[0]
+            # [1], not [0]; want to be inclusive on --start but exclude
+            # the first genome when --start is not passed
+            args.start = cp_times[1]
         if args.end is None:
             args.end = cp_times[-1]
-        times = np.arange(args.start, args.end, args.skip)
+        if args.skip:
+            times = np.arange(args.start, args.end, args.skip)
+        else:
+            times = [t for t in cp_times if args.start <= t < args.end]
     else:
-        times = [t for t in cp_times
-                 if (args.start is None or t >= args.start)
-                 and (args.end is None or t < args.end)]
+        times = cp_times
 
     if args.resume:
         times = [t for t in times
                  if not os.path.isfile(fmt_filename(args, t)+'.png')]
+
+    if times == []:
+        print 'No genomes to be rendered.'
+        return
 
     anim = render.Animation(genomes)
     if args.debug:
@@ -220,7 +227,9 @@ if __name__ == "__main__":
         a list of times to render is given according to the semantics of
         Python's range operator, as in range(start, end, skip).
 
-        If no options are given, all control points are rendered.""")
+        If no options are given, all control points except the first and last
+        are rendered. If only one or two control points are passed, everything
+        gets rendered.""")
     seq.add_argument('-s', dest='start', metavar='TIME', type=float,
         help="Start time of image sequence (inclusive)")
     seq.add_argument('-e', dest='end', metavar='TIME', type=float,
