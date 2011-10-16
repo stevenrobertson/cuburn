@@ -101,7 +101,7 @@ def main(args):
 
     if not args.name:
         if args.flame.name == '<stdin>':
-            args.name = genomes[0].flame_name
+            args.name = genomes[0].name
         else:
             args.name = os.path.splitext(os.path.basename(args.flame.name))[0]
 
@@ -181,7 +181,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Render fractal flames.')
 
-    parser.add_argument('flame', metavar='FILE', type=file,
+    parser.add_argument('flame', metavar='FILE', type=argparse.FileType(),
         help="Path to genome file ('-' for stdin)")
     parser.add_argument('-g', action='store_true', dest='gfx',
         help="Show output in OpenGL window")
