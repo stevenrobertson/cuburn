@@ -107,7 +107,19 @@ class Animation(object):
     In other words, it's best to use exactly one Animation for each
     interpolated sequence between one or two genomes.
     """
+
+    # Large launches lock the display for a considerable period and may be
+    # killed due to a device timeout; small launches are harder to load-balance
+    # on the GPU and incur overhead. This empirical value is multiplied by the
+    # number of SMs on the device to determine how many blocks should be in
+    # each launch. Extremely high quality, high resolution renders may still
+    # encounter a device timeout, requiring the user to increase the split
+    # amount. This factor is not used in async mode.
+    SM_FACTOR = 8
+
     cmp_options = ('-use_fast_math', '-maxrregcount', '42')
+
+
     keep = False
 
     def __init__(self, ctypes_genome_array):
@@ -170,7 +182,8 @@ class Animation(object):
             self.compile()
         self.mod = cuda.module_from_buffer(self.cubin, jit_options)
 
-    def render_frames(self, times=None, block=True):
+
+    def render_frames(self, times=None, sync=False):
         """
         Render a flame for each genome in the iterable value 'genomes'.
         Returns a Python generator object which will yield a 2-tuple of
@@ -192,260 +205,182 @@ class Animation(object):
         ``times`` is a sequence of center times at which to render, or ``None``
         to render one frame for each genome used to create the animation.
 
-        ``block`` will cause this thread to spin, waiting for the GPU to
-        finish the current task. Otherwise, this generator will yield ``None``
-        until the GPU is finished, for filtering later.
+        If ``sync`` is True, the CPU will sync with the GPU after every block
+        of temporal samples and yield None until the frame is ready. This
+        allows a single-card system to avoid having to go thirty seconds
+        between window refreshes while rendering. Otherwise, tasks will be
+        piled asynchronously on the card so that it is always under load.
         """
+
+        f = self.features
+
         times = times if times is not None else [cp.time for cp in self.genomes]
+        iter_stream = cuda.Stream()
+        filt_stream = cuda.Stream()
+        cen_cp = pyflam3.Genome()
+        dst_cp = pyflam3.Genome()
 
-        if block:
-            rdr = _AnimRenderer(self)
-            for t in times:
-                rdr.render(t)
-                yield rdr.get_result()
+        nbins = f.acc_height * f.acc_stride
+        d_accum = cuda.mem_alloc(16 * nbins)
+        d_out = cuda.mem_alloc(16 * nbins)
+
+        num_sm = cuda.Context.get_device().multiprocessor_count
+        if sync:
+            cps_per_block = num_sm * self.SM_FACTOR
         else:
-            # TODO: share buffers.
-            rdrs = [_AnimRenderer(self) for i in range(2)]
+            cps_per_block = f.max_cps
 
-            # Zip up each genome with an alternating renderer, plus 2 empty
-            # genomes at the end to flush all pending tasks
-            exttimes = times[:] + [None, None]
-            for rdr, t in izip(cycle(rdrs), exttimes):
-                if rdr.pending:
-                    while not rdr.done():
-                        yield None
-                    yield rdr.get_result()
-                if t is not None:
-                    rdr.render(t)
+        info_size = self._iter.packer.align * cps_per_block
+        d_infos = cuda.mem_alloc(info_size)
+        d_palmem = cuda.mem_alloc(256 * f.palette_height * 4)
 
-    def _interp(self, time, cp):
-        flam3_interpolate(self._g_arr, len(self._g_arr), time, 0, byref(cp))
+        seeds = mwc.MWC.make_seeds(self._iter.NTHREADS * cps_per_block)
+        d_seeds = cuda.to_device(seeds)
 
-class _AnimRenderer(object):
-    # Large launches lock the display for a considerable period and may be
-    # killed due to a device timeout; small launches are harder to load-balance
-    # on the GPU and incur overhead. This empirical value is multiplied by the
-    # number of SMs on the device to determine how many blocks should be in
-    # each launch. Extremely high quality, high resolution renders may still
-    # encounter a device timeout, and no workaround is in place for that yet.
-    SM_FACTOR = 8
+        h_infos = cuda.pagelocked_empty((info_size / 4,), np.float32)
+        h_palmem = cuda.pagelocked_empty(
+                (f.palette_height, 256, 4), np.uint8)
+        h_out = cuda.pagelocked_empty((f.acc_height, f.acc_stride, 4), np.float32)
 
-    # Currently, palette interpolation is done independently of animation
-    # interpolation, so that the process is not biased and so we only need to
-    # mess about with one texture per renderer. This many steps will always be
-    # used, no matter the number of time steps.
-    PAL_HEIGHT = 16
+        filter_done_event = None
 
-    # Use synchronous launches
-    sync = False
-    # Delay this long between iterations (only active when sync is True)
-    sleep = None
-
-    def __init__(self, anim):
-        self.anim = anim
-        self.pending = False
-        self.cen_time = None
-        self.stream = cuda.Stream()
-
-        self._nsms = cuda.Context.get_device().multiprocessor_count
-        self.cps_per_block = self._nsms * self.SM_FACTOR
-        self.ncps = anim.features.max_cps
-        self.nblocks = int(math.ceil(self.ncps / float(self.cps_per_block)))
-
-        # These are stored to avoid leaks, not to be stateful in method calls
-        self._dst_cp = pyflam3.Genome()
-        memset(byref(self._dst_cp), 0, sizeof(self._dst_cp))
-        self._cen_cp = pyflam3.Genome()
-        memset(byref(self._cen_cp), 0, sizeof(self._cen_cp))
-
-        self.nbins = anim.features.acc_height * anim.features.acc_stride
-        self.d_accum = cuda.mem_alloc(16 * self.nbins)
-        self.d_out = cuda.mem_alloc(16 * self.nbins)
-
-        info_size = anim._iter.packer.align * self.ncps
-        self.d_infos = cuda.mem_alloc(info_size)
-        # Defer generation of seeds until they're first needed
-        self.d_seeds = None
-
-        # During the main rendering loop, we alternate between two streams and
-        # two sets of seeds, synchronizing them at the end of rendering.
-        self.alt_stream = cuda.Stream()
-        self.d_alt_seeds = None
-
-        # It's less than ideal, but we lock some memory ahead of time
-        self.h_infos_locked = cuda.pagelocked_empty((info_size/4,), np.float32)
-
-        if self.sync:
-            self.stream = self.alt_stream = None
-
-    def render(self, cen_time):
-        assert not self.pending, "Tried to render with results pending!"
-        self.pending = True
-        self.cen_time = cen_time
-        a = self.anim
-
-        cen_cp = self._cen_cp
-        a._interp(cen_time, cen_cp)
-        palette = self._interp_colors(cen_time, cen_cp)
-
-        util.BaseCode.zero_dptr(a.mod, self.d_accum, 4 * self.nbins,
-                                self.stream)
-        # Ensure all main stream tasks are done before starting alt stream
-        if not self.sync:
-            self.alt_stream.wait_for_event(cuda.Event().record(self.stream))
-
-        dpal = cuda.make_multichannel_2d_array(palette, 'C')
-        tref = a.mod.get_texref('palTex')
-        tref.set_array(dpal)
-        tref.set_format(cuda.array_format.UNSIGNED_INT8, 4)
-        tref.set_flags(cuda.TRSF_NORMALIZED_COORDINATES)
-        tref.set_filter_mode(cuda.filter_mode.LINEAR)
-
-        cp = self._dst_cp
-        packer = a._iter.packer
-
-        iter_fun = a.mod.get_function("iter")
+        packer = self._iter.packer
+        iter_fun = self.mod.get_function("iter")
         #iter_fun.set_cache_config(cuda.func_cache.PREFER_L1)
 
-        # Must be accumulated over all CPs
-        gam, vib = 0, 0
-        bkgd = np.zeros(3)
+        util.BaseCode.zero_dptr(self.mod, d_accum, 4 * nbins, filt_stream)
 
-        # This is gross, but there are a lot of fiddly corner cases with any
-        # index-based iteration scheme.
-        times = list(enumerate(self._mk_dts(cen_time, cen_cp, self.ncps)))
-        for b, block_times in enumerate(_chunk(times, self.cps_per_block)):
-            on_main = b % 2 == 0
-            stream = self.stream if on_main else self.alt_stream
-            d_seeds = self.d_seeds if on_main else self.d_alt_seeds
+        last_time = times[0]
 
-            if not d_seeds:
-                seeds = mwc.MWC.make_seeds(a._iter.NTHREADS *
-                                           self.cps_per_block)
-                if self.sync:
-                    d_seeds = cuda.to_device(seeds)
+        for time in times:
+            self._interp(cen_cp, time)
+
+            h_palmem[:] = self._interp_colors(dst_cp, time,
+                                              cen_cp.temporal_filter_width)
+            cuda.memcpy_htod_async(d_palmem, h_palmem, iter_stream)
+            tref = self.mod.get_texref('palTex')
+            array_info = cuda.ArrayDescriptor()
+            array_info.height = f.palette_height
+            array_info.width = 256
+            array_info.array_format = cuda.array_format.UNSIGNED_INT8
+            array_info.num_channels = 4
+            tref.set_address_2d(d_palmem, array_info, 1024)
+
+            tref.set_format(cuda.array_format.UNSIGNED_INT8, 4)
+            tref.set_flags(cuda.TRSF_NORMALIZED_COORDINATES)
+            tref.set_filter_mode(cuda.filter_mode.LINEAR)
+
+            # Must be accumulated over all CPs
+            gam, vib = 0, 0
+            bkgd = np.zeros(3)
+
+            mblur_times = enumerate( np.linspace(-0.5, 0.5, cen_cp.ntemporal_samples)
+                                     * cen_cp.temporal_filter_width + time )
+
+            for block_times in _chunk(list(mblur_times), cps_per_block):
+                infos = []
+                if len(self.genomes) > 1:
+                    for n, t in block_times:
+                        self._interp(dst_cp, t)
+                        frac = float(n) / cen_cp.ntemporal_samples
+                        info = packer.pack(cp=Genome(dst_cp), cp_step_frac=frac)
+                        infos.append(info)
+                        gam += dst_cp.gamma
+                        vib += dst_cp.vibrancy
+                        bkgd += np.array(dst_cp.background)
                 else:
-                    size = seeds.dtype.itemsize * seeds.size
-                    d_seeds = cuda.mem_alloc(size)
-                    h_seeds = cuda.pagelocked_empty(seeds.shape, seeds.dtype)
-                    h_seeds[:] = seeds
-                    cuda.memcpy_htod_async(d_seeds, h_seeds, stream)
-                if on_main:
-                    self.d_seeds = d_seeds
-                else:
-                    self.d_alt_seeds = d_seeds
+                    # Can't interpolate normally; just pack copies
+                    packed = packer.pack(cp=self.genomes[0], cp_step_frac=0)
+                    infos = [packed] * len(block_times)
+                    gam += self.genomes[0].gamma * len(block_times)
+                    vib += self.genomes[0].vibrancy * len(block_times)
+                    bkgd += np.array(self.genomes[0].background) * len(block_times)
 
-            infos = []
-            if len(a.genomes) > 1:
-                for n, t in block_times:
-                    a._interp(t, cp)
-                    frac = float(n) / cen_cp.ntemporal_samples
-                    info = packer.pack(cp=Genome(cp), cp_step_frac=frac)
-                    infos.append(info)
-                    gam += cp.gamma
-                    vib += cp.vibrancy
-                    bkgd += np.array(cp.background)
-            else:
-                # Can't interpolate normally; just pack copies
-                packed = packer.pack(cp=a.genomes[0], cp_step_frac=0)
-                infos = [packed] * len(block_times)
-                gam += a.genomes[0].gamma * len(block_times)
-                vib += a.genomes[0].vibrancy * len(block_times)
-                bkgd += np.array(a.genomes[0].background) * len(block_times)
+                infos = np.concatenate(infos)
+                h_infos[:len(infos)] = infos
+                cuda.memcpy_htod_async(d_infos, h_infos)
 
-            infos = np.concatenate(infos)
-            offset = b * packer.align * self.cps_per_block
-            d_info_off = int(self.d_infos) + offset
-            if self.sync:
-                cuda.memcpy_htod(d_info_off, infos)
-            else:
-                h_infos = self.h_infos_locked[offset/4:offset/4+len(infos)]
-                h_infos[:] = infos
-                cuda.memcpy_htod_async(d_info_off, h_infos, stream)
+                if filter_done_event:
+                    iter_stream.wait_for_event(filter_done_event)
 
-            iter_fun(d_seeds, np.uintp(d_info_off), np.uint64(self.d_accum),
-                     block=(32, a._iter.NTHREADS/32, 1),
-                     grid=(len(block_times), 1),
-                     texrefs=[tref], stream=stream)
+                # TODO: replace with option to split long runs shorter ones
+                # for interactivity
+                for i in range(1):
+                    iter_fun(d_seeds, d_infos, np.uint64(d_accum),
+                             block=(32, self._iter.NTHREADS/32, 1),
+                             grid=(len(block_times), 1),
+                             texrefs=[tref], stream=iter_stream)
 
-            if self.sync and self.sleep:
-                time.sleep(self.sleep)
+                    if sync:
+                        iter_stream.synchronize()
+                        yield None
 
-        # Now ensure all alt stream tasks are done before continuing main
-        if not self.sync:
-            self.stream.wait_for_event(cuda.Event().record(self.alt_stream))
+            if filter_done_event and not sync:
+                filt_stream.synchronize()
+                yield last_time, self._trim(h_out)
+                last_time = time
 
-        util.BaseCode.zero_dptr(a.mod, self.d_out, 4 * self.nbins,
-                                self.stream)
-        a._de.invoke(a.mod, Genome(cen_cp), self.d_accum, self.d_out,
-                     self.stream)
+            util.BaseCode.zero_dptr(self.mod, d_out, 4 * nbins, filt_stream)
+            self._de.invoke(self.mod, Genome(cen_cp), d_accum, d_out, filt_stream)
+            util.BaseCode.zero_dptr(self.mod, d_accum, 4 * nbins, filt_stream)
+            filter_done_event = cuda.Event().record(filt_stream)
 
-        f = np.float32
-        n = f(self.ncps)
-        gam = f(n / gam)
-        vib = f(vib / n)
-        hipow = f(cen_cp.highlight_power)
-        lin = f(cen_cp.gam_lin_thresh)
-        lingam = f(math.pow(cen_cp.gam_lin_thresh, gam-1.0) if lin > 0 else 0)
-        bkgd = vec.make_float3(*(bkgd / n))
+            f32 = np.float32
+            n = f32(cen_cp.ntemporal_samples)
+            gam = f32(n / gam)
+            vib = f32(vib / n)
+            hipow = f32(cen_cp.highlight_power)
+            lin = f32(cen_cp.gam_lin_thresh)
+            lingam = f32(math.pow(cen_cp.gam_lin_thresh, gam-1.0) if lin > 0 else 0)
+            bkgd = vec.make_float3(*(bkgd / n))
 
-        # TODO: get block size from colorclip class? It actually does not
-        # depend on that being the case
-        color_fun = a.mod.get_function("colorclip")
-        color_fun(self.d_out, gam, vib, hipow, lin, lingam, bkgd,
-                  block=(256, 1, 1), grid=(self.nbins / 256, 1),
-                  stream=self.stream)
+            color_fun = self.mod.get_function("colorclip")
+            color_fun(d_out, gam, vib, hipow, lin, lingam, bkgd,
+                      block=(256, 1, 1), grid=(nbins / 256, 1),
+                      stream=filt_stream)
+            cuda.memcpy_dtoh_async(h_out, d_out, filt_stream)
 
+            if sync:
+                filt_stream.synchronize()
+                yield time, self._trim(h_out)
 
-        # TODO: The stream seems to sync right here, automatically, before
-        # returning. I think PyCUDA is forcing a sync when something drops out
-        # of scope. Investigate.
+        if not sync:
+            filt_stream.synchronize()
+            yield time, self._trim(h_out)
 
-    def _pal_to_np(self, cp):
+    def _interp(self, cp, time):
+        flam3_interpolate(self._g_arr, len(self._g_arr), time, 0, byref(cp))
+
+    @staticmethod
+    def _pal_to_np(cp):
         # Converting palettes by iteration has an enormous performance
         # overhead. We cheat massively and dangerously here.
         pal = cast(pointer(cp.palette), POINTER(c_double * (256 * 5)))
         val = np.frombuffer(buffer(pal.contents), count=256*5)
         return np.uint8(np.reshape(val, (256, 5))[:,1:] * 255.0)
 
-    def _interp_colors(self, cen_time, cen_cp):
+    def _interp_colors(self, cp, time, twidth):
         # TODO: any visible difference between uint8 and richer formats?
-        pal = np.empty((self.PAL_HEIGHT, 256, 4), dtype=np.uint8)
-        a = self.anim
+        height = self.features.palette_height
+        pal = np.empty((height, 256, 4), dtype=np.uint8)
 
-        if len(a.genomes) > 1:
+        if len(self.genomes) > 1:
             # The typical case; applying real motion blur
-            cp = self._dst_cp
-            times = self._mk_dts(cen_time, cen_cp, self.PAL_HEIGHT)
+            times = np.linspace(-0.5, 0.5, height) * twidth + time
             for n, t in enumerate(times):
-                a._interp(t, cp)
+                self._interp(cp, t)
                 pal[n] = self._pal_to_np(cp)
         else:
             # Cannot call any interp functions on a single genome; rather than
             # have alternate code-paths, just copy the same colors everywhere
-            pal[0] = self._pal_to_np(a.genomes[0])
+            pal[0] = self._pal_to_np(self.genomes[0])
             pal[1:] = pal[0]
         return pal
 
-    def done(self):
-        if self.sync:
-            return True
-        return self.stream.is_done()
+    def _trim(self, result):
+        g = self.features.gutter
+        return result[g:-g,g:-g].copy()
 
-    def get_result(self):
-        if not self.sync:
-            self.stream.synchronize()
-        self.pending = False
-        a = self.anim
-        obuf_dim = (a.features.acc_height, a.features.acc_stride, 4)
-        out = cuda.from_device(self.d_out, obuf_dim, np.float32)
-        g = a.features.gutter
-        return self.cen_time, out[g:-g,g:-g]
-
-    @staticmethod
-    def _mk_dts(cen_time, cen_cp, ncps):
-        w = cen_cp.temporal_filter_width
-        return [cen_time + w * (t / (ncps - 1.0) - 0.5) for t in range(ncps)]
 
 class Features(object):
     """

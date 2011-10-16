@@ -15,6 +15,7 @@ import argparse
 import multiprocessing
 from subprocess import Popen
 from ctypes import *
+from itertools import ifilter
 
 import numpy as np
 import Image
@@ -47,6 +48,7 @@ def save(args, time, raw):
     noalpha = raw[:,:,:3]
     if args.raw:
         real_stdout.write(buffer(np.uint8(noalpha * 255.0)))
+        sys.stderr.write('.')
         return
 
     name = fmt_filename(args, time)
@@ -161,7 +163,7 @@ def main(args):
         def on_mouse_motion(x, y, dx, dy):
             pass
 
-        frames = anim.render_frames(times, block=False)
+        frames = anim.render_frames(times, sync=args.sync)
         def poll(dt):
             out = next(frames, False)
             if out is False:
@@ -173,14 +175,20 @@ def main(args):
                 imgbuf = np.uint8(buf.flatten() * 255)
                 image.set_data('RGBA', -anim.features.width*4, imgbuf.tostring())
                 label.text = '%s %4g' % (args.name, time)
+            else:
+                label.text += '.'
+            if args.sleep:
+                time.sleep(args.sleep)
 
         pyglet.clock.set_fps_limit(30)
         pyglet.clock.schedule_interval(poll, 1/30.)
         pyglet.app.run()
 
     else:
-        for time, out in anim.render_frames(times):
+        for time, out in ifilter(None, anim.render_frames(times, sync=args.sync)):
             save(args, time, out)
+            if args.sleep:
+                time.sleep(args.sleep)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Render fractal flames.')
