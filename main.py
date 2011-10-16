@@ -69,10 +69,6 @@ def main(args):
     genome_ptr, ngenomes = pyflam3.Genome.from_string(args.flame.read())
     genomes = cast(genome_ptr, POINTER(pyflam3.Genome*ngenomes)).contents
 
-    if not np.all([g.width == genomes[0].width for g in genomes]):
-        error("Inconsistent width. Force with --width.")
-    if not np.all([g.height == genomes[0].height for g in genomes]):
-        error("Inconsistent height. Force with --height.")
 
     if args.qs:
         for g in genomes:
@@ -84,9 +80,15 @@ def main(args):
             args.scale = float(args.width) / genomes[0].width
         for g in genomes:
             g.width = args.width
+    elif not np.all([g.width == genomes[0].width for g in genomes]):
+        error("Inconsistent width. Force with --width.")
+
     if args.height:
         for g in genomes:
             g.height = args.height
+    elif not np.all([g.height == genomes[0].height for g in genomes]):
+        error("Inconsistent height. Force with --height.")
+
     if args.scale:
         for g in genomes:
             g.pixels_per_unit *= args.scale
