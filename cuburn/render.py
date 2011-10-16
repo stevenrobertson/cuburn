@@ -211,6 +211,8 @@ class Animation(object):
         between window refreshes while rendering. Otherwise, tasks will be
         piled asynchronously on the card so that it is always under load.
         """
+        if times == []:
+            return
 
         f = self.features
 
