@@ -247,7 +247,6 @@ void iter(mwc_st *msts, iter_info *infos, uint64_t accbuf_ptr) {
         apply_xf{{features.final_xform_index}}(fx, fy, fcolor, rctx);
         {{endif}}
 
-        // TODO: this may not optimize well, verify.
         float cx, cy;
         {{if features.final_xform_index}}
         {{apply_affine('fx', 'fy', 'cx', 'cy', packer,
