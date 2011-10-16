@@ -176,8 +176,11 @@ def main(args):
         def poll(dt):
             out = next(frames, False)
             if out is False:
-                label.text = "Done. ('q' to quit)"
-                pyglet.clock.unschedule(poll)
+                if args.nopause:
+                    pyglet.app.exit()
+                else:
+                    label.text = "Done. ('q' to quit)"
+                    pyglet.clock.unschedule(poll)
             elif out is not None:
                 real_dt = time.time() - last_time[0]
                 last_time[0] = time.time()
@@ -219,6 +222,8 @@ if __name__ == "__main__":
         help="Do not render any frame for which a .png already exists.")
     parser.add_argument('--raw', action='store_true', dest='raw',
         help="Do not write files; instead, send raw RGBA data to stdout.")
+    parser.add_argument('--nopause', action='store_true',
+        help="Don't pause after rendering when preview is up")
 
     seq = parser.add_argument_group('Sequence options', description="""
         Control which frames are rendered from a genome sequence. If '-k' is
