@@ -11,6 +11,7 @@
 
 import os
 import sys
+import time
 import argparse
 import multiprocessing
 from subprocess import Popen
@@ -73,7 +74,6 @@ def main(args):
 
     genome_ptr, ngenomes = pyflam3.Genome.from_string(args.flame.read())
     genomes = cast(genome_ptr, POINTER(pyflam3.Genome*ngenomes)).contents
-
 
     if args.qs:
         for g in genomes:
@@ -163,6 +163,8 @@ def main(args):
         def on_mouse_motion(x, y, dx, dy):
             pass
 
+        last_time = [time.time()]
+
         frames = anim.render_frames(times, sync=args.sync)
         def poll(dt):
             out = next(frames, False)
@@ -170,11 +172,13 @@ def main(args):
                 label.text = "Done. ('q' to quit)"
                 pyglet.clock.unschedule(poll)
             elif out is not None:
-                time, buf = out
-                save(args, time, buf)
+                real_dt = time.time() - last_time[0]
+                last_time[0] = time.time()
+                ftime, buf = out
+                save(args, ftime, buf)
                 imgbuf = np.uint8(buf.flatten() * 255)
                 image.set_data('RGBA', -anim.features.width*4, imgbuf.tostring())
-                label.text = '%s %4g' % (args.name, time)
+                label.text = '%s %4g (%g fps)' % (args.name, ftime, 1./real_dt)
             else:
                 label.text += '.'
             if args.sleep:
@@ -185,8 +189,8 @@ def main(args):
         pyglet.app.run()
 
     else:
-        for time, out in ifilter(None, anim.render_frames(times, sync=args.sync)):
-            save(args, time, out)
+        for ftime, out in ifilter(None, anim.render_frames(times, sync=args.sync)):
+            save(args, ftime, out)
             if args.sleep:
                 time.sleep(args.sleep)
 
@@ -209,7 +213,7 @@ if __name__ == "__main__":
     parser.add_argument('--raw', action='store_true', dest='raw',
         help="Do not write files; instead, send raw RGBA data to stdout.")
 
-    time = parser.add_argument_group('Sequence options', description="""
+    seq = parser.add_argument_group('Sequence options', description="""
         Control which frames are rendered from a genome sequence. If '-k' is
         not given, '-s' and '-e' act as limits, and any control point with a
         time in bounds is rendered at its central time. If '-k' is given,
@@ -217,14 +221,14 @@ if __name__ == "__main__":
         Python's range operator, as in range(start, end, skip).
 
         If no options are given, all control points are rendered.""")
-    time.add_argument('-s', dest='start', metavar='TIME', type=float,
+    seq.add_argument('-s', dest='start', metavar='TIME', type=float,
         help="Start time of image sequence (inclusive)")
-    time.add_argument('-e', dest='end', metavar='TIME', type=float,
+    seq.add_argument('-e', dest='end', metavar='TIME', type=float,
         help="End time of image sequence (exclusive)")
-    time.add_argument('-k', dest='skip', metavar='TIME', type=float,
+    seq.add_argument('-k', dest='skip', metavar='TIME', type=float,
         help="Skip time between frames in image sequence. Auto-sets "
              "--tempscale, use '--tempscale 1' to override.")
-    time.add_argument('--renumber', metavar="TIME", type=float,
+    seq.add_argument('--renumber', metavar="TIME", type=float,
         dest='renumber', nargs='?', const=0,
         help="Renumber frame times, counting up from the supplied start time "
              "(default is 0).")
