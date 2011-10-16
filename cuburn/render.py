@@ -391,7 +391,7 @@ class Features(object):
     """
     # Constant parameters which control handling of out-of-frame samples:
     # Number of iterations to iterate without write after new point
-    fuse = 20
+    fuse = 10
     # Maximum consecutive out-of-bounds points before picking new point
     max_oob = 10
     max_nxforms = 12
