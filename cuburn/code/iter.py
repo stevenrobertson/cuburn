@@ -118,6 +118,10 @@ void apply_xf{{xfid}}(float &ox, float &oy, float &color, mwc_st &rctx) {
     }
     {{endfor}}
 
+    {{if xform.has_post}}
+    tx = ox;
+    ty = oy;
+    {{apply_affine_flam3('tx', 'ty', 'ox', 'oy', px, 'xf.post', 'post')}}
     {{endif}}
 
     float csp = {{px.get('xf.color_speed')}};

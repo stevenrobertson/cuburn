@@ -458,9 +458,15 @@ class XFormFeatures(object):
     def __init__(self, xforms, xform_id):
         self.id = xform_id
         any = lambda l: bool(filter(None, map(l, xforms)))
-        self.has_post = any(lambda xf: getattr(xf, 'post', None))
+
+        self.has_post = any(lambda xf: not self.id_matrix(xf.post))
         self.vars = set()
         for x in xforms:
             self.vars = (
                 self.vars.union(set([i for i, v in enumerate(x.var) if v])))
+
+    @staticmethod
+    def id_matrix(m):
+        return (m[0][0] == 1 and m[1][0] == 0 and m[2][0] == 0 and
+                m[0][1] == 0 and m[1][1] == 1 and m[2][1] == 0)
 
