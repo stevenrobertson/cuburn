@@ -40,13 +40,16 @@ def fmt_time(time):
         return '%s_%03d' % (dcml, frac)
     return dcml
 
+def fmt_filename(args, time):
+    return os.path.join(args.dir, '%s_%s' % (args.name, fmt_time(time)))
+
 def save(args, time, raw):
     noalpha = raw[:,:,:3]
     if args.raw:
         real_stdout.write(buffer(np.uint8(noalpha * 255.0)))
         return
 
-    name = os.path.join(args.dir, '%s_%s' % (args.name, fmt_time(time)))
+    name = fmt_filename(args, time)
     img = scipy.misc.toimage(noalpha, cmin=0, cmax=1)
     img.save(name+'.png')
 
@@ -124,9 +127,10 @@ def main(args):
                  if (args.start is None or t >= args.start)
                  and (args.end is None or t < args.end)]
 
-    render._AnimRenderer.sync = args.sync or args.sleep
-    if args.sleep:
-        render._AnimRenderer.sleep = args.sleep / 1000.
+    if args.resume:
+        times = [t for t in times
+                 if not os.path.isfile(fmt_filename(args, t)+'.png')]
+
     anim = render.Animation(genomes)
     if args.debug:
         anim.cmp_options.append('-G')
@@ -192,6 +196,8 @@ if __name__ == "__main__":
         help="Prefix to use when saving files (default is basename of input)")
     parser.add_argument('-o', metavar='DIR', type=str, dest='dir',
         help="Output directory", default='.')
+    parser.add_argument('--resume', action='store_true', dest='resume',
+        help="Do not render any frame for which a .png already exists.")
     parser.add_argument('--raw', action='store_true', dest='raw',
         help="Do not write files; instead, send raw RGBA data to stdout.")
 
@@ -226,7 +232,6 @@ if __name__ == "__main__":
         help="Use this width. Auto-sets scale, use '--scale 1' to override.")
     genome.add_argument('--height', type=int, metavar='PIXELS',
         help="Use this height (does *not* auto-set scale)")
-
 
     debug = parser.add_argument_group('Debug options')
     debug.add_argument('--test', action='store_true', dest='test',
