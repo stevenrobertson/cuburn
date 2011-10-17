@@ -47,7 +47,7 @@ __device__ float mwc_next_11(mwc_st &st) {
             rand = np.random
 
         # Load raw big-endian u32 multipliers from primes.bin.
-        with open('primes.bin') as primefp:
+        with open('primes.bin', 'rb') as primefp:
             dt = np.dtype(np.uint32).newbyteorder('B')
             mults = np.frombuffer(primefp.read(), dtype=dt)
 
