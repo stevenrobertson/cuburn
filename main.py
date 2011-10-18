@@ -111,7 +111,7 @@ def main(args):
             args.name = os.path.splitext(os.path.basename(args.flame.name))[0]
 
     cp_times = [cp.time for cp in genomes]
-    if args.renumber:
+    if args.renumber is not None:
         for t, g in enumerate(genomes):
             g.time = t - args.renumber
         cp_times = [cp.time for cp in genomes]
