@@ -192,7 +192,7 @@ def main(args):
             else:
                 label.text += '.'
             if args.sleep:
-                time.sleep(args.sleep)
+                time.sleep(args.sleep / 1000.)
 
         pyglet.clock.set_fps_limit(30)
         pyglet.clock.schedule_interval(poll, 1/30.)
@@ -202,7 +202,7 @@ def main(args):
         for ftime, out in ifilter(None, anim.render_frames(times, sync=args.sync)):
             save(args, ftime, out)
             if args.sleep:
-                time.sleep(args.sleep)
+                time.sleep(args.sleep / 1000.)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Render fractal flames.')
