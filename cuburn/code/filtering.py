@@ -11,7 +11,7 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
                float linrange, float lingam, float3 bkgd) {
     // TODO: test if over an edge of the framebuffer - currently gutters are
     // used and up to 256 pixels are ignored, which breaks when width<256
-    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    int i = (gridDim.x * blockIdx.y + blockIdx.x) * blockDim.x + threadIdx.x;
     float4 pix = pixbuf[i];
 
     if (pix.w <= 0) {

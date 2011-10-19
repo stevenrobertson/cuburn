@@ -103,7 +103,7 @@ uint32_t trunca(float f) {
 
 __global__
 void zero_dptr(float* dptr, int size) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int i = (gridDim.x * blockIdx.y + blockIdx.x) * blockDim.x + threadIdx.x;
     if (i < size) {
         dptr[i] = 0.0f;
     }
@@ -161,8 +161,9 @@ void write_half(float &xy, float x, float y, float den) {
         number of 4-byte words in the pointer.
         """
         zero = mod.get_function("zero_dptr")
+        blocks = int(np.ceil(np.sqrt(size / 1024 + 1)))
         zero(dptr, np.int32(size), stream=stream,
-             block=(1024, 1, 1), grid=(size/1024+1, 1))
+             block=(1024, 1, 1), grid=(blocks, blocks, 1))
 
 class DataPackerView(object):
     """

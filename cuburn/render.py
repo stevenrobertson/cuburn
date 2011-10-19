@@ -337,8 +337,9 @@ class Animation(object):
             bkgd = vec.make_float3(*(bkgd / n))
 
             color_fun = self.mod.get_function("colorclip")
+            blocks = int(np.ceil(np.sqrt(nbins / 256)))
             color_fun(d_out, gam, vib, hipow, lin, lingam, bkgd,
-                      block=(256, 1, 1), grid=(nbins / 256, 1),
+                      block=(256, 1, 1), grid=(blocks, blocks),
                       stream=filt_stream)
             cuda.memcpy_dtoh_async(h_out, d_out, filt_stream)
 
