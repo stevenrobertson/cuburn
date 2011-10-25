@@ -2,8 +2,8 @@
 from cuburn.code.util import *
 
 class ColorClip(HunkOCode):
-    def __init__(self, features):
-        self.defs = self.defs_tmpl.substitute(features=features)
+    def __init__(self, info):
+        self.defs = self.defs_tmpl.substitute(info=info)
 
     defs_tmpl = Template('''
 __global__
@@ -63,7 +63,7 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
     pix.y += (1.0f - vibrancy) * powf(opix.y, gamma);
     pix.z += (1.0f - vibrancy) * powf(opix.z, gamma);
 
-    {{if features.alpha_output_channel}}
+    {{if info.alpha_output_channel}}
     float 1_alpha = 1 / alpha;
     pix.x *= 1_alpha;
     pix.y *= 1_alpha;
@@ -94,13 +94,13 @@ class DensityEst(HunkOCode):
     # Note, changing this does not yet have any effect, it's just informational
     MAX_WIDTH=15
 
-    def __init__(self, features, cp):
-        self.features, self.cp = features, cp
+    def __init__(self, info):
+        self.info = info
 
     headers = "#include<math_constants.h>\n"
     @property
     def defs(self):
-        return self.defs_tmpl.substitute(features=self.features, cp=self.cp)
+        return self.defs_tmpl.substitute(info=self.info)
 
     defs_tmpl = Template('''
 #define W 15        // Filter width (regardless of standard deviation chosen)
@@ -147,9 +147,9 @@ void density_est(float4 *pixbuf, float4 *outbuf,
         de_r[i] = de_g[i] = de_b[i] = de_a[i] = 0.0f;
     __syncthreads();
 
-    for (int imrow = threadIdx.y + W2; imrow < {{features.acc_height}}; imrow += 32)
+    for (int imrow = threadIdx.y + W2; imrow < {{info.acc_height}}; imrow += 32)
     {
-        int idx = {{features.acc_stride}} * imrow +
+        int idx = {{info.acc_stride}} * imrow +
                 + blockIdx.x * 32 + threadIdx.x + W2;
 
         float4 in = pixbuf[idx];
@@ -249,7 +249,7 @@ void density_est(float4 *pixbuf, float4 *outbuf,
         __syncthreads();
         // TODO: could coalesce this, but what a pain
         for (int i = threadIdx.x; i < FW; i += 32) {
-            idx = {{features.acc_stride}} * imrow + blockIdx.x * 32 + i + W2;
+            idx = {{info.acc_stride}} * imrow + blockIdx.x * 32 + i + W2;
             int si = threadIdx.y * FW + i;
             float *out = reinterpret_cast<float*>(&outbuf[idx]);
             atomicAdd(out,   de_r[si]);
@@ -285,12 +285,14 @@ void density_est(float4 *pixbuf, float4 *outbuf,
         # TODO: add no-est version
         # TODO: come up with a general way to average these parameters
 
-        k1 = np.float32(cp.brightness * 268 / 256)
-        area = self.features.width * self.features.height / cp.ppu ** 2
-        k2 = np.float32(1 / (area * cp.adj_density ))
+        k1 = np.float32(cp.color.brightness * 268 / 256)
+        # Old definition of area is (w*h/(s*s)). Since new scale 'ns' is now
+        # s/w, new definition is (w*h/(s*s*w*w)) = (h/(s*s*w))
+        area = self.info.height / (cp.camera.scale ** 2 * self.info.width)
+        k2 = np.float32(1 / (area * self.info.density ))
 
-        if self.cp.estimator == 0:
-            nbins = self.features.acc_height * self.features.acc_stride
+        if cp.de.radius == 0:
+            nbins = self.info.acc_height * self.info.acc_stride
             fun = mod.get_function("logscale")
             t = fun(abufd, obufd, k1, k2,
                     block=(512, 1, 1), grid=(nbins/512, 1), stream=stream)
@@ -299,11 +301,11 @@ void density_est(float4 *pixbuf, float4 *outbuf,
             # 0.5, but the DE filters scale filter distance by the default
             # spatial support factor of 1.5, so the effective base SD is
             # (0.5/1.5)=1/3.
-            est_sd = np.float32(cp.estimator / 3.)
-            neg_est_curve = np.float32(-cp.estimator_curve)
-            est_min = np.float32(cp.estimator_minimum / 3.)
+            est_sd = np.float32(cp.de.radius / 3.)
+            neg_est_curve = np.float32(-cp.de.curve)
+            est_min = np.float32(cp.de.minimum / 3.)
             fun = mod.get_function("density_est")
             fun(abufd, obufd, est_sd, neg_est_curve, est_min, k1, k2,
-                block=(32, 32, 1), grid=(self.features.acc_width/32, 1),
+                block=(32, 32, 1), grid=(self.info.acc_width/32, 1),
                 stream=stream)
 

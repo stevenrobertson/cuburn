@@ -1,11 +1,32 @@
-import tempita
+import numpy as np
 
-var_nos = {}
+from cuburn.code.util import Template
+
 var_code = {}
+var_params = {}
 
-def var(num, name, code):
-    var_nos[num] = name
-    var_code[name] = tempita.Template(code)
+def var(num, name, code, params=None):
+    var_code[name] = Template(code)
+    if params is not None:
+        r = {}
+        for p in params.split():
+            if '=' in p:
+                p, default = p.split('=')
+                if default == 'M_PI':
+                    default = np.pi
+                else:
+                    default = float(default)
+            else:
+                default = 0.0
+            r[p] = default
+        var_params[name] = r
+
+# TODO: This is a shitty hack
+def precalc(name, code):
+    def precalc_fun(pv):
+        pre = pv._precalc()
+        pre._code(Template(code).substitute(pre=pre))
+    Template.default_namespace[name+'_precalc'] = precalc_fun
 
 # Variables note: all functions will have their weights as 'w',
 # input variables 'tx' and 'ty', and output 'ox' and 'oy' available
@@ -119,10 +140,10 @@ var(14, 'bent', """
     """)
 
 var(15, 'waves', """
-    float c10 = {{px.get(None, 'pre_xy')}};
-    float c11 = {{px.get(None, 'pre_yy')}};
-    float dx = {{px.get(None, 'pre_xo')}};
-    float dy = {{px.get(None, 'pre_yo')}};
+    float c10 = {{px.affine.xy}};
+    float c11 = {{px.affine.yy}};
+    float dx = {{px.affine.xo}};
+    float dy = {{px.affine.yo}};
     float dx2 = 1.0f / (dx * dx);
     float dy2 = 1.0f / (dy * dy);
 
@@ -140,8 +161,8 @@ var(16, 'fisheye', """
 var(17, 'popcorn', """
     float dx = tanf(3.0f*ty);
     float dy = tanf(3.0f*tx);
-    ox += w * (tx + {{px.get(None, 'pre_xo')}} * sinf(dx));
-    oy += w * (ty + {{px.get(None, 'pre_yo')}} * sinf(dy));
+    ox += w * (tx + {{px.affine.xo}} * sinf(dx));
+    oy += w * (ty + {{px.affine.yo}} * sinf(dy));
     """)
 
 var(18, 'exponential', """
@@ -166,7 +187,7 @@ var(20, 'cosine', """
     """)
 
 var(21, 'rings', """
-    float dx = {{px.get(None, 'pre_xo')}} * {{px.get(None, 'pre_xo')}};
+    float dx = {{px.affine.xo}} * {{px.affine.xo}};
     float r = sqrtf(tx*tx + ty*ty);
     float a = atan2f(tx, ty);
     r = w * (fmodf(r+dx, 2.0f*dx) - dx + r * (1.0f - dx));
@@ -175,9 +196,9 @@ var(21, 'rings', """
     """)
 
 var(22, 'fan', """
-    float dx = M_PI * ({{px.get(None, 'pre_xo')}} * {{px.get(None, 'pre_xo')}});
+    float dx = M_PI * ({{px.affine.xo}} * {{px.affine.xo}});
     float dx2 = 0.5f * dx;
-    float dy = {{px.get(None, 'pre_yo')}};
+    float dy = {{px.affine.yo}};
     float a = atan2f(tx, ty);
     a += (fmodf(a+dy, dx) > dx2) ? -dx2 : dx2;
     float r = w * sqrtf(tx*tx + ty*ty);
@@ -188,24 +209,24 @@ var(22, 'fan', """
 var(23, 'blob', """
     float r = sqrtf(tx*tx + ty*ty);
     float a = atan2f(tx, ty);
-    float bdiff = 0.5f * ({{px.get('xf.blob_high - xf.blob_low','blob_diff')}});
-    r *= w * ({{px.get('xf.blob_low')}} + bdiff * (1.0f + sinf({{px.get('xf.blob_waves')}} * a)));
+    float bdiff = 0.5f * ({{pv.high}} - {{pv.low}});
+    r *= w * ({{pv.low}} + bdiff * (1.0f + sinf({{pv.waves}} * a)));
     ox += sinf(a) * r;
     oy += cosf(a) * r;
-    """)
+    """, 'low high=1 waves=1')
 
 var(24, 'pdj', """
-    float nx1 = cosf({{px.get('xf.pdj_b')}} * tx);
-    float nx2 = sinf({{px.get('xf.pdj_c')}} * tx);
-    float ny1 = sinf({{px.get('xf.pdj_a')}} * ty);
-    float ny2 = cosf({{px.get('xf.pdj_d')}} * ty);
+    float nx1 = cosf({{pv.b}} * tx);
+    float nx2 = sinf({{pv.c}} * tx);
+    float ny1 = sinf({{pv.a}} * ty);
+    float ny2 = cosf({{pv.d}} * ty);
     ox += w * (ny1 - nx1);
     oy += w * (nx2 - ny2);
-    """)
+    """, 'a b c d')
 
 var(25, 'fan2', """
-    float dy = {{px.get('xf.fan2_y')}};
-    float dx = M_PI * {{px.get('xf.fan2_x')}} * {{px.get('xf.fan2_x')}};
+    float dy = {{pv.y}};
+    float dx = M_PI * {{pv.x}} * {{pv.x}};
     float dx2 = 0.5f * dx;
     float a = atan2f(tx, ty);
     float r = w * sqrtf(tx*tx + ty*ty);
@@ -217,16 +238,16 @@ var(25, 'fan2', """
 
     ox += r * sinf(a);
     oy += r * cosf(a);
-    """)
+    """, 'x y')
 
 var(26, 'rings2', """
-    float dx = {{px.get('xf.rings2_val')}} * {{px.get('xf.rings2_val')}};
+    float dx = {{pv.val}} * {{pv.val}};
     float r = sqrtf(tx*tx + ty*ty);
     float a = atan2f(tx, ty);
     r += -2.0f * dx * (int)((r+dx)/(2.0f*dx)) + r * (1.0f - dx);
     ox += w * sinf(a) * r;
     oy += w * cosf(a) * r;
-    """)
+    """, 'val')
 
 var(27, 'eyefish', """
     float r = 2.0f * w / (sqrtf(tx*tx + ty*ty) + 1.0f);
@@ -245,16 +266,21 @@ var(29, 'cylinder', """
     oy += w * ty;
     """)
 
-var(30, 'perspective', """
-    float pdist = {{px.get('xf.perspective_dist')}};
-    float pvsin = {{px.get('np.sin(xf.perspective_angle*np.pi/2)', 'pvsin')}};
-    float pvfcos = {{px.get(
-        'xf.perspective_dist*np.cos(xf.perspective_angle*np.pi/2)', 'pvfcos')}};
+precalc('perspective', """
+        float pang = {{pre.angle}} * M_PI_2;
+        float pdist = fmaxf(1e-9, {{pre.dist}});
+        {{pre._set('mdist')}} = pdist;
+        {{pre._set('sin')}} = sin(pang);
+        {{pre._set('cos')}} = pdist * cos(pang);
+        """)
 
-    float t = 1.0f / (pdist - ty * pvsin);
-    ox += w * pdist * tx * t;
-    oy += w * pvfcos * ty * t;
-    """)
+var(30, 'perspective', """
+    {{perspective_precalc(pv)}}
+
+    float t = 1.0f / ({{pv.mdist}} - ty * {{pv.sin}});
+    ox += w * {{pv.mdist}} * tx * t;
+    oy += w * {{pv.cos}} * ty * t;
+    """, 'angle dist')
 
 var(31, 'noise', """
     float tmpr = mwc_next_01(rctx) * 2.0f * M_PI;
@@ -263,33 +289,39 @@ var(31, 'noise', """
     oy += ty * r * sinf(tmpr);
     """)
 
+precalc('julian',
+        "{{pre._set('cn')}} = {{pre.dist}} / (2.0f * {{pre.power}});\n")
+
 var(32, 'julian', """
-    float power = {{px.get('xf.julian_power')}};
+    {{julina_precalc(pv)}}
+    float power = {{pv.power}};
     float t_rnd = truncf(mwc_next_01(rctx) * fabsf(power));
     float a = atan2f(ty, tx);
     float tmpr = (a + 2.0f * M_PI * t_rnd) / power;
-    float cn = {{px.get('xf.julian_dist / xf.julian_power / 2', 'julian_cn')}};
+    float cn = {{pv.cn}};
     float r = w * powf(tx * tx + ty * ty, cn);
 
     ox += r * cosf(tmpr);
     oy += r * sinf(tmpr);
-    """)
+    """, 'power=1 dist=1')
+
+precalc('juliascope',
+        "{{pre._set('cn')}} = {{pre.dist}} / (2.0f * {{pre.power}});\n")
 
 var(33, 'juliascope', """
+    {{juliascope_precalc(pv)}}
+
     float ang = atan2f(ty, tx);
-    float power = {{px.get('xf.juliascope_power', 'juscope_power')}};
+    float power = {{pv.power}};
     float t_rnd = truncf(mwc_next_01(rctx) * fabsf(power));
     // TODO: don't draw the extra random number
     if (mwc_next(rctx) & 1) ang = -ang;
     float tmpr = (2.0f * M_PI * t_rnd + ang) / power;
-
-    float cn = {{px.get('xf.juliascope_dist / xf.juliascope_power / 2',
-                         'juscope_cn')}};
-    float r = w * powf(tx * tx + ty * ty, cn);
+    float r = w * powf(tx * tx + ty * ty, {{pv.cn}});
 
     ox += r * cosf(tmpr);
     oy += r * sinf(tmpr);
-    """)
+    """, 'power=1 dist=1')
 
 var(34, 'blur', """
     float tmpr = mwc_next_01(rctx) * 2.0f * M_PI;
@@ -300,40 +332,39 @@ var(34, 'blur', """
 
 var(35, 'gaussian', """
     float ang = mwc_next_01(rctx) * 2.0f * M_PI;
-    float r = w * ( mwc_next_01(rctx) + mwc_next_01(rctx)
-                  + mwc_next_01(rctx) + mwc_next_01(rctx) - 2.0f );
+    float r = w * sqrtf(-2.0f * log2f(mwc_next_01(rctx)) / M_LOG2E);
     ox += r * cosf(ang);
     oy += r * sinf(ang);
     """)
 
 var(36, 'radial_blur', """
-    float blur_angle = {{px.get('xf.radial_blur_angle')}} * M_PI * 0.5f;
+    float blur_angle = {{pv.angle}} * M_PI * 0.5f;
     float spinvar = sinf(blur_angle);
     float zoomvar = cosf(blur_angle);
-    float r = w * ( mwc_next_01(rctx) + mwc_next_01(rctx)
-                   + mwc_next_01(rctx) + mwc_next_01(rctx) - 2.0f );
+
+    float r = w * sqrtf(-2.0f * log2f(mwc_next_01(rctx)) / M_LOG2E);
     float ra = sqrtf(tx*tx + ty*ty);
     float tmpa = atan2f(ty, tx) + spinvar * r;
     float rz = zoomvar * r - 1.0f;
     ox += ra*cosf(tmpa) + rz*tx;
     oy += ra*sinf(tmpa) + rz*ty;
-    """)
+    """, 'angle')
 
 var(37, 'pie', """
-    float slices = {{px.get('xf.pie_slices')}};
+    float slices = {{pv.slices}};
     float sl = truncf(mwc_next_01(rctx) * slices + 0.5f);
-    float a = {{px.get('xf.pie_rotation')}} +
-                2.0f * M_PI * (sl + mwc_next_01(rctx) * {{px.get('xf.pie_thickness')}}) / slices;
+    float a = {{pv.rotation}} +
+                2.0f * M_PI * (sl + mwc_next_01(rctx) * {{pv.thickness}}) / slices;
     float r = w * mwc_next_01(rctx);
     ox += r * cosf(a);
     oy += r * sinf(a);
-    """)
+    """, 'slices=6 rotation thickness=0.5')
 
 var(38, 'ngon', """
-    float power = {{px.get('xf.ngon_power')}} * 0.5f;
-    float b = 2.0f * M_PI / {{px.get('xf.ngon_sides')}};
-    float corners = {{px.get('xf.ngon_corners')}};
-    float circle = {{px.get('xf.ngon_circle')}};
+    float power = {{pv.power}} * 0.5f;
+    float b = 2.0f * M_PI / {{pv.sides}};
+    float corners = {{pv.corners}};
+    float circle = {{pv.circle}};
 
     float r_factor = powf(tx*tx + ty*ty, power);
     float theta = atan2f(ty, tx);
@@ -343,11 +374,11 @@ var(38, 'ngon', """
 
     ox += w * tx * amp;
     oy += w * ty * amp;
-    """)
+    """, 'sides=5 power=3 circle=1 corners=2')
 
 var(39, 'curl', """
-    float c1 = {{px.get('xf.curl_c1')}};
-    float c2 = {{px.get('xf.curl_c2')}};
+    float c1 = {{pv.c1}};
+    float c2 = {{pv.c2}};
 
     float re = 1.0f + c1*tx + c2*(tx*tx - ty*ty);
     float im = c1*ty + 2.0f*c2*tx*ty;
@@ -355,15 +386,15 @@ var(39, 'curl', """
 
     ox += r * (tx*re + ty*im);
     oy += r * (ty*re - tx*im);
-    """)
+    """, 'c1=1 c2')
 
 var(40, 'rectangles', """
-    float rx = {{px.get('xf.rectangles_x')}};
-    float ry = {{px.get('xf.rectangles_y')}};
+    float rx = {{pv.x}};
+    float ry = {{pv.y}};
 
     ox += w * ( (rx==0.0f) ? tx : rx * (2.0f * floorf(tx/rx) + 1.0f) - tx);
     oy += w * ( (ry==0.0f) ? ty : ry * (2.0f * floorf(ty/ry) + 1.0f) - ty);
-    """)
+    """, 'x y')
 
 var(41, 'arch', """
     float ang = mwc_next_01(rctx) * w * M_PI;
@@ -417,9 +448,8 @@ var(48, 'cross', """
     """)
 
 var(49, 'disc2', """
-    float twist = {{px.get('xf.disc2_twist')}};
-    float rotpi = {{px.get('xf.disc2_rot', 'disc2_rotpi')}};
-    rotpi *= M_PI;
+    float twist = {{pv.twist}}
+    float rotpi = {{pv.rot}} * M_PI;
 
     float sintwist = sinf(twist);
     float costwist = cosf(twist) - 1.0f;
@@ -441,70 +471,71 @@ var(49, 'disc2', """
 
     ox += r * (sinf(t) + costwist);
     oy += r * (cosf(t) + sintwist);
-    """)
+    """, 'rot twist')
 
 var(50, 'super_shape', """
     float ang = atan2f(ty, tx);
-    float theta = 0.25f * ({{px.get('xf.super_shape_m')}} * ang + M_PI);
+    float theta = 0.25f * ({{pv.m}} * ang + M_PI);
     float t1 = fabsf(cosf(theta));
     float t2 = fabsf(sinf(theta));
-    t1 = powf(t1,{{px.get('xf.super_shape_n2')}});
-    t2 = powf(t2,{{px.get('xf.super_shape_n3')}});
-    float myrnd = {{px.get('xf.super_shape_rnd')}};
+    t1 = powf(t1, {{pv.n2}});
+    t2 = powf(t2, {{pv.n3}});
+    float myrnd = {{pv.rnd}};
     float d = sqrtf(tx*tx+ty*ty);
 
-    float r = w * ((myrnd*mwc_next_01(rctx) + (1.0f-myrnd)*d) - {{px.get('xf.super_shape_holes')}})
-                * powf(t1+t2, {{px.get('-1.0 / xf.super_shape_n1', 'super_shape_pneg')}}) / d;
+    float r = w * ((myrnd*mwc_next_01(rctx) + (1.0f-myrnd)*d) - {{pv.holes}})
+                * powf(t1+t2, -1.0f / {{pv.n1}}) / d;
 
     ox += r * tx;
     oy += r * ty;
-    """)
+    """, 'rnd m n1=1 n2=1 n3=1 holes')
 
 var(51, 'flower', """
-    float holes = {{px.get('xf.flower_holes')}};
-    float petals = {{px.get('xf.flower_petals')}};
+    float holes = {{pv.holes}};
+    float petals = {{pv.petals}};
 
-    float r = w * (mwc_next_01(rctx) - holes) * cosf(petals*atan2f(ty, tx)) / sqrtf(tx*tx + ty*ty);
+    float r = w * (mwc_next_01(rctx) - holes)
+                * cosf(petals*atan2f(ty, tx)) / sqrtf(tx*tx + ty*ty);
 
     ox += r * tx;
     oy += r * ty;
-    """)
+    """, 'holes petals')
 
 var(52, 'conic', """
     float d = sqrtf(tx*tx + ty*ty);
     float ct = tx / d;
-    float holes = {{px.get('xf.conic_holes')}};
-    float eccen = {{px.get('xf.conic_eccentricity')}};
+    float holes = {{pv.holes}};
+    float eccen = {{pv.eccentricity}};
 
     float r = w * (mwc_next_01(rctx) - holes) * eccen / (1.0f + eccen*ct) / d;
 
     ox += r * tx;
     oy += r * ty;
-    """)
+    """, 'holes eccentricity=1')
 
 var(53, 'parabola', """
     float r = sqrtf(tx*tx + ty*ty);
     float sr = sinf(r);
     float cr = cosf(r);
 
-    ox += {{px.get('xf.parabola_height')}} * w * sr * sr * mwc_next_01(rctx);
-    oy += {{px.get('xf.parabola_width')}} * w * cr * mwc_next_01(rctx);
-    """)
+    ox += {{pv.height}} * w * sr * sr * mwc_next_01(rctx);
+    oy += {{pv.width}}  * w * cr * mwc_next_01(rctx);
+    """, 'height width')
 
 var(54, 'bent2', """
     float nx = 1.0f;
-    if (tx < 0.0f) nx = {{px.get('xf.bent2_x')}};
+    if (tx < 0.0f) nx = {{pv.x}};
     float ny = 1.0f;
-    if (ty < 0.0f) ny = {{px.get('xf.bent2_y')}};
+    if (ty < 0.0f) ny = {{pv.y}};
     ox += w * nx * tx;
     oy += w * ny * ty;
-    """)
+    """, 'x=1 y=1')
 
 var(55, 'bipolar', """
     float x2y2 = tx*tx + ty*ty;
     float t = x2y2 + 1.0f;
     float x2 = tx * 2.0f;
-    float ps = -M_PI_2 * {{px.get('xf.bipolar_shift')}};
+    float ps = -M_PI_2 * {{pv.shift}};
     float y = 0.5f * atan2f(2.0f * ty, x2y2 - 1.0f) + ps;
 
     if (y > M_PI_2)
@@ -514,7 +545,7 @@ var(55, 'bipolar', """
 
     ox += w * 0.25f * M_2_PI * logf( (t+x2) / (t-x2) );
     oy += w * M_2_PI * y;
-    """)
+    """, 'shift')
 
 var(56, 'boarders', """
     float roundX = rintf(tx);
@@ -556,7 +587,7 @@ var(57, 'butterfly', """
     """)
 
 var(58, 'cell', """
-    float cell_size = {{px.get('xf.cell_size')}};
+    float cell_size = {{pv.size}};
     float inv_cell_size = 1.0f/cell_size;
 
     /* calculate input cell */
@@ -588,31 +619,35 @@ var(58, 'cell', """
 
     ox += w * (dx + x*cell_size);
     oy -= w * (dy + y*cell_size);
-    """)
+    """, 'size=1')
 
 var(59, 'cpow', """
     float a = atan2f(ty, tx);
     float lnr = 0.5f * logf(tx*tx+ty*ty);
-    float power = {{px.get('xf.cpow_power')}};
+    float power = {{pv.power}};
     float va = 2.0f * M_PI / power;
-    float vc = {{px.get('xf.cpow_r')}} / power;
-    float vd = {{px.get('xf.cpow_i')}} / power;
+    float vc = {{pv.cpow_r}} / power;
+    float vd = {{pv.cpow_i}} / power;
     float ang = vc*a + vd*lnr + va*floorf(power*mwc_next_01(rctx));
     float m = w * expf(vc * lnr - vd * a);
     ox += m * cosf(ang);
     oy += m * sinf(ang);
-    """)
+    """, 'r=1 i power=1')
+
+
+precalc('curve', '''
+        float xl = {{pv.xlength}}, yl = {{pv.ylength}};
+        {{pre._set('x2')}} = 1.0f / max(1e-20f, xl * xl);
+        {{pre._set('y2')}} = 1.0f / max(1e-20f, yl * yl);
+        ''')
 
 var(60, 'curve', """
-    float pc_xlen = {{px.get('xf.curve_xlength * xf.curve_xlength','pc_xlen')}};
-    float pc_ylen = {{px.get('xf.curve_ylength * xf.curve_ylength','pc_ylen')}};
+    {{curve_precalc()}}
+    float pc_xlen = {{pv.x2}}, pc_ylen = {{pv.y2}};
 
-    if (pc_xlen<1E-20f) pc_xlen = 1E-20f;
-    if (pc_ylen<1E-20f) pc_ylen = 1E-20f;
-
-    ox += w * (tx + {{px.get('xf.curve_xamp')}} * expf(-ty*ty/pc_xlen));
-    oy += w * (ty + {{px.get('xf.curve_yamp')}} * expf(-tx*tx/pc_ylen));
-    """)
+    ox += w * (tx + {{pv.xamp}} * expf(-ty*ty*pc_xlen));
+    oy += w * (ty + {{pv.yamp}} * expf(-tx*tx*pc_ylen));
+    """, 'xamp yamp xlength=1 ylength=1')
 
 var(61, 'edisc', """
     float tmp = tx*tx + ty*ty + 1.0f;
@@ -662,7 +697,7 @@ var(62, 'elliptic', """
 var(63, 'escher', """
     float a = atan2f(ty,tx);
     float lnr = 0.5f * logf(tx*tx + ty*ty);
-    float ebeta = {{px.get('xf.escher_beta')}};
+    float ebeta = {{pv.beta}};
     float seb = sinf(ebeta);
     float ceb = cosf(ebeta);
     float vc = 0.5f * (1.0f + ceb);
@@ -672,7 +707,7 @@ var(63, 'escher', """
 
     ox += m * cosf(n);
     oy += m * sinf(n);
-    """)
+    """, 'beta')
 
 var(64, 'foci', """
     float expx = expf(tx) * 0.5f;
@@ -685,27 +720,26 @@ var(64, 'foci', """
     """)
 
 var(65, 'lazysusan', """
-    float lx = {{px.get('xf.lazysusan_x')}};
-    float ly = {{px.get('xf.lazysusan_y')}};
+    float lx = {{pv.x}};
+    float ly = {{pv.y}};
     float x = tx - lx;
     float y = ty + ly;
     float r = sqrtf(x*x + y*y);
 
     if (r < w) {
-        float a = atan2f(y,x) + {{px.get('xf.lazysusan_spin')}} +
-                 {{px.get('xf.lazysusan_twist')}}*(w-r);
+        float a = atan2f(y,x) + {{pv.spin}} + {{pv.twist}} * (w - r);
         r = w * r;
 
         ox += r * cosf(a) + lx;
         oy += r * sinf(a) - ly;
 
     } else {
-        r = w * (1.0f + {{px.get('xf.lazysusan_space')}} / r);
+        r = w * (1.0f + {{pv.space}} / r);
 
         ox += r * x + lx;
         oy += r * y - ly;
     }
-    """)
+    """, 'x y twist space spin')
 
 var(66, 'loonie', """
     float r2 = tx*tx + ty*ty;;
@@ -732,8 +766,7 @@ var(67, 'pre_blur', """
     """)
 
 var(68, 'modulus', """
-    float mx = {{px.get('xf.modulus_x')}};
-    float my = {{px.get('xf.modulus_y')}};
+    float mx = {{pv.x}}, my = {{pv.y}};
     float xr = 2.0f*mx;
     float yr = 2.0f*my;
 
@@ -750,13 +783,13 @@ var(68, 'modulus', """
         oy += w * ( my - fmodf(my - ty, yr));
     else
         oy += w * ty;
-    """)
+    """, 'x y')
 
 var(69, 'oscope', """
-    float tpf = 2.0f * M_PI * {{px.get('xf.oscope_frequency')}};
-    float amp = {{px.get('xf.oscope_amplitude')}};
-    float sep = {{px.get('xf.oscope_separation')}};
-    float dmp = {{px.get('xf.oscope_damping')}};
+    float tpf = 2.0f * M_PI * {{pv.frequency}};
+    float amp = {{pv.amplitude}};
+    float sep = {{pv.separation}};
+    float dmp = {{pv.damping}};
 
     float t = amp * expf(-fabsf(tx)*dmp) * cosf(tpf*tx) + sep;
 
@@ -765,7 +798,7 @@ var(69, 'oscope', """
         oy -= w*ty;
     else
         oy += w*ty;
-    """)
+    """, 'separation=1 frequency=M_PI amplitude=1 damping')
 
 var(70, 'polar2', """
     float p2v = w / M_PI;
@@ -774,10 +807,10 @@ var(70, 'polar2', """
     """)
 
 var(71, 'popcorn2', """
-    float c = {{px.get('xf.popcorn2_c')}};
-    ox += w * (tx + {{px.get('xf.popcorn2_x')}} * sinf(tanf(ty*c)));
-    oy += w * (ty + {{px.get('xf.popcorn2_y')}} * sinf(tanf(tx*c)));
-    """)
+    float c = {{pv.c}};
+    ox += w * (tx + {{pv.x}} * sinf(tanf(ty*c)));
+    oy += w * (ty + {{pv.y}} * sinf(tanf(tx*c)));
+    """, 'x y c')
 
 var(72, 'scry', """
     /* note that scry does not multiply by weight, but as the */
@@ -790,68 +823,61 @@ var(72, 'scry', """
     """)
 
 var(73, 'separation', """
-    float sx2 = {{px.get('xf.separation_x * xf.separation_x', 'sx2')}};
-    float sy2 = {{px.get('xf.separation_y * xf.separation_y', 'sy2')}};
+    float sx2 = {{pv.x}} * {{pv.x}};
+    float sy2 = {{pv.y}} * {{pv.y}};
 
     if (tx > 0.0f)
-        ox += w * (sqrtf(tx*tx + sx2) - tx*{{px.get('xf.separation_xinside')}});
+        ox += w * (sqrtf(tx*tx + sx2) - tx*{{pv.xinside}});
     else
-        ox -= w * (sqrtf(tx*tx + sx2) + tx*{{px.get('xf.separation_xinside')}});
+        ox -= w * (sqrtf(tx*tx + sx2) + tx*{{pv.xinside}});
 
     if (ty > 0.0f)
-        oy += w * (sqrtf(ty*ty + sy2) - ty*{{px.get('xf.separation_yinside')}});
+        oy += w * (sqrtf(ty*ty + sy2) - ty*{{pv.yinside}});
     else
-        oy -= w * (sqrtf(ty*ty + sy2) + ty*{{px.get('xf.separation_yinside')}});
-    """)
+        oy -= w * (sqrtf(ty*ty + sy2) + ty*{{pv.yinside}});
+    """, 'x xinside y yinside')
 
 var(74, 'split', """
-    if (cosf(tx*{{px.get('xf.split_xsize')}}*M_PI) >= 0.0f)
+    if (cosf(tx*{{pv.xsize}}*M_PI) >= 0.0f)
         oy += w*ty;
     else
         oy -= w*ty;
 
-    if (cosf(ty*{{px.get('xf.split_ysize')}}*M_PI) >= 0.0f)
+    if (cosf(ty*{{pv.ysize}}*M_PI) >= 0.0f)
         ox += w*tx;
     else
         ox -= w*tx;
-    """)
+    """, 'xsize ysize')
 
 var(75, 'splits', """
-    if (tx >= 0.0f)
-        ox += w*(tx + {{px.get('xf.splits_x')}});
-    else
-        ox += w*(tx - {{px.get('xf.splits_x')}});
-
-    if (ty >= 0)
-        oy += w*(ty + {{px.get('xf.splits_y')}});
-    else
-        oy += w*(ty - {{px.get('xf.splits_y')}});
-    """)
+    ox += w*(tx + copysignf({{pv.x}}, tx));
+    oy += w*(ty + copysignf({{pv.y}}, ty));
+    """, 'x y')
 
 var(76, 'stripes', """
     float roundx = floorf(tx + 0.5f);
     float offsetx = tx - roundx;
-    ox += w * (offsetx * (1.0f - {{px.get('xf.stripes_space')}}) + roundx);
-    oy += w * (ty + offsetx*offsetx*{{px.get('xf.stripes_warp')}});
-    """)
+    ox += w * (offsetx * (1.0f - {{pv.space}}) + roundx);
+    oy += w * (ty + offsetx*offsetx*{{pv.warp}});
+    """, 'space warp')
 
 var(77, 'wedge', """
     float r = sqrtf(tx*tx + ty*ty);
-    float a = atan2f(ty, tx) + {{px.get('xf.wedge_swirl')}} * r;
-    float wc = {{px.get('xf.wedge_count')}};
-    float wa = {{px.get('xf.wedge_angle')}};
+    float a = atan2f(ty, tx) + {{pv.swirl}} * r;
+    float wc = {{pv.count}};
+    float wa = {{pv.angle}};
     float c = floorf((wc * a + M_PI) * M_1_PI * 0.5f);
     float comp_fac = 1 - wa * wc * M_1_PI * 0.5f;
     a = a * comp_fac + c * wa;
-    r = w * (r + {{px.get('xf.wedge_hole')}});
+    r = w * (r + {{pv.hole}});
     ox += r * cosf(a);
     oy += r * sinf(a);
-    """)
+    """, 'angle hole count=1 swirl')
 
 var(81, 'waves2', """
-    ox += w*(tx + {{px.get('xf.waves2_scalex')}}*sinf(ty * {{px.get('xf.waves2_freqx')}}));
-    oy += w*(ty + {{px.get('xf.waves2_scaley')}}*sinf(tx * {{px.get('xf.waves2_freqy')}}));
-    """)
+    ox += w*(tx + {{pv.scalex}}*sinf(ty * {{pv.freqx}}));
+    oy += w*(ty + {{pv.scaley}}*sinf(tx * {{pv.freqy}}));
+    """, 'scalex scaley freqx freqy')
 
 var(82, 'exp', """
     float expe = expf(tx);
@@ -935,21 +961,22 @@ var(95, 'coth', """
 var(97, 'flux', """
     float xpw = tx + w;
     float xmw = tx - w;
-    float avgr = w * (2.0f + {{px.get('xf.flux_spread')}}) * sqrtf(sqrtf(ty*ty+xpw*xpw)/sqrtf(ty*ty+xmw*xmw));
+    float avgr = w * (2.0f + {{pv.spread}})
+               * sqrtf(sqrtf(ty*ty+xpw*xpw)/sqrtf(ty*ty+xmw*xmw));
     float avga = (atan2f(ty, xmw) - atan2f(ty,xpw))*0.5f;
     ox += avgr * cosf(avga);
     oy += avgr * sinf(avga);
-    """)
+    """, 'spread')
 
 var(98, 'mobius', """
-    float rea = {{px.get('xf.mobius_re_a')}};
-    float ima = {{px.get('xf.mobius_im_a')}};
-    float reb = {{px.get('xf.mobius_re_b')}};
-    float imb = {{px.get('xf.mobius_im_b')}};
-    float rec = {{px.get('xf.mobius_re_c')}};
-    float imc = {{px.get('xf.mobius_im_c')}};
-    float red = {{px.get('xf.mobius_re_d')}};
-    float imd = {{px.get('xf.mobius_im_d')}};
+    float rea = {{pv.re_a}};
+    float ima = {{pv.im_a}};
+    float reb = {{pv.re_b}};
+    float imb = {{pv.im_b}};
+    float rec = {{pv.re_c}};
+    float imc = {{pv.im_c}};
+    float red = {{pv.re_d}};
+    float imd = {{pv.im_d}};
 
     float re_u, im_u, re_v, im_v, rad_v;
 
@@ -962,5 +989,5 @@ var(98, 'mobius', """
 
     ox += rad_v * (re_u*re_v + im_u*im_v);
     oy += rad_v * (im_u*re_v - re_u*im_v);
-    """)
+    """, 're_a im_a re_b im_b re_c im_c re_d im_d')
 
