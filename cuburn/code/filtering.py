@@ -8,10 +8,10 @@ class ColorClip(HunkOCode):
     defs_tmpl = Template('''
 __global__
 void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
-               float linrange, float lingam, float3 bkgd) {
-    // TODO: test if over an edge of the framebuffer - currently gutters are
-    // used and up to 256 pixels are ignored, which breaks when width<256
-    int i = (gridDim.x * blockIdx.y + blockIdx.x) * blockDim.x + threadIdx.x;
+               float linrange, float lingam, float3 bkgd, int fbsize) {
+    int i = gtid();
+    if (i >= fbsize) return;
+
     float4 pix = pixbuf[i];
 
     if (pix.w <= 0) {
