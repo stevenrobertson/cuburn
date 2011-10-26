@@ -293,7 +293,7 @@ precalc('julian',
         "{{pre._set('cn')}} = {{pre.dist}} / (2.0f * {{pre.power}});\n")
 
 var(32, 'julian', """
-    {{julina_precalc(pv)}}
+    {{julian_precalc(pv)}}
     float power = {{pv.power}};
     float t_rnd = truncf(mwc_next_01(rctx) * fabsf(power));
     float a = atan2f(ty, tx);
@@ -330,7 +330,7 @@ var(34, 'blur', """
     oy += r * sinf(tmpr);
     """)
 
-var(35, 'gaussian', """
+var(35, 'gaussian_blur', """
     float ang = mwc_next_01(rctx) * 2.0f * M_PI;
     float r = w * sqrtf(-2.0f * log2f(mwc_next_01(rctx)) / M_LOG2E);
     ox += r * cosf(ang);
