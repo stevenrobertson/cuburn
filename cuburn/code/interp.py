@@ -268,7 +268,7 @@ typedef struct {
  * bitwise search is just for my own amusement.
  */
 __device__
-int bitwise_binsearch(float *hay, float needle) {
+int bitwise_binsearch(const float *hay, float needle) {
     int lo = 0;
 
     {{for i in range(search_rounds-1, -1, -1)}}
@@ -279,7 +279,7 @@ int bitwise_binsearch(float *hay, float needle) {
 }
 
 __device__
-float catmull_rom(float *times, float *knots, float t) {
+float catmull_rom(const float *times, const float *knots, float t) {
     int idx = bitwise_binsearch(times, t);
 
     // The left bias of the search means that we never have to worry about
@@ -308,7 +308,7 @@ float catmull_rom(float *times, float *knots, float t) {
 }
 
 __global__
-void test_cr(float *times, float *knots, float *t, float *r) {
+void test_cr(const float *times, const float *knots, const float *t, float *r) {
     int i = threadIdx.x + blockDim.x * blockIdx.x;
     r[i] = catmull_rom(times, knots, t[i]);
 }
