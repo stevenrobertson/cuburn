@@ -313,6 +313,33 @@ void test_cr(const float *times, const float *knots, const float *t, float *r) {
     r[i] = catmull_rom(times, knots, t[i]);
 }
 
+__global__
+void interp_palette_hsv(uchar4 *outs, const float *times, const float4 *sources,
+        float tstart, float tstep) {
+    float time = tstart + blockIdx.x * tstep;
+    int idx = fmaxf(bitwise_binsearch(times, time), 1);
 
+    float4 left  = sources[blockDim.x * (idx - 1) + threadIdx.x];
+    float4 right = sources[blockDim.x * (idx)     + threadIdx.x];
+
+    float lf = (times[idx] - time) / (times[idx] - times[idx-1]);
+    float rf = 1.0f - lf;
+
+    float3 lhsv = rgb2hsv(make_float3(left.x, left.y, left.z));
+    float3 rhsv = rgb2hsv(make_float3(right.x, right.y, right.z));
+
+    float3 hsv;
+    hsv.x = lhsv.x * lf + rhsv.x * rf;
+    hsv.y = lhsv.y * lf + rhsv.y * rf;
+    hsv.z = lhsv.z * lf + rhsv.z * rf;
+    float3 rgb = hsv2rgb(hsv);
+
+    uchar4 out;
+    out.x = rgb.x * 255.0f;
+    out.y = rgb.y * 255.0f;
+    out.z = rgb.z * 255.0f;
+    out.w = 255.0f * (left.z * lf + right.z * rf);
+    outs[blockDim.x * blockIdx.x + threadIdx.x] = out;
+}
 """)
 

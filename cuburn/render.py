@@ -9,7 +9,6 @@ from ctypes import *
 from cStringIO import StringIO
 import numpy as np
 from scipy import ndimage
-import base64
 
 from fr0stlib import pyflam3
 from fr0stlib.pyflam3._flam3 import *
@@ -142,19 +141,28 @@ class Renderer(object):
         d_genome_knots = cuda.to_device(genome_knots)
         info_size = 4 * len(self._iter.packer) * cps_per_block
         d_infos = cuda.mem_alloc(info_size)
+
+        pals = info.genome.color.palette
+        if isinstance(pals, basestring):
+            pals = [0.0, pals, 1.0, pals]
+        palint_times = np.empty(len(genome_times[0]), np.float32)
+        palint_times.fill(100.0)
+        palint_times[:len(pals)/2] = pals[::2]
+        d_palint_times = cuda.to_device(palint_times)
+        d_palint_vals = cuda.to_device(
+                np.concatenate(map(info.db.palettes.get, pals[1::2])))
         d_palmem = cuda.mem_alloc(256 * info.palette_height * 4)
 
         seeds = mwc.MWC.make_seeds(self._iter.NTHREADS * cps_per_block)
         d_seeds = cuda.to_device(seeds)
 
-        h_palmem = cuda.pagelocked_empty(
-                (info.palette_height, 256, 4), np.uint8)
         h_out = cuda.pagelocked_empty((info.acc_height, info.acc_stride, 4),
                                       np.float32)
 
         filter_done_event = None
 
         packer_fun = self.mod.get_function("interp_iter_params")
+        palette_fun = self.mod.get_function("interp_palette_hsv")
         iter_fun = self.mod.get_function("iter")
         #iter_fun.set_cache_config(cuda.func_cache.PREFER_L1)
 
@@ -162,18 +170,18 @@ class Renderer(object):
 
         last_time = times[0][0]
 
-        # TODO: move palette stuff to separate class; do interp
-        pal = np.fromstring(base64.b64decode(info.db.palettes.values()[0]),
-                            np.uint8)
-        pal = np.reshape(pal, (256, 3))
-        h_palmem[0,:,:3] = pal
-        h_palmem[1:] = h_palmem[0]
-
         for start, stop in times:
             cen_cp = cuburn.genome.HacketyGenome(info.genome, (start+stop)/2)
 
-            # "Interp" already done above, but...
-            cuda.memcpy_htod_async(d_palmem, h_palmem, iter_stream)
+            if filter_done_event:
+                iter_stream.wait_for_event(filter_done_event)
+
+            width = np.float32((stop-start) / info.palette_height)
+            palette_fun(d_palmem, d_palint_times, d_palint_vals,
+                        np.float32(start), width,
+                        block=(256,1,1), grid=(info.palette_height,1),
+                        stream=iter_stream)
+
             tref = self.mod.get_texref('palTex')
             array_info = cuda.ArrayDescriptor()
             array_info.height = info.palette_height
@@ -185,10 +193,6 @@ class Renderer(object):
             tref.set_format(cuda.array_format.UNSIGNED_INT8, 4)
             tref.set_flags(cuda.TRSF_NORMALIZED_COORDINATES)
             tref.set_filter_mode(cuda.filter_mode.LINEAR)
-
-
-            if filter_done_event:
-                iter_stream.wait_for_event(filter_done_event)
 
             width = np.float32((stop-start) / cps_per_block)
             packer_fun(d_infos, d_genome_times, d_genome_knots,

@@ -37,6 +37,11 @@ class BaseCode(HunkOCode):
 #include<stdio.h>
 """
 
+    decls = """
+float3 rgb2hsv(float3 rgb);
+float3 hsv2rgb(float3 hsv);
+"""
+
     defs = r"""
 #undef M_E
 #undef M_LOG2E
@@ -134,7 +139,49 @@ void write_half(float &xy, float x, float y, float den) {
         : "=f"(xy) : "f"(x), "f"(y), "f"(den));
 }
 
+__device__
+float3 rgb2hsv(float3 rgb) {
+    float M = fmaxf(fmaxf(rgb.x, rgb.y), rgb.z);
+    float m = fminf(fminf(rgb.x, rgb.y), rgb.z);
+    float C = M - m;
 
+    float s = M > 0.0f ? C / M : 0.0f;
+
+    float h;
+    if (s != 0.0f) {
+        C = 1.0f / C;
+        float rc = (M - rgb.x) * C;
+        float gc = (M - rgb.y) * C;
+        float bc = (M - rgb.z) * C;
+
+        if      (rgb.x == M)  h = bc - gc;
+        else if (rgb.y == M)  h = 2 + gc - bc;
+        else                  h = 4 + gc - rc;
+
+        if (h < 0) h += 6;
+    }
+    return make_float3(h, s, M);
+}
+
+__device__
+float3 hsv2rgb(float3 hsv) {
+
+    float whole = floorf(hsv.x);
+    float frac = hsv.x - whole;
+    float val = hsv.z;
+    float min = val * (1 - hsv.y);
+    float mid = val * (1 - (hsv.y * frac));
+    float alt = val * (1 - (hsv.y * (1 - frac)));
+
+    float3 out;
+         if (whole == 0.0f) { out.x = val; out.y = alt; out.z = min; }
+    else if (whole == 1.0f) { out.x = mid; out.y = val; out.z = min; }
+    else if (whole == 2.0f) { out.x = min; out.y = val; out.z = alt; }
+    else if (whole == 3.0f) { out.x = min; out.y = mid; out.z = val; }
+    else if (whole == 4.0f) { out.x = alt; out.y = min; out.z = val; }
+    else                    { out.x = val; out.y = min; out.z = mid; }
+    return out;
+}
 """
 
     @staticmethod

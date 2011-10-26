@@ -1,4 +1,5 @@
 import json
+import base64
 import numpy as np
 import scipy.interpolate
 from cuburn import affine
@@ -123,6 +124,13 @@ class RenderInfo(object):
 
         # Deref genome
         self.genome = self.db.genomes[self.genome]
+
+        for k, v in self.db.palettes.items():
+            pal = np.fromstring(base64.b64decode(v), np.uint8)
+            pal = np.reshape(pal, (256, 3))
+            pal_a = np.ones((256, 4), np.float32)
+            pal_a[:,:3] = pal / 255.0
+            self.db.palettes[k] = pal_a
 
 class _AttrDict(dict):
     def __getattr__(self, name):
