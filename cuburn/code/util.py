@@ -155,7 +155,7 @@ float3 rgb2hsv(float3 rgb) {
         float bc = (M - rgb.z) * C;
 
         if      (rgb.x == M)  h = bc - gc;
-        else if (rgb.y == M)  h = 2 + gc - bc;
+        else if (rgb.y == M)  h = 2 + rc - bc;
         else                  h = 4 + gc - rc;
 
         if (h < 0) h += 6;
