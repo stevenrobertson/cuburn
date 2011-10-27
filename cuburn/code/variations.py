@@ -451,7 +451,7 @@ var(48, 'cross', """
     """)
 
 var(49, 'disc2', """
-    float twist = {{pv.twist}}
+    float twist = {{pv.twist}};
     float rotpi = {{pv.rot}} * M_PI;
 
     float sintwist = sinf(twist);
