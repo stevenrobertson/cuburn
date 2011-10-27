@@ -213,6 +213,7 @@ class Renderer(object):
                      grid=(cps_per_block, 1),
                      texrefs=[tref], stream=iter_stream)
 
+            iter_stream.synchronize()
             if filter_done_event:
                 while not filt_stream.is_done():
                     timemod.sleep(0.01)
