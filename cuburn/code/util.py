@@ -90,10 +90,10 @@ uint32_t trunca(float f) {
 }
 
 __global__
-void zero_dptr(float* dptr, int size) {
+void fill_dptr(uint32_t* dptr, int size, uint32_t value) {
     int i = (gridDim.x * blockIdx.y + blockIdx.x) * blockDim.x + threadIdx.x;
     if (i < size) {
-        dptr[i] = 0.0f;
+        dptr[i] = value;
     }
 }
 
@@ -185,14 +185,21 @@ float3 hsv2rgb(float3 hsv) {
 """
 
     @staticmethod
-    def zero_dptr(mod, dptr, size, stream=None):
+    def fill_dptr(mod, dptr, size, stream=None, value=np.uint32(0)):
         """
-        A memory zeroer which can be embedded in a stream. Size is the
-        number of 4-byte words in the pointer.
+        A memory zeroer which can be embedded in a stream, unlike the various
+        memset routines. Size is the number of 4-byte words in the pointer;
+        value is the word to fill it with. If value is not an np.uint32, it
+        will be coerced to a buffer and the first four bytes taken.
         """
-        zero = mod.get_function("zero_dptr")
+        fill = mod.get_function("fill_dptr")
+        if not isinstance(value, np.uint32):
+            if isinstance(value, int):
+                value = np.uint32(value)
+            else:
+                value = np.frombuffer(buffer(value), np.uint32)[0]
         blocks = int(np.ceil(np.sqrt(size / 1024 + 1)))
-        zero(dptr, np.int32(size), stream=stream,
+        fill(dptr, np.int32(size), value, stream=stream,
              block=(1024, 1, 1), grid=(blocks, blocks, 1))
 
 

@@ -166,7 +166,7 @@ class Renderer(object):
         iter_fun = self.mod.get_function("iter")
         #iter_fun.set_cache_config(cuda.func_cache.PREFER_L1)
 
-        util.BaseCode.zero_dptr(self.mod, d_accum, 4 * nbins, filt_stream)
+        util.BaseCode.fill_dptr(self.mod, d_accum, 4 * nbins, filt_stream)
 
         last_time = times[0][0]
 
@@ -221,9 +221,9 @@ class Renderer(object):
                 yield last_time, self._trim(h_out)
                 last_time = start
 
-            util.BaseCode.zero_dptr(self.mod, d_out, 4 * nbins, filt_stream)
+            util.BaseCode.fill_dptr(self.mod, d_out, 4 * nbins, filt_stream)
             self._de.invoke(self.mod, cen_cp, d_accum, d_out, filt_stream)
-            util.BaseCode.zero_dptr(self.mod, d_accum, 4 * nbins, filt_stream)
+            util.BaseCode.fill_dptr(self.mod, d_accum, 4 * nbins, filt_stream)
             filter_done_event = cuda.Event().record(filt_stream)
 
             f32 = np.float32
