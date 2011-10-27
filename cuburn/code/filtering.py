@@ -156,6 +156,13 @@ void density_est(float4 *pixbuf, float4 *outbuf,
         float den;
         read_pix(in, den);
 
+        float *dens = reinterpret_cast<float*>(pixbuf);
+        float top    = dens[(idx-{{info.acc_stride}})*4+3],
+              bottom = dens[(idx+{{info.acc_stride}})*4+3];
+        den = fmaxf(den, fabsf(top-bottom));
+        float left = dens[idx*4-1], right = dens[idx*4+7];
+        den = fmaxf(den, fabsf(left-right));
+
         if (in.w > 0 && den > 0) {
             float ls = k1 * logf(1.0f + in.w * k2) / in.w;
             in.x *= ls;
