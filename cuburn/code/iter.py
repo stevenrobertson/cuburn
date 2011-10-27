@@ -231,10 +231,8 @@ void apply_xf_{{xfid}}(float &ox, float &oy, float &color, mwc_st &rctx) {
     {{apply_affine('tx', 'ty', 'ox', 'oy', px.post)}}
     {{endif}}
 
-    {{if 'color' in xform}}
     float csp = {{px.color_speed}};
     color = color * (1.0f - csp) + {{px.color}} * csp;
-    {{endif}}
 };
 """)
         g = dict(globals())
@@ -354,18 +352,20 @@ void iter(uint64_t accbuf_ptr, mwc_st *msts, iter_params *all_params,
         if (threadIdx.x == 0) atomicSub(&nsamps, remain);
 
 {{if 'final' in cp.xforms}}
-        float fx = x, fy = y, fcolor;
+        float fx = x, fy = y, fcolor = color;
         apply_xf_final(fx, fy, fcolor, rctx);
 {{endif}}
 
-        float cx, cy;
+        float cx, cy, cc;
 
         {{precalc_camera(info, pcp.camera)}}
 
 {{if 'final' in cp.xforms}}
         {{apply_affine('fx', 'fy', 'cx', 'cy', pcp.camera)}}
+        cc = fcolor;
 {{else}}
         {{apply_affine('x', 'y', 'cx', 'cy', pcp.camera)}}
+        cc = color;
 {{endif}}
 
         uint32_t ix = trunca(cx), iy = trunca(cy);
@@ -383,8 +383,7 @@ void iter(uint64_t accbuf_ptr, mwc_st *msts, iter_params *all_params,
 
         uint32_t i = iy * {{info.acc_stride}} + ix;
 
-
-        float4 outcol = tex2D(palTex, color, time_frac);
+        float4 outcol = tex2D(palTex, cc, time_frac);
         update_pix(accbuf_ptr, i, outcol);
     }
     msts[gtid()] = rctx;
