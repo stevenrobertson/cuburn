@@ -332,7 +332,10 @@ var(34, 'blur', """
 
 var(35, 'gaussian_blur', """
     float ang = mwc_next_01(rctx) * 2.0f * M_PI;
-    float r = w * sqrtf(-2.0f * log2f(mwc_next_01(rctx)) / M_LOG2E);
+    // constant factor here is stdev correction for converting to Box-Muller;
+    // np.std(np.sum(np.random.random((1<<30, 4)), axis=1) - 2)
+    // TODO: maybe derive it analytically
+    float r = w * 0.57736 * sqrtf(-2.0f * log2f(mwc_next_01(rctx)) / M_LOG2E);
     ox += r * cosf(ang);
     oy += r * sinf(ang);
     """)
@@ -342,7 +345,7 @@ var(36, 'radial_blur', """
     float spinvar = sinf(blur_angle);
     float zoomvar = cosf(blur_angle);
 
-    float r = w * sqrtf(-2.0f * log2f(mwc_next_01(rctx)) / M_LOG2E);
+    float r = w * 0.57736 * sqrtf(-2.0f * log2f(mwc_next_01(rctx)) / M_LOG2E);
     float ra = sqrtf(tx*tx + ty*ty);
     float tmpa = atan2f(ty, tx) + spinvar * r;
     float rz = zoomvar * r - 1.0f;
