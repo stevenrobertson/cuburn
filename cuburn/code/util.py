@@ -42,7 +42,7 @@ float3 rgb2hsv(float3 rgb);
 float3 hsv2rgb(float3 hsv);
 """
 
-    defs = r"""
+    defs = Template(r"""
 #undef M_E
 #undef M_LOG2E
 #undef M_LOG10E
@@ -78,6 +78,28 @@ uint32_t gtid() {
             (threadIdx.y + blockDim.y *
                 (threadIdx.z + blockDim.z *
                     (blockIdx.x + (gridDim.x * blockIdx.y))));
+}
+
+
+/* Returns the ID of this thread on the device. Note that this counter is
+ * volatile according to the PTX ISA. It should be used for loading and saving
+ * state that must be unique across running threads, not for accessing things
+ * in a known order. */
+__device__
+int devtid() {
+    int result;
+    asm({{crep('''
+    {
+        .reg .u32   tmp1, tmp2;
+        mov.u32     %0,     %smid;
+        mov.u32     tmp1,   %nsmid;
+        mov.u32     tmp2,   %warpid;
+        mad.lo.u32  %0,     %0,     tmp1,   tmp2;
+        mov.u32     tmp1,   %nwarpid;
+        mov.u32     tmp2,   %laneid;
+        mad.lo.u32  %0,     %0,     tmp1,   tmp2;
+    }''')}} : "=r"(result) );
+    return result;
 }
 
 __device__
@@ -182,7 +204,7 @@ float3 hsv2rgb(float3 hsv) {
     else                    { out.x = val; out.y = min; out.z = mid; }
     return out;
 }
-"""
+""").substitute()
 
     @staticmethod
     def fill_dptr(mod, dptr, size, stream=None, value=np.uint32(0)):

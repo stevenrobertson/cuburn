@@ -14,6 +14,7 @@ from fr0stlib import pyflam3
 from fr0stlib.pyflam3._flam3 import *
 from fr0stlib.pyflam3.constants import *
 
+import pycuda.autoinit
 import pycuda.compiler
 import pycuda.driver as cuda
 import pycuda.tools
@@ -153,7 +154,15 @@ class Renderer(object):
                 np.concatenate(map(info.db.palettes.get, pals[1::2])))
         d_palmem = cuda.mem_alloc(256 * info.palette_height * 4)
 
-        seeds = mwc.MWC.make_seeds(self._iter.NTHREADS * cps_per_block)
+        # The '+1' avoids more situations where the 'smid' value is larger
+        # than the number of enabled SMs on a chip, which is warned against in
+        # the docs but not seen in the wild. Things could get nastier on
+        # subsequent silicon, but I doubt they'd ever kill more than 1 SM
+        nslots = pycuda.autoinit.device.max_threads_per_multiprocessor * \
+                (pycuda.autoinit.device.multiprocessor_count + 1)
+
+        d_points = cuda.mem_alloc(nslots * 16)
+        seeds = mwc.MWC.make_seeds(nslots)
         d_seeds = cuda.to_device(seeds)
 
         h_out = cuda.pagelocked_empty((info.acc_height, info.acc_stride, 4),
@@ -200,6 +209,10 @@ class Renderer(object):
                        block=(256,1,1), grid=(cps_per_block/256,1),
                        stream=iter_stream)
 
+            # TODO: if we only do this once per anim, does quality improve?
+            util.BaseCode.fill_dptr(self.mod, d_points, 4 * nslots,
+                                    iter_stream, np.float32(np.nan))
+
             # Get interpolated control points for debugging
             #iter_stream.synchronize()
             #d_temp = cuda.from_device(d_infos,
@@ -208,7 +221,8 @@ class Renderer(object):
                 #print '%60s %g' % ('_'.join(n), i)
 
             nsamps = info.density * info.width * info.height / cps_per_block
-            iter_fun(np.uint64(d_accum), d_seeds, d_infos, np.int32(nsamps),
+            iter_fun(np.uint64(d_accum), d_seeds, d_points,
+                     d_infos, np.int32(nsamps),
                      block=(32, self._iter.NTHREADS/32, 1),
                      grid=(cps_per_block, 1),
                      texrefs=[tref], stream=iter_stream)

@@ -242,10 +242,10 @@ void apply_xf_{{xfid}}(float &ox, float &oy, float &color, mwc_st &rctx) {
     def _iterbody(self):
         tmpl = Template(r'''
 __global__
-void iter(uint64_t accbuf_ptr, mwc_st *msts, iter_params *all_params,
-          int nsamps_to_generate) {
-    mwc_st rctx = msts[gtid()];
-    iter_params *global_params = &(all_params[blockIdx.x]);
+void iter(uint64_t accbuf_ptr, mwc_st *msts, float4 *points,
+          const iter_params *all_params, int nsamps_to_generate) {
+    mwc_st rctx = msts[devtid()];
+    const iter_params *global_params = &(all_params[blockIdx.x]);
 
     __shared__ int nsamps;
     nsamps = nsamps_to_generate;
@@ -257,7 +257,7 @@ void iter(uint64_t accbuf_ptr, mwc_st *msts, iter_params *all_params,
     for (int i = threadIdx.y * blockDim.x + threadIdx.x;
          i * 4 < sizeof(iter_params); i += blockDim.x * blockDim.y)
         reinterpret_cast<float*>(&params)[i] =
-            reinterpret_cast<float*>(global_params)[i];
+            reinterpret_cast<const float*>(global_params)[i];
 
 {{if info.chaos_used}}
     int last_xf_used = 0;
@@ -273,120 +273,118 @@ void iter(uint64_t accbuf_ptr, mwc_st *msts, iter_params *all_params,
 {{endif}}
 
     __syncthreads();
-    int consec_bad = -{{info.fuse}};
-
-    float x, y, color;
-    x = mwc_next_11(rctx);
-    y = mwc_next_11(rctx);
-    color = mwc_next_01(rctx);
+    float4 old_point = points[devtid()];
+    float x = old_point.x, y = old_point.y,
+          color = old_point.z, fuse_rounds = old_point.w;
 
     while (1) {
+        // This condition checks for large numbers, Infs, and NaNs.
+        if (!(-(fabsf(x) + fabsf(y) > -1.0e6f))) {
+            x = mwc_next_11(rctx);
+            y = mwc_next_11(rctx);
+            color = mwc_next_01(rctx);
+            fuse_rounds = {{info.fuse / 32}};
+        }
+
+        // 32 rounds is somewhat arbitrary, but it has a pleasing 32-ness
+        for (int i = 0; i < 32; i++) {
 
 {{if info.chaos_used}}
 
-        {{precalc_chaos(pcp, std_xforms)}}
+            {{precalc_chaos(pcp, std_xforms)}}
 
-        // For now, we don't attempt to use the swap buffer when chaos is used
-        float xfsel = mwc_next_01(rctx);
+            // For now, we don't attempt to use the swap buffer when chaos is used
+            float xfsel = mwc_next_01(rctx);
 
-        {{for prior_xform_idx, prior_xform_name in enumerate(std_xforms)}}
-        if (last_xf_used == {{prior_xform_idx}}) {
-            {{for xform_idx, xform_name in enumerate(std_xforms[:-1])}}
-            if (xfsel <= {{pcp['chaos_'+prior_xform_name+'_'+xform_name]}}) {
-                apply_xf_{{xform_name}}(x, y, color, rctx);
-                last_xf_used = {{xform_idx}};
+            {{for prior_xform_idx, prior_xform_name in enumerate(std_xforms)}}
+            if (last_xf_used == {{prior_xform_idx}}) {
+                {{for xform_idx, xform_name in enumerate(std_xforms[:-1])}}
+                if (xfsel <= {{pcp['chaos_'+prior_xform_name+'_'+xform_name]}}) {
+                    apply_xf_{{xform_name}}(x, y, color, rctx);
+                    last_xf_used = {{xform_idx}};
+                } else
+                {{endfor}}
+                {
+                    apply_xf_{{std_xforms[-1]}}(x, y, color, rctx);
+                    last_xf_used = {{len(std_xforms)-1}};
+                }
             } else
             {{endfor}}
             {
+                printf("Something went *very* wrong.\n");
+                asm("trap;");
+            }
+
+{{else}}
+            {{precalc_densities(pcp, std_xforms)}}
+            float xfsel = cosel[threadIdx.y];
+
+            {{for xform_name in std_xforms[:-1]}}
+            if (xfsel <= {{pcp['den_'+xform_name]}}) {
+                apply_xf_{{xform_name}}(x, y, color, rctx);
+            } else
+            {{endfor}}
                 apply_xf_{{std_xforms[-1]}}(x, y, color, rctx);
-                last_xf_used = {{len(std_xforms)-1}};
-            }
-        } else
-        {{endfor}}
-        {
-            printf("Something went *very* wrong.\n");
-            asm("trap;");
+
+            int sw = (threadIdx.y * 32 + threadIdx.x * 33) & {{NTHREADS-1}};
+            int sr = threadIdx.y * 32 + threadIdx.x;
+
+            swap[sw] = fuse_rounds;
+            swap[sw+{{NTHREADS}}] = x;
+            swap[sw+{{2*NTHREADS}}] = y;
+            swap[sw+{{3*NTHREADS}}] = color;
+            __syncthreads();
+
+            // We select the next xforms here, since we've just synced.
+            if (threadIdx.y == 0 && threadIdx.x < {{NWARPS}})
+                cosel[threadIdx.x] = mwc_next_01(rctx);
+
+            fuse_rounds = swap[sr];
+            x = swap[sr+{{NTHREADS}}];
+            y = swap[sr+{{2*NTHREADS}}];
+            color = swap[sr+{{3*NTHREADS}}];
+
+{{endif}}
+
+            if (fuse_rounds > 0.0f) continue;
+
+{{if 'final' in cp.xforms}}
+            float fx = x, fy = y, fcolor = color;
+            apply_xf_final(fx, fy, fcolor, rctx);
+{{endif}}
+
+            float cx, cy, cc;
+
+            {{precalc_camera(info, pcp.camera)}}
+
+{{if 'final' in cp.xforms}}
+            {{apply_affine('fx', 'fy', 'cx', 'cy', pcp.camera)}}
+            cc = fcolor;
+{{else}}
+            {{apply_affine('x', 'y', 'cx', 'cy', pcp.camera)}}
+            cc = color;
+{{endif}}
+
+            uint32_t ix = trunca(cx), iy = trunca(cy);
+
+            if (ix >= {{info.acc_width}} || iy >= {{info.acc_height}})
+                continue;
+
+            uint32_t i = iy * {{info.acc_stride}} + ix;
+
+            float4 outcol = tex2D(palTex, cc, time_frac);
+            update_pix(accbuf_ptr, i, outcol);
         }
 
-{{else}}
-        {{precalc_densities(pcp, std_xforms)}}
-        float xfsel = cosel[threadIdx.y];
+        int num_okay = __popc(__ballot(fuse_rounds == 0.0f));
+        if (threadIdx.x == 0) atomicSub(&nsamps, num_okay * 32);
+        fuse_rounds = fmaxf(0.0f, fuse_rounds - 1.0f);
 
-        {{for xform_name in std_xforms[:-1]}}
-        if (xfsel <= {{pcp['den_'+xform_name]}}) {
-            apply_xf_{{xform_name}}(x, y, color, rctx);
-        } else
-        {{endfor}}
-            apply_xf_{{std_xforms[-1]}}(x, y, color, rctx);
-
-        // Swap thread states here so that writeback skipping logic doesn't die
-        int sw = (threadIdx.y * 32 + threadIdx.x * 33) & {{NTHREADS-1}};
-        int sr = threadIdx.y * 32 + threadIdx.x;
-
-        swap[sw] = consec_bad;
-        swap[sw+{{NTHREADS}}] = x;
-        swap[sw+{{2*NTHREADS}}] = y;
-        swap[sw+{{3*NTHREADS}}] = color;
         __syncthreads();
-        // This is in the middle of the function so that only one sync is
-        // required per loop.
-        if (nsamps < 0) break;
-
-        // Similarly, we select the next xforms here.
-        if (threadIdx.y == 0 && threadIdx.x < {{NWARPS}})
-            cosel[threadIdx.x] = mwc_next_01(rctx);
-
-        consec_bad = swap[sr];
-        x = swap[sr+{{NTHREADS}}];
-        y = swap[sr+{{2*NTHREADS}}];
-        color = swap[sr+{{3*NTHREADS}}];
-
-{{endif}}
-
-        if (consec_bad < 0) {
-            consec_bad++;
-            continue;
-        }
-
-        int remain = __popc(__ballot(1));
-        if (threadIdx.x == 0) atomicSub(&nsamps, remain);
-
-{{if 'final' in cp.xforms}}
-        float fx = x, fy = y, fcolor = color;
-        apply_xf_final(fx, fy, fcolor, rctx);
-{{endif}}
-
-        float cx, cy, cc;
-
-        {{precalc_camera(info, pcp.camera)}}
-
-{{if 'final' in cp.xforms}}
-        {{apply_affine('fx', 'fy', 'cx', 'cy', pcp.camera)}}
-        cc = fcolor;
-{{else}}
-        {{apply_affine('x', 'y', 'cx', 'cy', pcp.camera)}}
-        cc = color;
-{{endif}}
-
-        uint32_t ix = trunca(cx), iy = trunca(cy);
-
-        if (ix >= {{info.acc_width}} || iy >= {{info.acc_height}} ) {
-            consec_bad++;
-            if (consec_bad > {{info.max_oob}}) {
-                x = mwc_next_11(rctx);
-                y = mwc_next_11(rctx);
-                color = mwc_next_01(rctx);
-                consec_bad = -{{info.fuse}};
-            }
-            continue;
-        }
-
-        uint32_t i = iy * {{info.acc_stride}} + ix;
-
-        float4 outcol = tex2D(palTex, cc, time_frac);
-        update_pix(accbuf_ptr, i, outcol);
+        if (nsamps <= 0) break;
     }
-    msts[gtid()] = rctx;
+    points[devtid()] = make_float4(x, y, color, fuse_rounds);
+    msts[devtid()] = rctx;
 }
 ''')
         return tmpl.substitute(

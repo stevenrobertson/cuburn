@@ -82,11 +82,9 @@ class RenderInfo(object):
     Determine features and constants required to render a particular set of
     genomes. The values of this class are fixed before compilation begins.
     """
-    # Constant parameters which control handling of out-of-frame samples:
-    # Number of iterations to iterate without write after new point
-    fuse = 10
-    # Maximum consecutive out-of-bounds points before picking new point
-    max_oob = 10
+    # Number of iterations to iterate without write after generating a new
+    # point, including the number of bad
+    fuse = 128
 
     # Height of the texture pallete which gets uploaded to the GPU (assuming
     # that palette-from-texture is enabled). For most genomes, this doesn't
