@@ -144,7 +144,7 @@ void density_est(float4 *pixbuf, float4 *outbuf,
         de_r[i] = de_g[i] = de_b[i] = de_a[i] = 0.0f;
     __syncthreads();
 
-    for (int imrow = threadIdx.y + W2; imrow < {{info.acc_height}}; imrow += 32)
+    for (int imrow = threadIdx.y + W2; imrow < ({{info.acc_height}} - W2); imrow += 32)
     {
         int idx = {{info.acc_stride}} * imrow +
                 + blockIdx.x * 32 + threadIdx.x + W2;
