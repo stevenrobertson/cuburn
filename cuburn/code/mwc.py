@@ -53,11 +53,6 @@ __device__ float mwc_next_11(mwc_st &st) {
 
         # Create the seed structures. TODO: check that struct is 4-byte aligned
         seeds = np.empty((3, nthreads), dtype=np.uint32, order='F')
-
-        # Randomness in choosing multipliers is good, but larger multipliers
-        # have longer periods, which is also good. This is a compromise.
-        mults = np.array(mults[:nthreads*4])
-        rand.shuffle(mults)
         seeds[0][:] = mults[:nthreads]
 
         # Excludes 0xffffffff for 32-bit compatibility with laziness
