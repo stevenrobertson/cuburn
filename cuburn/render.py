@@ -4,6 +4,7 @@ import math
 import re
 import time as timemod
 import tempfile
+from collections import namedtuple
 from itertools import cycle, repeat, chain, izip
 from ctypes import *
 from cStringIO import StringIO
@@ -14,7 +15,6 @@ from fr0stlib import pyflam3
 from fr0stlib.pyflam3._flam3 import *
 from fr0stlib.pyflam3.constants import *
 
-import pycuda.autoinit
 import pycuda.compiler
 import pycuda.driver as cuda
 import pycuda.tools
@@ -23,6 +23,8 @@ from pycuda.gpuarray import vec
 import cuburn.genome
 from cuburn import affine
 from cuburn.code import util, mwc, iter, filtering
+
+RenderedImage = namedtuple('RenderedImage', 'buf idx gpu_time')
 
 class Renderer(object):
     """
@@ -109,38 +111,62 @@ class Renderer(object):
     def render(self, times):
         """
         Render a flame for each genome in the iterable value 'genomes'.
-        Returns a Python generator object which will yield a 2-tuple of
-        ``(time, buf)``, where ``time`` is the start time of the frame and
-        ``buf`` is a 3D (width, height, channel) NumPy array containing
-        [0,1]-valued RGBA components.
+        Returns a RenderedImage object with the rendered buffer in the
+        requested format (3D RGBA ndarray only for now).
 
         This method produces a considerable amount of side effects, and should
         not be used lightly. Things may go poorly for you if this method is not
         allowed to run until completion (by exhausting all items in the
         generator object).
 
-        ``times`` is a sequence of (start, stop) times defining the temporal
-        range to be rendered for each frame. This will change to be more
-        frame-centric in the future, allowing for interpolated temporal width.
+        ``times`` is a sequence of (idx, start, stop) times, where index is
+        the logical frame number (though it can be any value) and 'start' and
+        'stop' together define the time range to be rendered for each frame.
         """
         if times == []:
             return
 
+        reset_rb_fun = self.mod.get_function("reset_rb")
+        packer_fun = self.mod.get_function("interp_iter_params")
+        palette_fun = self.mod.get_function("interp_palette_hsv")
+        iter_fun = self.mod.get_function("iter")
+
         info = self.info
-        iter_stream = cuda.Stream()
-        filt_stream = cuda.Stream()
+        stream = cuda.Stream()
+        event_a = cuda.Event().record(stream)
+        event_b = None
 
         nbins = info.acc_height * info.acc_stride
         d_accum = cuda.mem_alloc(16 * nbins)
         d_out = cuda.mem_alloc(16 * nbins)
 
-        num_sm = cuda.Context.get_device().multiprocessor_count
-        cps_per_block = 1024
+        # Calculate 'nslots', the number of simultaneous running threads that
+        # can be active on the GPU during iteration (and thus the number of
+        # slots for loading and storing RNG and point context that will be
+        # prepared on the device), 'rb_size' (the number of blocks in
+        # 'nslots'), and determine a number of temporal samples
+        # likely to load-balance effectively
+        iter_threads_per_block = 256
+        dev_data = pycuda.tools.DeviceData()
+        occupancy = pycuda.tools.OccupancyRecord(
+                dev_data, iter_threads_per_block,
+                iter_fun.shared_size_bytes, iter_fun.num_regs)
+        nsms = cuda.Context.get_device().multiprocessor_count
+        rb_size = occupancy.warps_per_mp * nsms / (iter_threads_per_block / 32)
+        nslots = iter_threads_per_block * rb_size
+        ntemporal_samples = int(np.ceil(1000. / rb_size) * rb_size)
+
+        # Reset the ringbuffer info for the slots
+        reset_rb_fun(np.int32(rb_size), block=(1,1,1))
+
+        d_points = cuda.mem_alloc(nslots * 16)
+        seeds = mwc.MWC.make_seeds(nslots)
+        d_seeds = cuda.to_device(seeds)
 
         genome_times, genome_knots = self._iter.packer.pack()
         d_genome_times = cuda.to_device(genome_times)
         d_genome_knots = cuda.to_device(genome_knots)
-        info_size = 4 * len(self._iter.packer) * cps_per_block
+        info_size = 4 * len(self._iter.packer) * ntemporal_samples
         d_infos = cuda.mem_alloc(info_size)
 
         pals = info.genome.color.palette
@@ -154,91 +180,62 @@ class Renderer(object):
                 np.concatenate(map(info.db.palettes.get, pals[1::2])))
         d_palmem = cuda.mem_alloc(256 * info.palette_height * 4)
 
-        # The '+1' avoids more situations where the 'smid' value is larger
-        # than the number of enabled SMs on a chip, which is warned against in
-        # the docs but not seen in the wild. Things could get nastier on
-        # subsequent silicon, but I doubt they'd ever kill more than 1 SM
-        nslots = pycuda.autoinit.device.max_threads_per_multiprocessor * \
-                (pycuda.autoinit.device.multiprocessor_count + 1)
+        pal_array_info = cuda.ArrayDescriptor()
+        pal_array_info.height = info.palette_height
+        pal_array_info.width = 256
+        pal_array_info.array_format = cuda.array_format.UNSIGNED_INT8
+        pal_array_info.num_channels = 4
 
-        d_points = cuda.mem_alloc(nslots * 16)
-        seeds = mwc.MWC.make_seeds(nslots)
-        d_seeds = cuda.to_device(seeds)
+        h_out_a = cuda.pagelocked_empty((info.acc_height, info.acc_stride, 4),
+                                        np.float32)
+        h_out_b = cuda.pagelocked_empty((info.acc_height, info.acc_stride, 4),
+                                        np.float32)
+        last_idx = None
 
-        h_out = cuda.pagelocked_empty((info.acc_height, info.acc_stride, 4),
-                                      np.float32)
-
-        filter_done_event = None
-
-        packer_fun = self.mod.get_function("interp_iter_params")
-        palette_fun = self.mod.get_function("interp_palette_hsv")
-        iter_fun = self.mod.get_function("iter")
-        #iter_fun.set_cache_config(cuda.func_cache.PREFER_L1)
-
-        util.BaseCode.fill_dptr(self.mod, d_accum, 4 * nbins, filt_stream)
-
-        last_time = times[0][0]
-
-        for start, stop in times:
+        for idx, start, stop in times:
             cen_cp = cuburn.genome.HacketyGenome(info.genome, (start+stop)/2)
-
-            if filter_done_event:
-                iter_stream.wait_for_event(filter_done_event)
 
             width = np.float32((stop-start) / info.palette_height)
             palette_fun(d_palmem, d_palint_times, d_palint_vals,
                         np.float32(start), width,
                         block=(256,1,1), grid=(info.palette_height,1),
-                        stream=iter_stream)
+                        stream=stream)
 
+            # TODO: do we need to do this each time in order to reset cache?
             tref = self.mod.get_texref('palTex')
-            array_info = cuda.ArrayDescriptor()
-            array_info.height = info.palette_height
-            array_info.width = 256
-            array_info.array_format = cuda.array_format.UNSIGNED_INT8
-            array_info.num_channels = 4
-            tref.set_address_2d(d_palmem, array_info, 1024)
-
+            tref.set_address_2d(d_palmem, pal_array_info, 1024)
             tref.set_format(cuda.array_format.UNSIGNED_INT8, 4)
             tref.set_flags(cuda.TRSF_NORMALIZED_COORDINATES)
             tref.set_filter_mode(cuda.filter_mode.LINEAR)
 
-            width = np.float32((stop-start) / cps_per_block)
+            width = np.float32((stop-start) / ntemporal_samples)
             packer_fun(d_infos, d_genome_times, d_genome_knots,
                        np.float32(start), width, d_seeds,
-                       block=(256,1,1), grid=(cps_per_block/256,1),
-                       stream=iter_stream)
+                       np.int32(ntemporal_samples), block=(256,1,1),
+                       grid=(int(np.ceil(ntemporal_samples/256.)),1),
+                       stream=stream)
 
             # TODO: if we only do this once per anim, does quality improve?
             util.BaseCode.fill_dptr(self.mod, d_points, 4 * nslots,
-                                    iter_stream, np.float32(np.nan))
+                                    stream, np.float32(np.nan))
 
             # Get interpolated control points for debugging
-            #iter_stream.synchronize()
+            #stream.synchronize()
             #d_temp = cuda.from_device(d_infos,
-                    #(cps_per_block, len(self._iter.packer)), np.float32)
+                    #(ntemporal_samples, len(self._iter.packer)), np.float32)
             #for i, n in zip(d_temp[5], self._iter.packer.packed):
                 #print '%60s %g' % ('_'.join(n), i)
 
-            nsamps = info.density * info.width * info.height / cps_per_block
+            util.BaseCode.fill_dptr(self.mod, d_accum, 4 * nbins, stream)
+            nsamps = info.density * info.width * info.height / ntemporal_samples
             iter_fun(np.uint64(d_accum), d_seeds, d_points,
                      d_infos, np.int32(nsamps),
                      block=(32, self._iter.NTHREADS/32, 1),
-                     grid=(cps_per_block, 1),
-                     texrefs=[tref], stream=iter_stream)
+                     grid=(ntemporal_samples, 1),
+                     texrefs=[tref], stream=stream)
 
-            iter_stream.synchronize()
-            if filter_done_event:
-                while not filt_stream.is_done():
-                    timemod.sleep(0.01)
-                filt_stream.synchronize()
-                yield last_time, self._trim(h_out)
-                last_time = start
-
-            util.BaseCode.fill_dptr(self.mod, d_out, 4 * nbins, filt_stream)
-            self._de.invoke(self.mod, cen_cp, d_accum, d_out, filt_stream)
-            util.BaseCode.fill_dptr(self.mod, d_accum, 4 * nbins, filt_stream)
-            filter_done_event = cuda.Event().record(filt_stream)
+            util.BaseCode.fill_dptr(self.mod, d_out, 4 * nbins, stream)
+            self._de.invoke(self.mod, cen_cp, d_accum, d_out, stream)
 
             f32 = np.float32
             # TODO: implement integration over cubic splines?
@@ -255,12 +252,24 @@ class Renderer(object):
             color_fun = self.mod.get_function("colorclip")
             blocks = int(np.ceil(np.sqrt(nbins / 256)))
             color_fun(d_out, gam, vib, hipow, lin, lingam, bkgd, np.int32(nbins),
-                      block=(256, 1, 1), grid=(blocks, blocks),
-                      stream=filt_stream)
-            cuda.memcpy_dtoh_async(h_out, d_out, filt_stream)
+                      block=(256, 1, 1), grid=(blocks, blocks), stream=stream)
+            cuda.memcpy_dtoh_async(h_out_a, d_out, stream)
 
-        filt_stream.synchronize()
-        yield start, self._trim(h_out)
+            if event_b:
+                while not event_a.query():
+                    timemod.sleep(0.01)
+                gpu_time = event_a.time_since(event_b)
+                yield RenderedImage(self._trim(h_out_b), last_idx, gpu_time)
+
+            event_a, event_b = cuda.Event().record(stream), event_a
+            h_out_a, h_out_b = h_out_b, h_out_a
+            last_idx = idx
+
+
+        while not event_a.query():
+            timemod.sleep(0.001)
+        gpu_time = event_a.time_since(event_b)
+        yield RenderedImage(self._trim(h_out_b), last_idx, gpu_time)
 
     def _trim(self, result):
         g = self.info.gutter

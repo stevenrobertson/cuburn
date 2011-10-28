@@ -80,28 +80,6 @@ uint32_t gtid() {
                     (blockIdx.x + (gridDim.x * blockIdx.y))));
 }
 
-
-/* Returns the ID of this thread on the device. Note that this counter is
- * volatile according to the PTX ISA. It should be used for loading and saving
- * state that must be unique across running threads, not for accessing things
- * in a known order. */
-__device__
-int devtid() {
-    int result;
-    asm({{crep('''
-    {
-        .reg .u32   tmp1, tmp2;
-        mov.u32     %0,     %smid;
-        mov.u32     tmp1,   %nsmid;
-        mov.u32     tmp2,   %warpid;
-        mad.lo.u32  %0,     %0,     tmp1,   tmp2;
-        mov.u32     tmp1,   %nwarpid;
-        mov.u32     tmp2,   %laneid;
-        mad.lo.u32  %0,     %0,     tmp1,   tmp2;
-    }''')}} : "=r"(result) );
-    return result;
-}
-
 __device__
 uint32_t trunca(float f) {
     // truncate as used in address calculations. note the use of a signed

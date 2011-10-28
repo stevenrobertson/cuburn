@@ -128,6 +128,7 @@ class IterCode(HunkOCode):
 // Note: for normalized lookups, uchar4 actually returns floats
 texture<uchar4, cudaTextureType2D, cudaReadModeNormalizedFloat> palTex;
 __shared__ iter_params params;
+__device__ int rb_head, rb_tail, rb_size;
 
 """
 
@@ -241,10 +242,15 @@ void apply_xf_{{xfid}}(float &ox, float &oy, float &color, mwc_st &rctx) {
 
     def _iterbody(self):
         tmpl = Template(r'''
+
+__global__ void reset_rb(int size) {
+    rb_head = rb_tail = 0;
+    rb_size = size;
+}
+
 __global__
 void iter(uint64_t accbuf_ptr, mwc_st *msts, float4 *points,
           const iter_params *all_params, int nsamps_to_generate) {
-    mwc_st rctx = msts[devtid()];
     const iter_params *global_params = &(all_params[blockIdx.x]);
 
     __shared__ int nsamps;
@@ -259,6 +265,17 @@ void iter(uint64_t accbuf_ptr, mwc_st *msts, float4 *points,
         reinterpret_cast<float*>(&params)[i] =
             reinterpret_cast<const float*>(global_params)[i];
 
+    __shared__ int rb_idx;
+    if (threadIdx.x == 1 && threadIdx.y == 1)
+        rb_idx = 32 * blockDim.y * (atomicAdd(&rb_head, 1) % rb_size);
+
+    __syncthreads();
+    int this_rb_idx = rb_idx + threadIdx.x + 32 * threadIdx.y;
+    mwc_st rctx = msts[this_rb_idx];
+    float4 old_point = points[this_rb_idx];
+    float x = old_point.x, y = old_point.y,
+          color = old_point.z, fuse_rounds = old_point.w;
+
 {{if info.chaos_used}}
     int last_xf_used = 0;
 {{else}}
@@ -270,12 +287,9 @@ void iter(uint64_t accbuf_ptr, mwc_st *msts, float4 *points,
     // This is normally done after the swap-sync in the main loop
     if (threadIdx.y == 0 && threadIdx.x < {{NWARPS}})
         cosel[threadIdx.x] = mwc_next_01(rctx);
+    __syncthreads();
 {{endif}}
 
-    __syncthreads();
-    float4 old_point = points[devtid()];
-    float x = old_point.x, y = old_point.y,
-          color = old_point.z, fuse_rounds = old_point.w;
 
     while (1) {
         // This condition checks for large numbers, Infs, and NaNs.
@@ -383,8 +397,20 @@ void iter(uint64_t accbuf_ptr, mwc_st *msts, float4 *points,
         __syncthreads();
         if (nsamps <= 0) break;
     }
-    points[devtid()] = make_float4(x, y, color, fuse_rounds);
-    msts[devtid()] = rctx;
+
+    if (threadIdx.x == 0 && threadIdx.y == 0)
+        rb_idx = 32 * blockDim.y * (atomicAdd(&rb_tail, 1) % rb_size);
+    __syncthreads();
+    this_rb_idx = rb_idx + threadIdx.x + 32 * threadIdx.y;
+
+    points[this_rb_idx] = make_float4(x, y, color, fuse_rounds);
+    msts[this_rb_idx] = rctx;
+    return;
+
+    /*if (rctx.state == 0xffffffff && rctx.carry == 0xffffffff) {
+        printf("Warning: runaway sequence, multiplier %8x.\n", rctx.mul);
+        rctx.state = gtid();
+    }*/
 }
 ''')
         return tmpl.substitute(

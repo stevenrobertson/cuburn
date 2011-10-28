@@ -227,8 +227,9 @@ class GenomePacker(HunkOCode):
 
 __global__
 void interp_{{tname}}({{tname}}* out, float *times, float *knots,
-        float tstart, float tstep, mwc_st *rctxes) {
+        float tstart, float tstep, mwc_st *rctxes, int maxid) {
     int id = gtid();
+    if (id >= maxid) return;
     out = &out[id];
     mwc_st rctx = rctxes[id];
     float time = tstart + id * tstep;
