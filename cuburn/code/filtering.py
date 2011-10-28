@@ -153,14 +153,32 @@ void density_est(float4 *pixbuf, float4 *outbuf,
         float den;
         read_pix(in, den);
 
-        float *dens = reinterpret_cast<float*>(pixbuf);
-        float top    = dens[(idx-{{info.acc_stride}})*4+3],
-              bottom = dens[(idx+{{info.acc_stride}})*4+3];
-        den = fmaxf(den, fabsf(top-bottom));
-        float left = dens[idx*4-1], right = dens[idx*4+7];
-        den = fmaxf(den, fabsf(left-right));
-
         if (in.w > 0 && den > 0) {
+
+            // Compute a Sobel derivative, The Terrible Way! Because I'm Lazy.
+            // Or more to the point, because even this sloppy mess is such a
+            // small part of the overall runtime that it's not yet worth
+            // optimizing. Using a [3, 10, 3] Sobel, normalized to represent
+            // the density change over a single pixel.
+            const float corner = 0.0625f;       // (3/16)/3
+            const float main = 0.208333333f;    // (10/16)/3
+            float *dens = reinterpret_cast<float*>(pixbuf);
+            int didx = idx * 4 + 3;
+            float v = 0.0f, h = 0.0f, p;
+            p = corner * dens[didx-{{info.acc_stride*4}}-4];
+            v -= p; h -= p;
+            v -= main * dens[didx-{{info.acc_stride*4}}];
+            p = corner * dens[didx-{{info.acc_stride*4}}+4];
+            v -= p; h += p;
+            h -= main * dens[didx-4];
+            h += main * dens[didx+4];
+            p = corner * dens[didx+{{info.acc_stride*4}}-4];
+            v += p; h -= p;
+            v += main * dens[didx+{{info.acc_stride*4}}];
+            p = corner * dens[didx+{{info.acc_stride*4}}-4];
+            v += p; h += p;
+            float sobel_mag = sqrtf(v*v + h*h);
+
             float ls = k1 * logf(1.0f + in.w * k2) / in.w;
             in.x *= ls;
             in.y *= ls;
@@ -174,8 +192,14 @@ void density_est(float4 *pixbuf, float4 *outbuf,
             // then scaled in inverse proportion to the density of the point
             // being scaled.
             float sd = est_sd * powf(den+1.0f, neg_est_curve);
-            // Clamp the final standard deviation. Things will go badly if the
-            // minimum is undershot.
+            // And for the Sobel...
+            float sobel_sd = est_sd * powf(sobel_mag+1.0f, neg_est_curve);
+
+            // If the Sobel SD is smaller than the minimum SD, we're probably
+            // on a strong edge; blur with a standard deviation of 1px.
+            if (sobel_sd < fmaxf(est_min, MIN_SD)) sd = fminf(sd, 0.5f);
+
+            // Clamp the final standard deviation.
             sd = fminf(MAX_SD, fmaxf(sd, est_min));
 
             // Below a certain threshold, only one coeffecient would be
