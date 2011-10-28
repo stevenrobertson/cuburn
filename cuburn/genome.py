@@ -84,7 +84,7 @@ class RenderInfo(object):
     """
     # Number of iterations to iterate without write after generating a new
     # point, including the number of bad
-    fuse = 128
+    fuse = 192
 
     # Height of the texture pallete which gets uploaded to the GPU (assuming
     # that palette-from-texture is enabled). For most genomes, this doesn't
