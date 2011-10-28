@@ -96,7 +96,7 @@ class RenderInfo(object):
     # Maximum width of DE and other spatial filters, and thus in turn the
     # amount of padding applied. Note that, for now, this must not be changed!
     # The filtering code makes deep assumptions about this value.
-    gutter = 16
+    gutter = 22
 
     # TODO: for now, we always throw away the alpha channel before writing.
     # All code is in place to not do this, we just need to find a way to expose
@@ -106,7 +106,6 @@ class RenderInfo(object):
 
     # TODO: fix these
     chaos_used = False
-    std_xforms = [0, 1, 2]
     final_xform_index = 3
     pal_has_alpha = False
     density = 2000

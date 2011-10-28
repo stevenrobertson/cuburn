@@ -87,12 +87,9 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
 class DensityEst(HunkOCode):
     """
     NOTE: for now, this *must* be invoked with a block size of (32,32,1), and
-    a grid size of (W/32,1). At least 15 pixel gutters are required, and the
+    a grid size of (W/32,1). At least 21 pixel gutters are required, and the
     stride and height probably need to be multiples of 32.
     """
-
-    # Note, changing this does not yet have any effect, it's just informational
-    MAX_WIDTH=15
 
     def __init__(self, info):
         self.info = info
@@ -103,9 +100,9 @@ class DensityEst(HunkOCode):
         return self.defs_tmpl.substitute(info=self.info)
 
     defs_tmpl = Template('''
-#define W 15        // Filter width (regardless of standard deviation chosen)
-#define W2 7        // Half of filter width, rounded down
-#define FW 46       // Width of local result storage (NW+W2+W2)
+#define W 21        // Filter width (regardless of standard deviation chosen)
+#define W2 10       // Half of filter width, rounded down
+#define FW 52       // Width of local result storage (NW+W2+W2)
 #define FW2 (FW*FW)
 
 __shared__ float de_r[FW2], de_g[FW2], de_b[FW2], de_a[FW2];
@@ -137,7 +134,7 @@ void logscale(float4 *pixbuf, float4 *outbuf, float k1, float k2) {
 
 // See helpers/filt_err.py for source of these values.
 #define MIN_SD 0.23299530f
-#define MAX_SD 2.5f
+#define MAX_SD 4.33333333f
 
 __global__
 void density_est(float4 *pixbuf, float4 *outbuf,
@@ -199,15 +196,15 @@ void density_est(float4 *pixbuf, float4 *outbuf,
                     filtsum = filtsum * sd +       9.04126644f;
                     filtsum = filtsum * sd +       0.10304667f;
                 } else {
-                    filtsum = -0.00403376f;
-                    filtsum = filtsum * sd +       0.06608720f;
-                    filtsum = filtsum * sd +      -0.38924992f;
-                    filtsum = filtsum * sd +       0.84797901f;
-                    filtsum = filtsum * sd +       0.34173131f;
-                    filtsum = filtsum * sd +      -4.67077589f;
-                    filtsum = filtsum * sd +      14.34595776f;
-                    filtsum = filtsum * sd +      -5.80082798f;
-                    filtsum = filtsum * sd +       1.54098487f;
+                    filtsum = 0.01162011f;
+                    filtsum = filtsum * sd +      -0.21552004f;
+                    filtsum = filtsum * sd +       1.66545594f;
+                    filtsum = filtsum * sd +      -7.00809765f;
+                    filtsum = filtsum * sd +      17.55487633f;
+                    filtsum = filtsum * sd +     -26.80626106f;
+                    filtsum = filtsum * sd +      30.61903954f;
+                    filtsum = filtsum * sd +     -12.00870514f;
+                    filtsum = filtsum * sd +       2.46708894f;
                 }
                 float filtscale = 1.0f / filtsum;
 
@@ -225,6 +222,7 @@ void density_est(float4 *pixbuf, float4 *outbuf,
                         float coeff = exp2f((jj2f + iif * iif) * rsd)
                                     * filtscale;
                         if (coeff < 0.0001f) break;
+                        iif += 1;
 
                         float4 scaled;
                         scaled.x = in.x * coeff;
@@ -247,7 +245,6 @@ void density_est(float4 *pixbuf, float4 *outbuf,
                         de_add(si, -jj, -ii, scaled);
                         de_add(si,  jj, -ii, scaled);
 
-                        iif += 1;
                     }
                 }
             }

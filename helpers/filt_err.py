@@ -1,7 +1,7 @@
 import numpy as np
 
 # The maximum number of coeffecients that will ever be retained on the device
-FWIDTH = 15
+FWIDTH = 21
 
 # The number of points on either side of the center in one dimension
 F2 = int(FWIDTH/2)
