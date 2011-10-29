@@ -391,7 +391,11 @@ void iter(uint64_t accbuf_ptr, mwc_st *msts, float4 *points,
         }
 
         int num_okay = __popc(__ballot(fuse_rounds == 0.0f));
-        if (threadIdx.x == 0) atomicSub(&nsamps, num_okay * 32);
+        // Some xforms give so many badvals that a thread is almost guaranteed
+        // to hit another badval before the fuse is over, causing the card to
+        // spin forever. To avoid this, we count a fuse round as 1/4 of a
+        // sample below.
+        if (threadIdx.x == 0) atomicSub(&nsamps, 256 + num_okay * 24);
         fuse_rounds = fmaxf(0.0f, fuse_rounds - 1.0f);
 
         __syncthreads();
@@ -406,11 +410,6 @@ void iter(uint64_t accbuf_ptr, mwc_st *msts, float4 *points,
     points[this_rb_idx] = make_float4(x, y, color, fuse_rounds);
     msts[this_rb_idx] = rctx;
     return;
-
-    /*if (rctx.state == 0xffffffff && rctx.carry == 0xffffffff) {
-        printf("Warning: runaway sequence, multiplier %8x.\n", rctx.mul);
-        rctx.state = gtid();
-    }*/
 }
 ''')
         return tmpl.substitute(
