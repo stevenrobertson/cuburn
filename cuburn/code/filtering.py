@@ -155,29 +155,26 @@ void density_est(float4 *pixbuf, float4 *outbuf,
 
         if (in.w > 0 && den > 0) {
 
-            // Compute a Sobel derivative, The Terrible Way! Because I'm Lazy.
-            // Or more to the point, because even this sloppy mess is such a
-            // small part of the overall runtime that it's not yet worth
-            // optimizing. Using a [3, 10, 3] Sobel, normalized to represent
-            // the density change over a single pixel.
-            const float corner = 0.0625f;       // (3/16)/3
-            const float main = 0.208333333f;    // (10/16)/3
+            // Compute a fast and dirty approximation of a "gradient" using
+            // a [[-1 0 0][0 0 0][0 0 1]]/4 matrix (and its reflection)
+            // for angled edge detection, and limit blurring in those regions
+            // to both provide a bit of smoothing and prevent irregular
+            // bleed-out along gradients close to the image grid.
+            //
+            // For such a simple operator - particularly one whose entire
+            // justification is "it feels right" - it gives very good results
+            // over a wide range of images without any per-flame
+            // parameter tuning. In rare cases, color clamping and extreme
+            // palette changes can cause aliasing to reappear after the DE
+            // step; the only way to fix that is through a color-buffer AA
+            // like MLAA.
             float *dens = reinterpret_cast<float*>(pixbuf);
             int didx = idx * 4 + 3;
-            float v = 0.0f, h = 0.0f, p;
-            p = corner * dens[didx-{{info.acc_stride*4}}-4];
-            v -= p; h -= p;
-            v -= main * dens[didx-{{info.acc_stride*4}}];
-            p = corner * dens[didx-{{info.acc_stride*4}}+4];
-            v -= p; h += p;
-            h -= main * dens[didx-4];
-            h += main * dens[didx+4];
-            p = corner * dens[didx+{{info.acc_stride*4}}-4];
-            v += p; h -= p;
-            v += main * dens[didx+{{info.acc_stride*4}}];
-            p = corner * dens[didx+{{info.acc_stride*4}}-4];
-            v += p; h += p;
-            float sobel_mag = sqrtf(v*v + h*h);
+            float x = 0.25f * ( dens[didx+{{info.acc_stride*4}}+4]
+                              - dens[didx-{{info.acc_stride*4}}-4] );
+            float y = 0.25f * ( dens[didx+{{info.acc_stride*4}}-4]
+                              - dens[didx-{{info.acc_stride*4}}+4] );
+            float diag_mag = sqrtf(x*x + y*y);
 
             float ls = k1 * logf(1.0f + in.w * k2) / in.w;
             in.x *= ls;
@@ -192,12 +189,12 @@ void density_est(float4 *pixbuf, float4 *outbuf,
             // then scaled in inverse proportion to the density of the point
             // being scaled.
             float sd = est_sd * powf(den+1.0f, neg_est_curve);
-            // And for the Sobel...
-            float sobel_sd = est_sd * powf(sobel_mag+1.0f, neg_est_curve);
+            // And for the gradient...
+            float diag_sd = est_sd * powf(diag_mag+1.0f, neg_est_curve);
 
-            // If the Sobel SD is smaller than the minimum SD, we're probably
-            // on a strong edge; blur with a standard deviation of 1px.
-            if (sobel_sd < fmaxf(est_min, MIN_SD)) sd = fminf(sd, 0.5f);
+            // If the gradient SD is smaller than the minimum SD, we're probably
+            // on a strong edge; blur with a standard deviation around 1px.
+            if (diag_sd < fmaxf(est_min, MIN_SD)) sd = 0.333333f;
 
             // Clamp the final standard deviation.
             sd = fminf(MAX_SD, fmaxf(sd, est_min));
