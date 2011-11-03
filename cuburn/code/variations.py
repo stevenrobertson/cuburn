@@ -731,16 +731,15 @@ var(65, 'lazysusan', """
 
     if (r < w) {
         float a = atan2f(y,x) + {{pv.spin}} + {{pv.twist}} * (w - r);
-        r = w * r;
 
-        ox += r * cosf(a) + lx;
-        oy += r * sinf(a) - ly;
+        ox += w * (r * cosf(a) + lx);
+        oy += w * (r * sinf(a) - ly);
 
     } else {
-        r = w * (1.0f + {{pv.space}} / r);
+        r = (1.0f + {{pv.space}} / r);
 
-        ox += r * x + lx;
-        oy += r * y - ly;
+        ox += w * (r * x + lx);
+        oy += w * (r * y - ly);
     }
     """, 'x y twist space spin')
 
@@ -877,6 +876,19 @@ var(77, 'wedge', """
     oy += r * sinf(a);
     """, 'angle hole count=1 swirl')
 
+var(80, 'whorl', """
+    float r = sqrtf(tx*tx + ty*ty);
+    float a = atan2f(ty,tx);
+    
+    if (r < w)
+       a += {{pv.inside}} / (w - r);
+    else
+       a += {{pv.outside}} / (w - r);
+
+    ox += w * r * cosf(a);
+    oy += w * r * sinf(a);
+    """, 'inside outside')
+    
 var(81, 'waves2', """
     ox += w*(tx + {{pv.scalex}}*sinf(ty * {{pv.freqx}}));
     oy += w*(ty + {{pv.scaley}}*sinf(tx * {{pv.freqy}}));
