@@ -37,11 +37,10 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
 
     if (maxa > 1.0f && highpow >= 0.0f) {
         float lsratio = powf(newls / ls, highpow);
-
         pix.x *= newls;
         pix.y *= newls;
         pix.z *= newls;
-        maxc  *= newls;
+        //maxc  *= newls;
 
         // Reduce saturation (according to the HSV model) by proportionally
         // increasing the values of the other colors.
