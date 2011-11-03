@@ -40,7 +40,6 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
         pix.x *= newls;
         pix.y *= newls;
         pix.z *= newls;
-        //maxc  *= newls;
 
         // Reduce saturation (according to the HSV model) by proportionally
         // increasing the values of the other colors.
