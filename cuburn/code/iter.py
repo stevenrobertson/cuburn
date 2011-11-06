@@ -81,12 +81,12 @@ def precalc_camera(info, pcam):
         {{pre_cam._set('xx')}} = scale * rotcos;
         {{pre_cam._set('xy')}} = scale * -rotsin;
         {{pre_cam._set('xo')}} = scale * (rotsin * ceny - rotcos * cenx)
-                              + {{0.5 * info.width + info.gutter}} + ditherx;
+                              + {{0.5 * (info.width + info.gutter + 1)}} + ditherx;
 
         {{pre_cam._set('yx')}} = scale * rotsin;
         {{pre_cam._set('yy')}} = scale * rotcos;
         {{pre_cam._set('yo')}} = scale * -(rotsin * cenx + rotcos * ceny)
-                              + {{0.5 * info.height + info.gutter}} + dithery;
+                              + {{0.5 * (info.height + info.gutter + 1)}} + dithery;
 
     """).substitute(locals()))
 
