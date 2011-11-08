@@ -1,15 +1,18 @@
 
+import numpy as np
+import pycuda.compiler
+from pycuda.gpuarray import vec
+
 from cuburn.code.util import *
 
-class ColorClip(HunkOCode):
-    def __init__(self, info):
-        self.defs = self.defs_tmpl.substitute(info=info)
+_CODE = '''
+#include<math_constants.h>
 
-    defs_tmpl = Template('''
 __global__
 void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
-               float linrange, float lingam, float3 bkgd, int fbsize) {
-    int i = gtid();
+               float linrange, float lingam, float3 bkgd, int fbsize,
+               int alpha_output_channel) {
+    int i = threadIdx.x + blockDim.x * (blockIdx.x + gridDim.x * blockIdx.y);
     if (i >= fbsize) return;
 
     float4 pix = pixbuf[i];
@@ -61,16 +64,16 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
     pix.y += (1.0f - vibrancy) * powf(opix.y, gamma);
     pix.z += (1.0f - vibrancy) * powf(opix.z, gamma);
 
-    {{if info.alpha_output_channel}}
-    float 1_alpha = 1 / alpha;
-    pix.x *= 1_alpha;
-    pix.y *= 1_alpha;
-    pix.z *= 1_alpha;
-    {{else}}
-    pix.x += (1.0f - alpha) * bkgd.x;
-    pix.y += (1.0f - alpha) * bkgd.y;
-    pix.z += (1.0f - alpha) * bkgd.z;
-    {{endif}}
+    if (alpha_output_channel) {
+        float one_alpha = 1.0f / alpha;
+        pix.x *= one_alpha;
+        pix.y *= one_alpha;
+        pix.z *= one_alpha;
+    } else {
+        pix.x += (1.0f - alpha) * bkgd.x;
+        pix.y += (1.0f - alpha) * bkgd.y;
+        pix.z += (1.0f - alpha) * bkgd.z;
+    }
     pix.w = alpha;
 
     // Clamp values. I think this is superfluous, but I'm not certain.
@@ -80,24 +83,8 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
 
     pixbuf[i] = pix;
 }
-''')
 
-class DensityEst(HunkOCode):
-    """
-    NOTE: for now, this *must* be invoked with a block size of (32,32,1), and
-    a grid size of (W/32,1). At least 21 pixel gutters are required, and the
-    stride and height probably need to be multiples of 32.
-    """
 
-    def __init__(self, info):
-        self.info = info
-
-    headers = "#include<math_constants.h>\n"
-    @property
-    def defs(self):
-        return self.defs_tmpl.substitute(info=self.info)
-
-    defs_tmpl = Template('''
 #define W 21        // Filter width (regardless of standard deviation chosen)
 #define W2 10       // Half of filter width, rounded down
 #define FW 52       // Width of local result storage (NW+W2+W2)
@@ -116,9 +103,7 @@ __device__ void de_add(int ibase, int ii, int jj, float4 scaled) {
 __global__
 void logscale(float4 *pixbuf, float4 *outbuf, float k1, float k2) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
-    float den;
     float4 pix = pixbuf[i];
-    read_pix(pix, den);
 
     float ls = fmaxf(0, k1 * logf(1.0f + pix.w * k2) / pix.w);
     pix.x *= ls;
@@ -137,21 +122,19 @@ void logscale(float4 *pixbuf, float4 *outbuf, float k1, float k2) {
 __global__
 void density_est(float4 *pixbuf, float4 *outbuf,
                  float est_sd, float neg_est_curve, float est_min,
-                 float k1, float k2) {
+                 float k1, float k2, int height, int stride) {
     for (int i = threadIdx.x + 32*threadIdx.y; i < FW2; i += 32)
         de_r[i] = de_g[i] = de_b[i] = de_a[i] = 0.0f;
     __syncthreads();
 
-    for (int imrow = threadIdx.y + W2; imrow < ({{info.acc_height}} - W2); imrow += 32)
+    for (int imrow = threadIdx.y + W2; imrow < (height - W2); imrow += 32)
     {
-        int idx = {{info.acc_stride}} * imrow +
-                + blockIdx.x * 32 + threadIdx.x + W2;
+        int idx = stride * imrow + blockIdx.x * 32 + threadIdx.x + W2;
 
         float4 in = pixbuf[idx];
-        float den;
-        read_pix(in, den);
+        float den = in.w;
 
-        if (in.w > 0 && den > 0) {
+        if (den > 0) {
 
             // Compute a fast and dirty approximation of a "gradient" using
             // a [[-1 0 0][0 0 0][0 0 1]]/4 matrix (and its reflection)
@@ -168,10 +151,10 @@ void density_est(float4 *pixbuf, float4 *outbuf,
             // like MLAA.
             float *dens = reinterpret_cast<float*>(pixbuf);
             int didx = idx * 4 + 3;
-            float x = 0.25f * ( dens[didx+{{info.acc_stride*4}}+4]
-                              - dens[didx-{{info.acc_stride*4}}-4] );
-            float y = 0.25f * ( dens[didx+{{info.acc_stride*4}}-4]
-                              - dens[didx-{{info.acc_stride*4}}+4] );
+            float x = 0.25f * ( dens[didx+stride*4+4]
+                              - dens[didx-stride*4-4] );
+            float y = 0.25f * ( dens[didx+stride*4-4]
+                              - dens[didx-stride*4+4] );
             float diag_mag = sqrtf(x*x + y*y);
 
             float ls = k1 * logf(1.0f + in.w * k2) / in.w;
@@ -272,7 +255,7 @@ void density_est(float4 *pixbuf, float4 *outbuf,
         __syncthreads();
         // TODO: could coalesce this, but what a pain
         for (int i = threadIdx.x; i < FW; i += 32) {
-            idx = {{info.acc_stride}} * imrow + blockIdx.x * 32 + i + W2;
+            idx = stride * imrow + blockIdx.x * 32 + i + W2;
             int si = threadIdx.y * FW + i;
             float *out = reinterpret_cast<float*>(&outbuf[idx]);
             atomicAdd(out,   de_r[si]);
@@ -301,34 +284,70 @@ void density_est(float4 *pixbuf, float4 *outbuf,
         __syncthreads();
     }
 }
+'''
 
-''')
+class Filtering(object):
 
-    def invoke(self, mod, cp, abufd, obufd, stream=None):
-        # TODO: add no-est version
-        # TODO: come up with a general way to average these parameters
+    mod = None
 
-        k1 = np.float32(cp.color.brightness * 268 / 256)
+    @classmethod
+    def init_mod(cls):
+        if cls.mod is None:
+            cls.mod = pycuda.compiler.SourceModule(_CODE,
+                    options=['-use_fast_math', '-maxrregcount', '32'])
+
+    def __init__(self):
+        self.init_mod()
+
+    def de(self, ddst, dsrc, info, start, stop, stream=None):
+        # TODO: use integration to obtain parameter values
+        t = (start + stop) / 2
+        cp = info.genome
+
+        k1 = np.float32(cp.color.brightness(t) * 268 / 256)
         # Old definition of area is (w*h/(s*s)). Since new scale 'ns' is now
         # s/w, new definition is (w*h/(s*s*w*w)) = (h/(s*s*w))
-        area = self.info.height / (cp.camera.scale ** 2 * self.info.width)
-        k2 = np.float32(1 / (area * self.info.density ))
+        area = info.height / (cp.camera.scale(t) ** 2 * info.width)
+        k2 = np.float32(1 / (area * info.density))
 
         if cp.de.radius == 0:
-            nbins = self.info.acc_height * self.info.acc_stride
-            fun = mod.get_function("logscale")
-            t = fun(abufd, obufd, k1, k2,
+            nbins = info.acc_height * info.acc_stride
+            fun = self.mod.get_function("logscale")
+            t = fun(dsrc, ddst, k1, k2,
                     block=(512, 1, 1), grid=(nbins/512, 1), stream=stream)
         else:
             # flam3_gaussian_filter() uses an implicit standard deviation of
             # 0.5, but the DE filters scale filter distance by the default
             # spatial support factor of 1.5, so the effective base SD is
             # (0.5/1.5)=1/3.
-            est_sd = np.float32(cp.de.radius / 3.)
-            neg_est_curve = np.float32(-cp.de.curve)
-            est_min = np.float32(cp.de.minimum / 3.)
-            fun = mod.get_function("density_est")
-            fun(abufd, obufd, est_sd, neg_est_curve, est_min, k1, k2,
-                block=(32, 32, 1), grid=(self.info.acc_width/32, 1),
-                stream=stream)
+            est_sd = np.float32(cp.de.radius(t) / 3.)
+            neg_est_curve = np.float32(-cp.de.curve(t))
+            est_min = np.float32(cp.de.minimum(t) / 3.)
+            fun = self.mod.get_function("density_est")
+            fun(dsrc, ddst, est_sd, neg_est_curve, est_min, k1, k2,
+                np.int32(info.acc_height), np.int32(info.acc_stride),
+                block=(32, 32, 1), grid=(info.acc_width/32, 1), stream=stream)
+
+    def colorclip(self, dbuf, info, start, stop, stream=None):
+        f32 = np.float32
+        t = (start + stop) / 2
+        cp = info.genome
+        nbins = info.acc_height * info.acc_stride
+
+        # TODO: implement integration over cubic splines?
+        gam = f32(1 / cp.color.gamma(t))
+        vib = f32(cp.color.vibrancy(t))
+        hipow = f32(cp.color.highlight_power(t))
+        lin = f32(cp.color.gamma_threshold(t))
+        lingam = f32(lin ** (gam-1.0) if lin > 0 else 0)
+        bkgd = vec.make_float3(
+                cp.color.background.r(t),
+                cp.color.background.g(t),
+                cp.color.background.b(t))
+
+        color_fun = self.mod.get_function("colorclip")
+        blocks = int(np.ceil(np.sqrt(nbins / 256)))
+        color_fun(dbuf, gam, vib, hipow, lin, lingam, bkgd, np.int32(nbins),
+                  np.int32(0),
+                  block=(256, 1, 1), grid=(blocks, blocks), stream=stream)
 

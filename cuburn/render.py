@@ -1,6 +1,5 @@
 import os
 import sys
-import math
 import re
 import time as timemod
 import tempfile
@@ -18,7 +17,6 @@ from fr0stlib.pyflam3.constants import *
 import pycuda.compiler
 import pycuda.driver as cuda
 import pycuda.tools
-from pycuda.gpuarray import vec
 
 import cuburn.genome
 from cuburn import affine
@@ -50,13 +48,13 @@ class Renderer(object):
 
     def __init__(self, info):
         self.info = info
-        self._iter = self._de = self.src = self.cubin = self.mod = None
+        self._iter = self.src = self.cubin = self.mod = None
         self.packed_genome = None
 
         # Ensure class options don't get contaminated on an instance
         self.cmp_options = list(self.cmp_options)
 
-    def compile(self, keep=None, cmp_options=None):
+    def compile(self, keep=None, cmp_options=None, jit_options=[]):
         """
         Compile a kernel capable of rendering every frame in this animation.
         The resulting compiled kernel is stored in the ``cubin`` property;
@@ -72,41 +70,18 @@ class Renderer(object):
         cmp_options = self.cmp_options if cmp_options is None else cmp_options
 
         self._iter = iter.IterCode(self.info)
-        self._de = filtering.DensityEst(self.info)
-        cclip = filtering.ColorClip(self.info)
         self._iter.packer.finalize()
         self.src = util.assemble_code(util.BaseCode, mwc.MWC, self._iter.packer,
-                                      self._iter, cclip, self._de)
+                                      self._iter)
         with open(os.path.join(tempfile.gettempdir(), 'kernel.cu'), 'w') as fp:
             fp.write(self.src)
         self.cubin = pycuda.compiler.compile(
                 self.src, keep=keep, options=cmp_options,
                 cache_dir=False if keep else None)
-        return self.src
-
-    def copy(self):
-        """
-        Return a copy of this animation without any references to the current
-        CUDA context. This can be used to load an animation in multiple CUDA
-        contexts without recompiling, so that rendering can proceed across
-        multiple devices - but managing that is up to you.
-        """
-        import copy
-        new = copy.copy(self)
-        new.mod = None
-        return new
-
-    def load(self, jit_options=[]):
-        """
-        Replace the currently loaded CUDA module in the active CUDA context
-        with the compiled code's module. A reference is kept to the module,
-        meaning that rendering should henceforth only be called from the
-        thread and context in which this function was called.
-        """
-        if self.cubin is None:
-            self.compile()
         self.mod = cuda.module_from_buffer(self.cubin, jit_options)
-
+        with open('/tmp/iter_kern.cubin', 'wb') as fp:
+            fp.write(self.cubin)
+        return self.src
 
     def render(self, times):
         """
@@ -125,6 +100,8 @@ class Renderer(object):
         """
         if times == []:
             return
+
+        filt = filtering.Filtering()
 
         reset_rb_fun = self.mod.get_function("reset_rb")
         packer_fun = self.mod.get_function("interp_iter_params")
@@ -193,8 +170,6 @@ class Renderer(object):
         last_idx = None
 
         for idx, start, stop in times:
-            cen_cp = cuburn.genome.HacketyGenome(info.genome, (start+stop)/2)
-
             width = np.float32((stop-start) / info.palette_height)
             palette_fun(d_palmem, d_palint_times, d_palint_vals,
                         np.float32(start), width,
@@ -234,25 +209,11 @@ class Renderer(object):
                      grid=(ntemporal_samples, 1),
                      texrefs=[tref], stream=stream)
 
+            stream.synchronize()
+
             util.BaseCode.fill_dptr(self.mod, d_out, 4 * nbins, stream)
-            self._de.invoke(self.mod, cen_cp, d_accum, d_out, stream)
-
-            f32 = np.float32
-            # TODO: implement integration over cubic splines?
-            gam = f32(1 / cen_cp.color.gamma)
-            vib = f32(cen_cp.color.vibrancy)
-            hipow = f32(cen_cp.color.highlight_power)
-            lin = f32(cen_cp.color.gamma_threshold)
-            lingam = f32(math.pow(lin, gam-1.0) if lin > 0 else 0)
-            bkgd = vec.make_float3(
-                    cen_cp.color.background.r,
-                    cen_cp.color.background.g,
-                    cen_cp.color.background.b)
-
-            color_fun = self.mod.get_function("colorclip")
-            blocks = int(np.ceil(np.sqrt(nbins / 256)))
-            color_fun(d_out, gam, vib, hipow, lin, lingam, bkgd, np.int32(nbins),
-                      block=(256, 1, 1), grid=(blocks, blocks), stream=stream)
+            filt.de(d_out, d_accum, info, start, stop, stream)
+            filt.colorclip(d_out, info, start, stop, stream)
             cuda.memcpy_dtoh_async(h_out_a, d_out, stream)
 
             if event_b:
