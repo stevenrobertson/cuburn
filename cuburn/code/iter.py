@@ -372,27 +372,20 @@ void iter(
 #define SHAB 12
 #define SHAW (1<<SHAB)
 
-// These two accumulators, used in write_shmem, hold {density, red} and
-// {green, blue} values as packed u16 pairs. The fixed size represents 4,096
-// pixels in the accumulator.
-__shared__ uint32_t s_acc_dr[SHAW];
-__shared__ uint32_t s_acc_gb[SHAW];
-
 // Read from the shm accumulators and write to the global ones.
 __device__
 void write_shmem_helper(
         float4 *acc,
-        const int glo_base,
-        const int idx
+        const int glo_idx,
+        const int dr,
+        const int gb
 ) {
-    float4 pix = acc[glo_base+idx];
-    uint32_t dr = s_acc_dr[idx];
+    float4 pix = acc[glo_idx];
     pix.x += (dr & 0xffff) / 255.0f;
     pix.w += dr >> 16;
-    uint32_t gb = s_acc_gb[idx];
     pix.y += (gb & 0xffff) / 255.0f;
     pix.z += (gb >> 16) / 255.0f;
-    acc[glo_base+idx] = pix;
+    acc[glo_idx] = pix;
 }
 
 // Read the point log, accumulate in shared memory, and write the results.
@@ -416,6 +409,12 @@ write_shmem(
 ) {
     const int tid = threadIdx.x;
     const int bid = blockIdx.x;
+
+    // These two accumulators, used in write_shmem, hold {density, red} and
+    // {green, blue} values as packed u16 pairs. The fixed size represents
+    // 4,096 pixels in the accumulator.
+    __shared__ uint32_t s_acc_dr[SHAW];
+    __shared__ uint32_t s_acc_gb[SHAW];
 
     // TODO: doesn't respect SHAW/BS
     // TODO: compare generated code with unrolled for-loop
@@ -483,7 +482,7 @@ write_shmem(
         if (d == 250) {
             atomicSub(s_acc_dr + shr_addr, dr);
             atomicSub(s_acc_gb + shr_addr, gb);
-            write_shmem_helper(acc, glo_base, shr_addr);
+            write_shmem_helper(acc, glo_base + shr_addr, dr, gb);
         }
         time += time_step;
     }
@@ -491,7 +490,7 @@ write_shmem(
     __syncthreads();
     int idx = tid;
     for (int i = 0; i < (SHAW / BS); i++) {
-        write_shmem_helper(acc, glo_base, idx);
+        write_shmem_helper(acc, glo_base + idx, s_acc_dr[idx], s_acc_gb[idx]);
         idx += BS;
     }
 }
