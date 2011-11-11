@@ -122,7 +122,6 @@ class IterCode(HunkOCode):
         bodies = [self._xfbody(i,x) for i,x in sorted(info.genome.xforms.items())]
         bodies.append(iterbody)
         self.defs = '\n'.join(bodies)
-        self.decls += self.pix_helpers.substitute(info=info)
 
     decls = """
 // Note: for normalized lookups, uchar4 actually returns floats
@@ -131,78 +130,6 @@ __shared__ iter_params params;
 __device__ int rb_head, rb_tail, rb_size;
 
 """
-
-    pix_helpers = Template("""
-__device__
-void read_pix(float4 &pix, float &den) {
-    den = pix.w;
-    {{if info.pal_has_alpha}}
-    read_half(pix.z, pix.w, pix.z, den);
-    {{endif}}
-}
-
-__device__
-void write_pix(float4 &pix, float den) {
-    {{if info.pal_has_alpha}}
-    write_half(pix.z, pix.z, pix.w, den);
-    {{endif}}
-    pix.w = den;
-}
-
-__device__
-void update_pix(uint64_t ptr, uint32_t i, float4 c) {
-    {{if info.pal_has_alpha}}
-    asm volatile ({{crep('''
-    {
-        .reg .u16       sz, sw;
-        .reg .u64       base, off;
-        .reg .f32       x, y, z, w, den, rc, tz, tw;
-
-        // TODO: this limits the accumulation buffer to <4GB
-        shl.b32         %0,     %0,     4;
-        cvt.u64.u32     off,    %0;
-        add.u64         base,   %1,     off;
-        ld.cg.v4.f32    {x, y, z, den},         [base];
-        add.f32         x,      x,      %2;
-        add.f32         y,      y,      %3;
-        mov.b32         {sz, sw},       z;
-        cvt.rn.f32.u16  tz,     sz;
-        cvt.rn.f32.u16  tw,     sw;
-        mul.f32         tz,     tz,     den;
-        mul.f32         tw,     tz,     den;
-        fma.f32         tz,     %4,     65535.0,    tz;
-        fma.f32         tw,     %5,     65535.0,    tw;
-        add.f32         den,    1.0;
-        rcp.approx.f32  rc,     den;
-        mul.f32         tz,     tz,     rc;
-        mul.f32         tw,     tw,     rc;
-        cvt.rni.u16.f32 sz,     tz;
-        cvt.rni.u16.f32 sw,     tw;
-        mov.b32         z,      {sz, sw};
-        st.cs.v4.f32    [base], {x, y, z, den};
-    }
-    ''')}} : "+r"(i) : "l"(ptr), "f"(c.x), "f"(c.y), "f"(c.z), "f"(c.w));
-    {{else}}
-    asm volatile ({{crep('''
-    {
-        .reg .u64       base, off;
-        .reg .f32       x, y, z, den;
-
-        // TODO: this limits the accumulation buffer to <4GB
-        shl.b32         %0,     %0,     4;
-        cvt.u64.u32     off,    %0;
-        add.u64         base,   %1,     off;
-        ld.cg.v4.f32    {x, y, z, den},         [base];
-        add.f32         x,      x,      %2;
-        add.f32         y,      y,      %3;
-        add.f32         z,      z,      %4;
-        add.f32         den,    den,    1.0;
-        st.cs.v4.f32    [base], {x, y, z, den};
-    }
-    ''')}} : "+r"(i) : "l"(ptr), "f"(c.x), "f"(c.y), "f"(c.z));
-    {{endif}}
-}
-""")
 
     def _xfbody(self, xfid, xform):
         px = self.pcp.xforms[xfid]
@@ -249,19 +176,23 @@ __global__ void reset_rb(int size) {
 }
 
 __global__
-void iter(uint64_t accbuf_ptr, mwc_st *msts, float4 *points,
-          const iter_params *all_params, int nsamps_to_generate) {
+void iter(
+        uint64_t out_ptr,
+        mwc_st *msts,
+        float4 *points,
+        const iter_params *all_params,
+        int nsamps_to_generate
+) {
     const iter_params *global_params = &(all_params[blockIdx.x]);
 
-    __shared__ int nsamps;
-    nsamps = nsamps_to_generate;
-
+{{if info.acc_mode != 'deferred'}}
     __shared__ float time_frac;
     time_frac = blockIdx.x / (float) gridDim.x;
+{{endif}}
 
     // load params to shared memory cooperatively
     for (int i = threadIdx.y * blockDim.x + threadIdx.x;
-         i * 4 < sizeof(iter_params); i += blockDim.x * blockDim.y)
+         i < (sizeof(iter_params) / 4); i += blockDim.x * blockDim.y)
         reinterpret_cast<float*>(&params)[i] =
             reinterpret_cast<const float*>(global_params)[i];
 
@@ -272,9 +203,10 @@ void iter(uint64_t accbuf_ptr, mwc_st *msts, float4 *points,
     __syncthreads();
     int this_rb_idx = rb_idx + threadIdx.x + 32 * threadIdx.y;
     mwc_st rctx = msts[this_rb_idx];
+
+    // TODO: 4th channel unused. Kill or use for something helpful
     float4 old_point = points[this_rb_idx];
-    float x = old_point.x, y = old_point.y,
-          color = old_point.z, fuse_rounds = old_point.w;
+    float x = old_point.x, y = old_point.y, color = old_point.z;
 
 {{if info.chaos_used}}
     int last_xf_used = 0;
@@ -290,116 +222,139 @@ void iter(uint64_t accbuf_ptr, mwc_st *msts, float4 *points,
     __syncthreads();
 {{endif}}
 
+    bool fuse = false;
 
-    while (1) {
-        // This condition checks for large numbers, Infs, and NaNs.
-        if (!(-(fabsf(x) + fabsf(y) > -1.0e6f))) {
-            x = mwc_next_11(rctx);
-            y = mwc_next_11(rctx);
-            color = mwc_next_01(rctx);
-            fuse_rounds = {{info.fuse / 32}};
-        }
+    // This condition checks for large numbers, Infs, and NaNs.
+    if (!(-(fabsf(x) + fabsf(y)) > -1.0e6f)) {
+        x = mwc_next_11(rctx);
+        y = mwc_next_11(rctx);
+        color = mwc_next_01(rctx);
+        fuse = true;
+    }
 
-        // 32 rounds is somewhat arbitrary, but it has a pleasing 32-ness
-        for (int i = 0; i < 32; i++) {
+    // TODO: link up with FUSE, etc
+    for (int round = 0; round < 256; round++) {
 
 {{if info.chaos_used}}
 
-            {{precalc_chaos(pcp, std_xforms)}}
+        {{precalc_chaos(pcp, std_xforms)}}
 
-            // For now, we don't attempt to use the swap buffer when chaos is used
-            float xfsel = mwc_next_01(rctx);
+        // For now, we don't attempt to use the swap buffer when chaos is used
+        float xfsel = mwc_next_01(rctx);
 
-            {{for prior_xform_idx, prior_xform_name in enumerate(std_xforms)}}
-            if (last_xf_used == {{prior_xform_idx}}) {
-                {{for xform_idx, xform_name in enumerate(std_xforms[:-1])}}
-                if (xfsel <= {{pcp['chaos_'+prior_xform_name+'_'+xform_name]}}) {
-                    apply_xf_{{xform_name}}(x, y, color, rctx);
-                    last_xf_used = {{xform_idx}};
-                } else
-                {{endfor}}
-                {
-                    apply_xf_{{std_xforms[-1]}}(x, y, color, rctx);
-                    last_xf_used = {{len(std_xforms)-1}};
-                }
+        {{for prior_xform_idx, prior_xform_name in enumerate(std_xforms)}}
+        if (last_xf_used == {{prior_xform_idx}}) {
+            {{for xform_idx, xform_name in enumerate(std_xforms[:-1])}}
+            if (xfsel <= {{pcp['chaos_'+prior_xform_name+'_'+xform_name]}}) {
+                apply_xf_{{xform_name}}(x, y, color, rctx);
+                last_xf_used = {{xform_idx}};
             } else
             {{endfor}}
             {
-                printf("Something went *very* wrong.\n");
-                asm("trap;");
-            }
-
-{{else}}
-            {{precalc_densities(pcp, std_xforms)}}
-            float xfsel = cosel[threadIdx.y];
-
-            {{for xform_name in std_xforms[:-1]}}
-            if (xfsel <= {{pcp['den_'+xform_name]}}) {
-                apply_xf_{{xform_name}}(x, y, color, rctx);
-            } else
-            {{endfor}}
                 apply_xf_{{std_xforms[-1]}}(x, y, color, rctx);
-
-            int sw = (threadIdx.y * 32 + threadIdx.x * 33) & {{NTHREADS-1}};
-            int sr = threadIdx.y * 32 + threadIdx.x;
-
-            swap[sw] = fuse_rounds;
-            swap[sw+{{NTHREADS}}] = x;
-            swap[sw+{{2*NTHREADS}}] = y;
-            swap[sw+{{3*NTHREADS}}] = color;
-            __syncthreads();
-
-            // We select the next xforms here, since we've just synced.
-            if (threadIdx.y == 0 && threadIdx.x < {{NWARPS}})
-                cosel[threadIdx.x] = mwc_next_01(rctx);
-
-            fuse_rounds = swap[sr];
-            x = swap[sr+{{NTHREADS}}];
-            y = swap[sr+{{2*NTHREADS}}];
-            color = swap[sr+{{3*NTHREADS}}];
-
-{{endif}}
-
-            if (fuse_rounds > 0.0f) continue;
-
-{{if 'final' in cp.xforms}}
-            float fx = x, fy = y, fcolor = color;
-            apply_xf_final(fx, fy, fcolor, rctx);
-{{endif}}
-
-            float cx, cy, cc;
-
-            {{precalc_camera(info, pcp.camera)}}
-
-{{if 'final' in cp.xforms}}
-            {{apply_affine('fx', 'fy', 'cx', 'cy', pcp.camera)}}
-            cc = fcolor;
-{{else}}
-            {{apply_affine('x', 'y', 'cx', 'cy', pcp.camera)}}
-            cc = color;
-{{endif}}
-
-            uint32_t ix = trunca(cx), iy = trunca(cy);
-
-            if (ix >= {{info.acc_width}} || iy >= {{info.acc_height}})
-                continue;
-
-            uint32_t i = iy * {{info.acc_stride}} + ix;
-
-            float4 outcol = tex2D(palTex, cc, time_frac);
-            update_pix(accbuf_ptr, i, outcol);
+                last_xf_used = {{len(std_xforms)-1}};
+            }
+        } else
+        {{endfor}}
+        {
+            printf("Something went *very* wrong.\n");
+            asm("trap;");
         }
 
-        int num_okay = __popc(__ballot(fuse_rounds == 0.0f));
-        // Some xforms give so many badvals that a thread is almost guaranteed
-        // to hit another badval before the fuse is over, causing the card to
-        // spin forever. To avoid this, we count a fuse round as 1/4 of a
-        // sample below.
-        if (threadIdx.x == 0) atomicSub(&nsamps, 256 + num_okay * 24);
-        fuse_rounds = fmaxf(0.0f, fuse_rounds - 1.0f);
+{{else}}
+        {{precalc_densities(pcp, std_xforms)}}
+        float xfsel = cosel[threadIdx.y];
 
+        {{for xform_name in std_xforms[:-1]}}
+        if (xfsel <= {{pcp['den_'+xform_name]}}) {
+            apply_xf_{{xform_name}}(x, y, color, rctx);
+        } else
+        {{endfor}}
+            apply_xf_{{std_xforms[-1]}}(x, y, color, rctx);
+
+        int sw = (threadIdx.y * 32 + threadIdx.x * 33) & {{NTHREADS-1}};
+        int sr = threadIdx.y * 32 + threadIdx.x;
+
+        swap[sw] = fuse ? 1.0f : 0.0f;
+        swap[sw+{{NTHREADS}}] = x;
+        swap[sw+{{2*NTHREADS}}] = y;
+        swap[sw+{{3*NTHREADS}}] = color;
         __syncthreads();
-        if (nsamps <= 0) break;
+
+        // We select the next xforms here, since we've just synced.
+        if (threadIdx.y == 0 && threadIdx.x < {{NWARPS}})
+            cosel[threadIdx.x] = mwc_next_01(rctx);
+
+        fuse = swap[sr];
+        x = swap[sr+{{NTHREADS}}];
+        y = swap[sr+{{2*NTHREADS}}];
+        color = swap[sr+{{3*NTHREADS}}];
+
+{{endif}}
+
+{{if info.acc_mode == 'deferred'}}
+        int tid = threadIdx.y * 32 + threadIdx.x;
+        int offset = 4 * (256 * (256 * blockIdx.x + round) + tid);
+        int *log = reinterpret_cast<int*>(out_ptr + offset);
+{{endif}}
+
+        if (fuse) {
+{{if info.acc_mode == 'deferred'}}
+            *log = 0xffffffff;
+{{endif}}
+            continue;
+        }
+
+{{if 'final' in cp.xforms}}
+        float fx = x, fy = y, fcolor = color;
+        apply_xf_final(fx, fy, fcolor, rctx);
+{{endif}}
+
+        float cx, cy, cc;
+
+        {{precalc_camera(info, pcp.camera)}}
+
+{{if 'final' in cp.xforms}}
+        {{apply_affine('fx', 'fy', 'cx', 'cy', pcp.camera)}}
+        cc = fcolor;
+{{else}}
+        {{apply_affine('x', 'y', 'cx', 'cy', pcp.camera)}}
+        cc = color;
+{{endif}}
+
+        uint32_t ix = trunca(cx), iy = trunca(cy);
+
+        if (ix >= {{info.acc_width}} || iy >= {{info.acc_height}}) {
+{{if info.acc_mode == 'deferred'}}
+            *log = 0xffffffff;
+{{endif}}
+            continue;
+        }
+
+        uint32_t i = iy * {{info.acc_stride}} + ix;
+
+{{if info.acc_mode == 'atomic'}}
+        float4 outcol = tex2D(palTex, cc, time_frac);
+        float *accbuf_f = reinterpret_cast<float*>(out_ptr + (16*i));
+        atomicAdd(accbuf_f,   outcol.x);
+        atomicAdd(accbuf_f+1, outcol.y);
+        atomicAdd(accbuf_f+2, outcol.z);
+        atomicAdd(accbuf_f+3, 1.0f);
+{{elif info.acc_mode == 'global'}}
+        float4 outcol = tex2D(palTex, cc, time_frac);
+        float4 *accbuf = reinterpret_cast<float4*>(out_ptr + (16*i));
+        float4 pix = *accbuf;
+        pix.x += outcol.x;
+        pix.y += outcol.y;
+        pix.z += outcol.z;
+        pix.w += 1.0f;
+        *accbuf = pix;
+{{elif info.acc_mode == 'deferred'}}
+        // 'color' gets the top 9 bits. TODO: add dithering via precalc.
+        uint32_t icolor = cc * 512.0f;
+        asm("bfi.b32    %0, %1, %0, 23, 9;" : "+r"(i) : "r"(icolor));
+        *log = i;
+{{endif}}
     }
 
     if (threadIdx.x == 0 && threadIdx.y == 0)
@@ -407,10 +362,140 @@ void iter(uint64_t accbuf_ptr, mwc_st *msts, float4 *points,
     __syncthreads();
     this_rb_idx = rb_idx + threadIdx.x + 32 * threadIdx.y;
 
-    points[this_rb_idx] = make_float4(x, y, color, fuse_rounds);
+    points[this_rb_idx] = make_float4(x, y, color, 0.0f);
     msts[this_rb_idx] = rctx;
     return;
 }
+
+// Block size, shared accumulation bits, shared accumulation width.
+#define BS 1024
+#define SHAB 12
+#define SHAW (1<<SHAB)
+
+// These two accumulators, used in write_shmem, hold {density, red} and
+// {green, blue} values as packed u16 pairs. The fixed size represents 4,096
+// pixels in the accumulator.
+__shared__ uint32_t s_acc_dr[SHAW];
+__shared__ uint32_t s_acc_gb[SHAW];
+
+// Read from the shm accumulators and write to the global ones.
+__device__
+void write_shmem_helper(
+        float4 *acc,
+        const int glo_base,
+        const int idx
+) {
+    float4 pix = acc[glo_base+idx];
+    uint32_t dr = s_acc_dr[idx];
+    pix.x += (dr & 0xffff) / 255.0f;
+    pix.w += dr >> 16;
+    uint32_t gb = s_acc_gb[idx];
+    pix.y += (gb & 0xffff) / 255.0f;
+    pix.z += (gb >> 16) / 255.0f;
+    acc[glo_base+idx] = pix;
+}
+
+// Read the point log, accumulate in shared memory, and write the results.
+// This kernel is to be launched with one block for every 4,096 addresses to
+// be processed, and will handle those addresses.
+//
+// log_bounds is an array mapping radix values to the first index in the log
+// with that radix position. For performance reasons in other parts of the
+// code, the radix may actually include bits within the lower SHAB part of the
+// address, or it might not cover the first few bits after the SHAB part;
+// log_bounds_shift covers that. glob_addr_bits specifies the number of bits
+// above SHAB which are address bits.
+
+__global__ void
+__launch_bounds__(BS, 1)
+write_shmem(
+        float4 *acc,
+        const uint32_t *log,
+        const uint32_t *log_bounds,
+        const int log_bounds_shift
+) {
+    const int tid = threadIdx.x;
+    const int bid = blockIdx.x;
+
+    // TODO: doesn't respect SHAW/BS
+    // TODO: compare generated code with unrolled for-loop
+    s_acc_dr[tid] = 0;
+    s_acc_gb[tid] = 0;
+    s_acc_dr[tid+BS] = 0;
+    s_acc_gb[tid+BS] = 0;
+    s_acc_dr[tid+2*BS] = 0;
+    s_acc_gb[tid+2*BS] = 0;
+    s_acc_dr[tid+3*BS] = 0;
+    s_acc_gb[tid+3*BS] = 0;
+    __syncthreads();
+
+    // TODO: share across threads - discernable performance impact?
+    int lb_idx_lo, lb_idx_hi;
+    if (log_bounds_shift > 0) {
+        lb_idx_hi = ((bid + 1) << log_bounds_shift) - 1;
+        lb_idx_lo = (bid << log_bounds_shift) - 1;
+    } else {
+        lb_idx_hi = bid >> (-log_bounds_shift);
+        lb_idx_lo = lb_idx_hi - 1;
+    }
+
+    int idx_lo, idx_hi;
+    if (lb_idx_lo < 0) idx_lo = 0;
+    else idx_lo = log_bounds[lb_idx_lo] & ~(BS-1);
+    idx_hi = (log_bounds[lb_idx_hi] & ~(BS - 1)) + BS;
+
+    float rnrounds = 1.0f / (idx_hi - idx_lo);
+    float time = tid * rnrounds;
+    float time_step = BS * rnrounds;
+
+    int glo_base = bid << SHAB;
+
+    for (int i = idx_lo + tid; i < idx_hi; i += BS) {
+        int entry = log[i];
+
+
+        // TODO: constant '11' is really just 32 - 9 - SHAB, where 9 is the
+        // number of bits assigned to color. This ignores opacity.
+        bfe_decl(glob_addr, entry, SHAB, 11);
+        if (glob_addr != bid) continue;
+
+        bfe_decl(shr_addr, entry, 0, SHAB);
+        bfe_decl(color, entry, 23, 9);
+
+        float colorf = color / 512.0f;
+        float4 outcol = tex2D(palTex, colorf, time);
+
+        // TODO: change texture sampler to return shorts and avoid this
+        uint32_t r = 255.0f * outcol.x;
+        uint32_t g = 255.0f * outcol.y;
+        uint32_t b = 255.0f * outcol.z;
+
+        uint32_t dr = atomicAdd(s_acc_dr + shr_addr, r + 0x10000);
+        uint32_t gb = atomicAdd(s_acc_gb + shr_addr, g + (b << 16));
+        uint32_t d = dr >> 16;
+
+        // Neat trick: if overflow is about to happen, write the accumulator,
+        // and subtract the last known values from the accumulator again.
+        // Even if the ints end up wrapping around once before the subtraction
+        // can occur, the results after the subtraction will be correct.
+        // (Wrapping twice will mess up the intermediate write, but is pretty
+        // unlikely.)
+        if (d == 250) {
+            atomicSub(s_acc_dr + shr_addr, dr);
+            atomicSub(s_acc_gb + shr_addr, gb);
+            write_shmem_helper(acc, glo_base, shr_addr);
+        }
+        time += time_step;
+    }
+
+    __syncthreads();
+    int idx = tid;
+    for (int i = 0; i < (SHAW / BS); i++) {
+        write_shmem_helper(acc, glo_base, idx);
+        idx += BS;
+    }
+}
+
 ''')
         return tmpl.substitute(
                 info = self.info,

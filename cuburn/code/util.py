@@ -71,6 +71,13 @@ float3 hsv2rgb(float3 hsv);
 #define  M_SQRT2      1.41421353816986f
 #define  M_SQRT1_2    0.70710676908493f
 
+#define bfe(d, s, o, w) \
+        asm("bfe.u32 %0, %1, %2, %3;" : "=r"(d) : "r"(s), "r"(o), "r"(w))
+
+#define bfe_decl(d, s, o, w) \
+        int d; \
+        bfe(d, s, o, w)
+
 // TODO: use launch parameter preconfig to eliminate unnecessary parts
 __device__
 uint32_t gtid() {

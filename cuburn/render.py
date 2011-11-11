@@ -20,9 +20,12 @@ import pycuda.tools
 
 import cuburn.genome
 from cuburn import affine
-from cuburn.code import util, mwc, iter, filtering
+from cuburn.code import util, mwc, iter, filtering, sort
 
 RenderedImage = namedtuple('RenderedImage', 'buf idx gpu_time')
+
+def _sync_stream(dst, src):
+    dst.wait_for_event(cuda.Event(cuda.event_flags.DISABLE_TIMING).record(src))
 
 class Renderer(object):
     """
@@ -107,15 +110,46 @@ class Renderer(object):
         packer_fun = self.mod.get_function("interp_iter_params")
         palette_fun = self.mod.get_function("interp_palette_hsv")
         iter_fun = self.mod.get_function("iter")
+        write_fun = self.mod.get_function("write_shmem")
 
         info = self.info
-        stream = cuda.Stream()
-        event_a = cuda.Event().record(stream)
+
+        # The synchronization model is messy. See helpers/task_model.svg.
+        iter_stream = cuda.Stream()
+        filt_stream = cuda.Stream()
+        if info.acc_mode == 'deferred':
+            write_stream = cuda.Stream()
+        else:
+            write_stream = iter_stream
+
+        # These events fire when the corresponding buffer is available for
+        # reading on the host (i.e. the copy is done). On the first pass, 'a'
+        # will be ignored, and subsequently moved to 'b'.
+        event_a = cuda.Event().record(filt_stream)
         event_b = None
 
         nbins = info.acc_height * info.acc_stride
         d_accum = cuda.mem_alloc(16 * nbins)
         d_out = cuda.mem_alloc(16 * nbins)
+
+        if info.acc_mode == 'deferred':
+            # Having a fixed, power-of-two log size makes things much easier
+            log_size = 64 << 20
+            d_log = cuda.mem_alloc(log_size * 4)
+            d_log_sorted = cuda.mem_alloc(log_size * 4)
+            sorter = sort.Sorter(log_size)
+
+            # Shared accumulators take care of the lowest 12 bits, but due to
+            # a quirk of the sort implementation, asking the sort to handle
+            # fewer bits than it is compiled for will make it considerably
+            # slower (and it can't be compiled for <7b), so we actually dig in
+            # to the accumulator's SHAB window for those cases.
+            SHAB = np.int32(12)
+            address_bits = np.int32(np.ceil(np.log2(nbins+1)))
+            start_bit = address_bits - sorter.radix_bits
+            log_shift = np.int32(SHAB - start_bit)
+            nwriteblocks = int(np.ceil(nbins / (1<<SHAB)))
+            print start_bit, log_shift, nwriteblocks
 
         # Calculate 'nslots', the number of simultaneous running threads that
         # can be active on the GPU during iteration (and thus the number of
@@ -131,7 +165,6 @@ class Renderer(object):
         nsms = cuda.Context.get_device().multiprocessor_count
         rb_size = occupancy.warps_per_mp * nsms / (iter_threads_per_block / 32)
         nslots = iter_threads_per_block * rb_size
-        ntemporal_samples = int(np.ceil(1000. / rb_size) * rb_size)
 
         # Reset the ringbuffer info for the slots
         reset_rb_fun(np.int32(rb_size), block=(1,1,1))
@@ -140,6 +173,11 @@ class Renderer(object):
         seeds = mwc.MWC.make_seeds(nslots)
         d_seeds = cuda.to_device(seeds)
 
+        # We used to auto-calculate this to a multiple of the number of SMs on
+        # the device, but since we now use shorter launches and, to a certain
+        # extent, allow simultaneous occupancy, that's not as important. The
+        # 1024 is a magic constant, though: FUSE
+        ntemporal_samples = 1024
         genome_times, genome_knots = self._iter.packer.pack()
         d_genome_times = cuda.to_device(genome_times)
         d_genome_knots = cuda.to_device(genome_knots)
@@ -174,7 +212,7 @@ class Renderer(object):
             palette_fun(d_palmem, d_palint_times, d_palint_vals,
                         np.float32(start), width,
                         block=(256,1,1), grid=(info.palette_height,1),
-                        stream=stream)
+                        stream=write_stream)
 
             # TODO: do we need to do this each time in order to reset cache?
             tref = self.mod.get_texref('palTex')
@@ -188,11 +226,11 @@ class Renderer(object):
                        np.float32(start), width, d_seeds,
                        np.int32(ntemporal_samples), block=(256,1,1),
                        grid=(int(np.ceil(ntemporal_samples/256.)),1),
-                       stream=stream)
+                       stream=iter_stream)
 
-            # TODO: if we only do this once per anim, does quality improve?
+            # Reset points so that they will be FUSEd
             util.BaseCode.fill_dptr(self.mod, d_points, 4 * nslots,
-                                    stream, np.float32(np.nan))
+                                    iter_stream, np.float32(np.nan))
 
             # Get interpolated control points for debugging
             #stream.synchronize()
@@ -201,20 +239,34 @@ class Renderer(object):
             #for i, n in zip(d_temp[5], self._iter.packer.packed):
                 #print '%60s %g' % ('_'.join(n), i)
 
-            util.BaseCode.fill_dptr(self.mod, d_accum, 4 * nbins, stream)
-            nsamps = info.density * info.width * info.height / ntemporal_samples
-            iter_fun(np.uint64(d_accum), d_seeds, d_points,
-                     d_infos, np.int32(nsamps),
-                     block=(32, self._iter.NTHREADS/32, 1),
-                     grid=(ntemporal_samples, 1),
-                     texrefs=[tref], stream=stream)
+            util.BaseCode.fill_dptr(self.mod, d_accum, 4 * nbins, write_stream)
+            nrounds = ( (info.density * info.width * info.height)
+                      / (ntemporal_samples * 256 * 256) ) + 1
+            if info.acc_mode == 'deferred':
+                for i in range(nrounds):
+                    iter_fun(np.uint64(d_log), d_seeds, d_points, d_infos,
+                             block=(32, self._iter.NTHREADS/32, 1),
+                             grid=(ntemporal_samples, 1),
+                             texrefs=[tref], stream=iter_stream)
+                    _sync_stream(write_stream, iter_stream)
+                    sorter.sort(d_log_sorted, d_log, log_size, start_bit, True,
+                                stream=write_stream)
+                    _sync_stream(iter_stream, write_stream)
+                    write_fun(d_accum, d_log_sorted, sorter.dglobal, log_shift,
+                              block=(1024, 1, 1), grid=(nwriteblocks, 1),
+                              stream=write_stream)
+            else:
+                iter_fun(np.uint64(d_accum), d_seeds, d_points, d_infos,
+                         block=(32, self._iter.NTHREADS/32, 1),
+                         grid=(ntemporal_samples, nrounds),
+                         texrefs=[tref], stream=iter_stream)
 
-            stream.synchronize()
-
-            util.BaseCode.fill_dptr(self.mod, d_out, 4 * nbins, stream)
-            filt.de(d_out, d_accum, info, start, stop, stream)
-            filt.colorclip(d_out, info, start, stop, stream)
-            cuda.memcpy_dtoh_async(h_out_a, d_out, stream)
+            util.BaseCode.fill_dptr(self.mod, d_out, 4 * nbins, filt_stream)
+            _sync_stream(filt_stream, write_stream)
+            filt.de(d_out, d_accum, info, start, stop, filt_stream)
+            _sync_stream(write_stream, filt_stream)
+            filt.colorclip(d_out, info, start, stop, filt_stream)
+            cuda.memcpy_dtoh_async(h_out_a, d_out, filt_stream)
 
             if event_b:
                 while not event_a.query():
@@ -222,10 +274,9 @@ class Renderer(object):
                 gpu_time = event_a.time_since(event_b)
                 yield RenderedImage(self._trim(h_out_b), last_idx, gpu_time)
 
-            event_a, event_b = cuda.Event().record(stream), event_a
+            event_a, event_b = cuda.Event().record(filt_stream), event_a
             h_out_a, h_out_b = h_out_b, h_out_a
             last_idx = idx
-
 
         while not event_a.query():
             timemod.sleep(0.001)

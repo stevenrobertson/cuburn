@@ -99,8 +99,10 @@ class RenderInfo(object):
     genomes. The values of this class are fixed before compilation begins.
     """
     # Number of iterations to iterate without write after generating a new
-    # point, including the number of bad
-    fuse = 192
+    # point. This number is currently fixed pretty deeply in the set of magic
+    # constants which govern buffer sizes; changing the value here won't
+    # actually change the code on the device to do something different.
+    fuse = 256
 
     # Height of the texture pallete which gets uploaded to the GPU (assuming
     # that palette-from-texture is enabled). For most genomes, this doesn't
@@ -120,11 +122,19 @@ class RenderInfo(object):
     # which I'm not opposed to)
     alpha_output_channel = False
 
-    # TODO: fix these
+    # There are three settings for this somewhat ersatz paramater. 'global'
+    # uses unsynchronized global writes to accumulate sample points, 'atomic'
+    # uses atomic global writes, and 'deferred' stores color and position in a
+    # sample log, sorts the log by position, and uses shared memory to
+    # perform the accumulation. Deferred has the accuracy of 'atomic' and
+    # the speed of 'global' (it's actually faster!), but packs color and
+    # position into a single 32-bit int for now, which limits resolution to
+    # 1080p when xform opacity is respected, so the other two modes will hang
+    # around until that can be extended to be memory-limited again.
+    acc_mode = 'deferred'
+
+    # TODO: fix this
     chaos_used = False
-    final_xform_index = 3
-    pal_has_alpha = False
-    density = 2000
 
     def __init__(self, db, **kwargs):
         self.db = db
@@ -134,6 +144,7 @@ class RenderInfo(object):
         self.acc_width = self.width + 2 * self.gutter
         self.acc_height = self.height + 2 * self.gutter
         self.acc_stride = 32 * int(np.ceil(self.acc_width / 32.))
+        self.density = self.quality
 
         # Deref genome
         self.genome = self.db.genomes[self.genome]
