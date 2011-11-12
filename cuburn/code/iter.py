@@ -185,10 +185,6 @@ void iter(
 ) {
     const iter_params *global_params = &(all_params[blockIdx.x]);
 
-{{if info.acc_mode != 'deferred'}}
-    __shared__ float time_frac;
-    time_frac = blockIdx.x / (float) gridDim.x;
-{{endif}}
 
     // load params to shared memory cooperatively
     for (int i = threadIdx.y * blockDim.x + threadIdx.x;
@@ -203,6 +199,13 @@ void iter(
     __syncthreads();
     int this_rb_idx = rb_idx + threadIdx.x + 32 * threadIdx.y;
     mwc_st rctx = msts[this_rb_idx];
+
+{{if info.acc_mode != 'deferred'}}
+    __shared__ float time_frac;
+    time_frac = blockIdx.x / (float) gridDim.x;
+{{else}}
+    float color_dither = 0.49f * mwc_next_11(rctx);
+{{endif}}
 
     // TODO: 4th channel unused. Kill or use for something helpful
     float4 old_point = points[this_rb_idx];
@@ -351,7 +354,7 @@ void iter(
         *accbuf = pix;
 {{elif info.acc_mode == 'deferred'}}
         // 'color' gets the top 9 bits. TODO: add dithering via precalc.
-        uint32_t icolor = fminf(1.0f, cc) * 511.0f;
+        uint32_t icolor = fminf(1.0f, cc) * 511.0f + color_dither;
         asm("bfi.b32    %0, %1, %0, 23, 9;" : "+r"(i) : "r"(icolor));
         *log = i;
 {{endif}}
