@@ -246,15 +246,14 @@ class Renderer(object):
                 for i in range(nrounds):
                     iter_fun(np.uint64(d_log), d_seeds, d_points, d_infos,
                              block=(32, self._iter.NTHREADS/32, 1),
-                             grid=(ntemporal_samples, 1),
-                             texrefs=[tref], stream=iter_stream)
+                             grid=(ntemporal_samples, 1), stream=iter_stream)
                     _sync_stream(write_stream, iter_stream)
                     sorter.sort(d_log_sorted, d_log, log_size, start_bit, True,
                                 stream=write_stream)
                     _sync_stream(iter_stream, write_stream)
                     write_fun(d_accum, d_log_sorted, sorter.dglobal, log_shift,
                               block=(1024, 1, 1), grid=(nwriteblocks, 1),
-                              stream=write_stream)
+                              texrefs=[tref], stream=write_stream)
             else:
                 iter_fun(np.uint64(d_accum), d_seeds, d_points, d_infos,
                          block=(32, self._iter.NTHREADS/32, 1),

@@ -351,7 +351,7 @@ void iter(
         *accbuf = pix;
 {{elif info.acc_mode == 'deferred'}}
         // 'color' gets the top 9 bits. TODO: add dithering via precalc.
-        uint32_t icolor = cc * 512.0f;
+        uint32_t icolor = fminf(1.0f, cc) * 511.0f;
         asm("bfi.b32    %0, %1, %0, 23, 9;" : "+r"(i) : "r"(icolor));
         *log = i;
 {{endif}}
@@ -377,8 +377,8 @@ __device__
 void write_shmem_helper(
         float4 *acc,
         const int glo_idx,
-        const int dr,
-        const int gb
+        const uint32_t dr,
+        const uint32_t gb
 ) {
     float4 pix = acc[glo_idx];
     pix.x += (dr & 0xffff) / 255.0f;
@@ -461,7 +461,7 @@ write_shmem(
         bfe_decl(shr_addr, entry, 0, SHAB);
         bfe_decl(color, entry, 23, 9);
 
-        float colorf = color / 512.0f;
+        float colorf = color / 511.0f;
         float4 outcol = tex2D(palTex, colorf, time);
 
         // TODO: change texture sampler to return shorts and avoid this
