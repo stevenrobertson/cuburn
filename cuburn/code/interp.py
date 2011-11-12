@@ -279,7 +279,7 @@ int bitwise_binsearch(const float *hay, float needle) {
     return lo;
 }
 
-__device__
+__device__ __noinline__
 float catmull_rom(const float *times, const float *knots, float t) {
     int idx = bitwise_binsearch(times, t);
 
