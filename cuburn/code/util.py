@@ -154,7 +154,7 @@ float3 rgb2hsv(float3 rgb) {
 
     float s = M > 0.0f ? C / M : 0.0f;
 
-    float h;
+    float h = 0.0f;
     if (s != 0.0f) {
         C = 1.0f / C;
         float rc = (M - rgb.x) * C;
@@ -164,8 +164,8 @@ float3 rgb2hsv(float3 rgb) {
         if      (rgb.x == M)  h = bc - gc;
         else if (rgb.y == M)  h = 2 + rc - bc;
         else                  h = 4 + gc - rc;
-
-        if (h < 0) h += 6;
+        
+        if (h < 0) h += 6.0f;
     }
     return make_float3(h, s, M);
 }

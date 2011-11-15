@@ -318,7 +318,7 @@ __global__
 void interp_palette_hsv(uchar4 *outs, const float *times, const float4 *sources,
         float tstart, float tstep) {
     float time = tstart + blockIdx.x * tstep;
-    int idx = fmaxf(bitwise_binsearch(times, time), 1);
+    int idx = fmaxf(bitwise_binsearch(times, time) + 1, 1);
 
     float4 left  = sources[blockDim.x * (idx - 1) + threadIdx.x];
     float4 right = sources[blockDim.x * (idx)     + threadIdx.x];
@@ -329,10 +329,22 @@ void interp_palette_hsv(uchar4 *outs, const float *times, const float4 *sources,
     float3 lhsv = rgb2hsv(make_float3(left.x, left.y, left.z));
     float3 rhsv = rgb2hsv(make_float3(right.x, right.y, right.z));
 
+    if (fabs(lhsv.x - rhsv.x) > 3.0f)
+        if (lhsv.x < rhsv.x)
+            lhsv.x += 6.0f;
+        else
+            rhsv.x += 6.0f;
+
     float3 hsv;
     hsv.x = lhsv.x * lf + rhsv.x * rf;
     hsv.y = lhsv.y * lf + rhsv.y * rf;
     hsv.z = lhsv.z * lf + rhsv.z * rf;
+    
+    if (hsv.x > 6.0f)
+        hsv.x -= 6.0f;
+    if (hsv.x < 0.0f)
+        hsv.x += 6.0f;
+    
     float3 rgb = hsv2rgb(hsv);
 
     uchar4 out;
