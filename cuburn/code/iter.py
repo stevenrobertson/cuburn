@@ -275,7 +275,10 @@ void iter(
         {{endfor}}
             apply_xf_{{std_xforms[-1]}}(x, y, color, rctx);
 
-        int sw = (threadIdx.y * 32 + threadIdx.x * 33) & {{NTHREADS-1}};
+        // Rotate points between threads.
+        int swr = threadIdx.y + threadIdx.x
+                + (round & 1) * (threadIdx.x / {{NTHREADS / 32}});
+        int sw = (swr * 32 + threadIdx.x) & {{NTHREADS-1}};
         int sr = threadIdx.y * 32 + threadIdx.x;
 
         swap[sw] = fuse ? 1.0f : 0.0f;
