@@ -101,11 +101,11 @@ def precalc_xf_affine(px):
         float magy = {{pre.magnitude.y}};
 
         {{pre._set('xx')}} = magx * cos(pri-spr);
-        {{pre._set('xy')}} = magx * sin(pri-spr);
-        {{pre._set('yx')}} = magy * cos(pri+spr);
+        {{pre._set('yx')}} = -magx * sin(pri-spr);
+        {{pre._set('xy')}} = -magy * cos(pri+spr);
         {{pre._set('yy')}} = magy * sin(pri+spr);
         {{pre._set('xo')}} = {{pre.offset.x}};
-        {{pre._set('yo')}} = {{pre.offset.y}};
+        {{pre._set('yo')}} = -{{pre.offset.y}};
 
     """).substitute(locals()))
 
