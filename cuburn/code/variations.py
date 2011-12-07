@@ -962,13 +962,13 @@ var(93, 'sech', """
     """)
 
 var(94, 'csch', """
-    cschden = 2.0f/(coshf(2.0f*tx) - cosf(2.0f*ty));
+    float cschden = 2.0f/(coshf(2.0f*tx) - cosf(2.0f*ty));
     ox += w * cschden * sinhf(tx) * cosf(ty);
     oy -= w * cschden * coshf(tx) * sinf(ty);
     """)
 
 var(95, 'coth', """
-    cothden = 1.0f/(coshf(2.0f*tx) - cosf(2.0f*ty));
+    float cothden = 1.0f/(coshf(2.0f*tx) - cosf(2.0f*ty));
     ox += w * cothden * sinhf(2.0f*tx);
     oy += w * cothden * sinf(2.0f*ty);
     """)
