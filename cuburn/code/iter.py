@@ -129,6 +129,13 @@ texture<uchar4, cudaTextureType2D, cudaReadModeNormalizedFloat> palTex;
 __shared__ iter_params params;
 __device__ int rb_head, rb_tail, rb_size;
 
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride;
+} acc_size_t;
+__constant__ acc_size_t acc_size;
+
 """
 
     def _xfbody(self, xfid, xform):
@@ -330,14 +337,14 @@ void iter(
 
         uint32_t ix = trunca(cx), iy = trunca(cy);
 
-        if (ix >= {{info.acc_width}} || iy >= {{info.acc_height}}) {
+        if (ix >= acc_size.width || iy >= acc_size.height) {
 {{if info.acc_mode == 'deferred'}}
             *log = 0xffffffff;
 {{endif}}
             continue;
         }
 
-        uint32_t i = iy * {{info.acc_stride}} + ix;
+        uint32_t i = iy * acc_size.stride + ix;
 
 {{if info.acc_mode == 'atomic'}}
         float4 outcol = tex2D(palTex, cc, time_frac);

@@ -132,6 +132,10 @@ class Renderer(object):
         d_accum = cuda.mem_alloc(16 * nbins)
         d_out = cuda.mem_alloc(16 * nbins)
 
+        acc_size = np.array([info.acc_width, info.acc_height, info.acc_stride])
+        d_acc_size = self.mod.get_global('acc_size')[0]
+        cuda.memcpy_htod_async(d_acc_size, np.uint32(acc_size), write_stream)
+
         if info.acc_mode == 'deferred':
             # Having a fixed, power-of-two log size makes things much easier
             log_size = 64 << 20
