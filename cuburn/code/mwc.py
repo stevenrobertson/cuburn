@@ -4,7 +4,7 @@ The multiply-with-carry random number generator.
 
 import numpy as np
 
-from cuburn.code.util import *
+from util import *
 
 class MWC(HunkOCode):
     decls = """
@@ -17,11 +17,12 @@ typedef struct {
 
     defs = r"""
 __device__ uint32_t mwc_next(mwc_st &st) {
-    asm("{\n\t.reg .u64 val;\n\t"
-        "cvt.u64.u32  val, %0;\n\t"
-        "mad.wide.u32 val, %1, %2, val;\n\t"
-        "mov.b64 {%1, %0}, val;\n\t}\n\t"
-        : "+r"(st.carry), "+r"(st.state) : "r"(st.mul));
+    asm("{\n\t"
+        ".reg .u32 tmp;\n\t"
+        "mad.lo.cc.u32   tmp,    %2,     %1,     %0;\n\t"
+        "madc.hi.u32     %0,     %2,     %1,     0;\n\t"
+        "mov.u32         %1,     tmp;\n\t"
+    "}" : "+r"(st.carry), "+r"(st.state) : "r"(st.mul));
     return st.state;
 }
 
@@ -113,4 +114,8 @@ __global__ void test_mwc(mwc_st *msts, uint64_t *sums, float nrounds) {
                 print "Sum discrepancy!"
                 print sums
                 print dsums
+
+if __name__ == "__main__":
+    import pycuda.autoinit
+    MWCTest.test_mwc()
 
