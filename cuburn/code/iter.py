@@ -363,9 +363,9 @@ void iter(
         pix.w += 1.0f;
         *accbuf = pix;
 {{elif info.acc_mode == 'deferred'}}
-        // 'color' gets the top 9 bits. TODO: add dithering via precalc.
-        uint32_t icolor = fminf(1.0f, cc) * 511.0f + color_dither;
-        asm("bfi.b32    %0, %1, %0, 23, 9;" : "+r"(i) : "r"(icolor));
+        // 'color' gets the top 8 bits. TODO: add dithering via precalc.
+        uint32_t icolor = fminf(1.0f, cc) * 255.0f + color_dither;
+        asm("bfi.b32    %0, %1, %0, 24, 8;" : "+r"(i) : "r"(icolor));
         *log = i;
 {{endif}}
     }
@@ -394,10 +394,10 @@ void write_shmem_helper(
         const uint32_t gb
 ) {
     float4 pix = acc[glo_idx];
-    pix.x += (dr & 0xffff) / 255.0f;
+    pix.x += (dr & 0xffff) / 127.0f;
     pix.w += dr >> 16;
-    pix.y += (gb & 0xffff) / 255.0f;
-    pix.z += (gb >> 16) / 255.0f;
+    pix.y += (gb & 0xffff) / 127.0f;
+    pix.z += (gb >> 16) / 127.0f;
     acc[glo_idx] = pix;
 }
 
@@ -417,8 +417,7 @@ __launch_bounds__(BS, 1)
 write_shmem(
         float4 *acc,
         const uint32_t *log,
-        const uint32_t *log_bounds,
-        const int log_bounds_shift
+        const uint32_t *log_bounds
 ) {
     const int tid = threadIdx.x;
     const int bid = blockIdx.x;
@@ -441,62 +440,94 @@ write_shmem(
     s_acc_gb[tid+3*BS] = 0;
     __syncthreads();
 
-    // TODO: share across threads - discernable performance impact?
-    int lb_idx_lo, lb_idx_hi;
-    if (log_bounds_shift > 0) {
-        lb_idx_hi = ((bid + 1) << log_bounds_shift) - 1;
-        lb_idx_lo = (bid << log_bounds_shift) - 1;
-    } else {
-        lb_idx_hi = bid >> (-log_bounds_shift);
-        lb_idx_lo = lb_idx_hi - 1;
-    }
+    // This predicate is used for the horrible monkey-patching magic.
+    asm volatile(".reg .pred p; setp.lt.u32 p, %0, 42;" :: "r"(s_acc_dr[0]));
 
-    int idx_lo, idx_hi;
-    if (lb_idx_lo < 0) idx_lo = 0;
-    else idx_lo = log_bounds[lb_idx_lo] & ~(BS-1);
-    idx_hi = (log_bounds[lb_idx_hi] & ~(BS - 1)) + BS;
+    // log_bounds[] holds inclusive prefix sums, so that log_bounds[0] is the
+    // largest index with radix 0, and so on.
+    int lb_idx_hi = bid & 0xff;
+    int lb_idx_lo = lb_idx_hi - 1;
+
+    int idx_lo;
+    if (lb_idx_lo > 0) idx_lo = log_bounds[lb_idx_lo] & ~(BS - 1);
+    else               idx_lo = 0;
+    int idx_hi = (log_bounds[lb_idx_hi] & ~(BS - 1)) + BS;
 
     float rnrounds = 1.0f / (idx_hi - idx_lo);
     float time = tid * rnrounds;
     float time_step = BS * rnrounds;
 
     int glo_base = bid << SHAB;
+    float4* glo_ptr = &acc[glo_base];
 
     for (int i = idx_lo + tid; i < idx_hi; i += BS) {
         int entry = log[i];
 
-
-        // TODO: constant '11' is really just 32 - 9 - SHAB, where 9 is the
-        // number of bits assigned to color. This ignores opacity.
-        bfe_decl(glob_addr, entry, SHAB, 11);
+        // Constant '12' is 32 - 8 - SHAB, where 8 is the
+        // number of bits assigned to color. TODO: This ignores opacity.
+        bfe_decl(glob_addr, entry, SHAB, 12);
         if (glob_addr != bid) continue;
 
-        bfe_decl(shr_addr, entry, 0, SHAB);
-        bfe_decl(color, entry, 23, 9);
+        // Shared memory address, pre-shifted
+        int shr_addr;
+        asm("bfi.b32 %0, %1, 0, 2, 12;" : "=r"(shr_addr) : "r"(entry));
+        bfe_decl(color, entry, 24, 8);
 
-        float colorf = color / 511.0f;
+        float colorf = color / 255.0f;
         float4 outcol = tex2D(palTex, colorf, time);
 
         // TODO: change texture sampler to return shorts and avoid this
-        uint32_t r = 255.0f * outcol.x;
-        uint32_t g = 255.0f * outcol.y;
-        uint32_t b = 255.0f * outcol.z;
+        uint32_t r = 127.0f * outcol.x;
+        uint32_t g = 127.0f * outcol.y;
+        uint32_t b = 127.0f * outcol.z;
 
-        uint32_t dr = atomicAdd(s_acc_dr + shr_addr, r + 0x10000);
-        uint32_t gb = atomicAdd(s_acc_gb + shr_addr, g + (b << 16));
-        uint32_t d = dr >> 16;
+        uint32_t dr = r + 0x10000, gb = g + (b << 16);
 
-        // Neat trick: if overflow is about to happen, write the accumulator,
-        // and subtract the last known values from the accumulator again.
-        // Even if the ints end up wrapping around once before the subtraction
-        // can occur, the results after the subtraction will be correct.
-        // (Wrapping twice will mess up the intermediate write, but is pretty
-        // unlikely.)
-        if (d == 250) {
-            atomicSub(s_acc_dr + shr_addr, dr);
-            atomicSub(s_acc_gb + shr_addr, gb);
-            write_shmem_helper(acc, glo_base + shr_addr, dr, gb);
-        }
+        asm volatile ({{crep("""
+{
+    .reg .pred q;
+    .reg .u32 d, r, g, b, dr, gb, drw, gbw, off;
+    .reg .u64 ptr;
+    .reg .f32 rf, gf, bf, df;
+
+acc_write_start:
+    // This instruction will get replaced with a LDSLK that sets 'p'.
+    // The 0xffff is a signature to make sure we get the right instruction,
+    // and will get replaced with a 0-offset when patching.
+    ld.shared.volatile.u32   dr,     [%2+0xffff];
+@p  ld.shared.volatile.u32   gb,     [%2+0x4000];
+@p  add.u32         %0,     dr,     %0;
+@p  add.u32         %1,     gb,     %1;
+    // TODO: clever use of slct could remove an instruction?
+@p  setp.lo.u32     q,      %0,     32768000;
+@p  selp.b32        drw,    %0,     0,      q;
+@p  selp.b32        gbw,    %1,     0,      q;
+@p  st.shared.volatile.u32   [%2+0x4000],    gbw;
+    // This instruction will get replaced with an STSUL
+@p  st.shared.volatile.u32   [%2+0xffff],    drw;
+@!p bra             acc_write_start;
+@q  bra             oflow_write_end;
+    shl.b32         %2,     %2,     2;
+    cvt.u64.u32     ptr,    %2;
+    add.u64         ptr,    ptr,    %3;
+    and.b32         r,      %0,     0xffff;
+    shr.b32         g,      %1,     16;
+    and.b32         b,      %1,     0xffff;
+    cvt.rn.f32.u32  rf,     r;
+    cvt.rn.f32.u32  gf,     g;
+    cvt.rn.f32.u32  bf,     b;
+    mul.ftz.f32     rf,     rf,     0.007874015748031496;
+    mul.ftz.f32     gf,     gf,     0.007874015748031496;
+    mul.ftz.f32     bf,     bf,     0.007874015748031496;
+    red.add.f32     [ptr],   500.0;
+    red.add.f32     [ptr+4], bf;
+    red.add.f32     [ptr+8], gf;
+    red.add.f32     [ptr+12], rf;
+
+oflow_write_end:
+}
+        """)}}  ::  "r"(dr), "r"(gb), "r"(shr_addr), "l"(glo_ptr));
+        // TODO: go through the pain of manual address calculation for global ptr
         time += time_step;
     }
 
@@ -519,3 +550,36 @@ write_shmem(
                               if n != 'final'],
                 **globals())
 
+    @staticmethod
+    def monkey_patch(cubin):
+        LD      = np.uint64(0x851c00fcff0300c1)
+        LDSLK   = np.uint64(0x851c0000000000c4)
+        ST      = np.uint64(0x850000fcff0300c9)
+        STSUL   = np.uint64(0x85000000000000cc)
+        regmask = np.uint64(0x00c0ff0300000000)
+        prdmask = np.uint64(0x003c000000000000)
+
+        O = 64  # Expected offset to last instruction
+
+        offset = cubin.find('\x85')
+        while offset >= 0:
+            # Using these fixed offsets makes this code intentionally
+            # intolerant of compiler instruction reordering
+            if cubin[offset+7] == '\xc1' and cubin[offset+O] == '\x85':
+                ld = np.frombuffer(cubin[offset:offset+8], dtype='>u8')
+                st = np.frombuffer(cubin[offset+O:offset+8+O], dtype='>u8')
+                if ((ld & (~regmask)) == LD and
+                    ((st & (~regmask)) & (~prdmask)) == ST):
+                    break
+            offset = cubin.find('\x85', offset+1)
+        assert offset > 0, 'Could not find patch point!'
+
+        # Note that these bits are still reversed, and we ignore the
+        # (im)possibility of a negative predicate in this case
+        pred = (st & prdmask) >> 50
+        ld = LDSLK | (ld & regmask) | (pred << 10)
+        st = STSUL | (st & regmask) | (st & prdmask)
+
+        return ( cubin[:offset] + ld.byteswap().tostring()
+               + cubin[offset+8:offset+O]
+               + st.byteswap().tostring() + cubin[offset+8+O:] )

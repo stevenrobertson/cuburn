@@ -81,6 +81,11 @@ class Renderer(object):
         self.cubin = pycuda.compiler.compile(
                 self.src, keep=keep, options=cmp_options,
                 cache_dir=False if keep else None)
+        with open('/tmp/iter_kern.cubin', 'wb') as fp:
+            fp.write(self.cubin)
+        # For now, we apply the monkey-patch manually. May eventually make
+        # this more of a framework if I do it in more than one code segment.
+        self.cubin = self._iter.monkey_patch(self.cubin)
         self.mod = cuda.module_from_buffer(self.cubin, jit_options)
         with open('/tmp/iter_kern.cubin', 'wb') as fp:
             fp.write(self.cubin)
@@ -142,18 +147,7 @@ class Renderer(object):
             d_log = cuda.mem_alloc(log_size * 4)
             d_log_sorted = cuda.mem_alloc(log_size * 4)
             sorter = sort.Sorter(log_size)
-
-            # Shared accumulators take care of the lowest 12 bits, but due to
-            # a quirk of the sort implementation, asking the sort to handle
-            # fewer bits than it is compiled for will make it considerably
-            # slower (and it can't be compiled for <7b), so we actually dig in
-            # to the accumulator's SHAB window for those cases.
-            SHAB = np.int32(12)
-            address_bits = np.int32(np.ceil(np.log2(nbins+1)))
-            start_bit = address_bits - sorter.radix_bits
-            log_shift = np.int32(SHAB - start_bit)
-            nwriteblocks = int(np.ceil(nbins / (1<<SHAB)))
-            print start_bit, log_shift, nwriteblocks
+            nwriteblocks = int(np.ceil(nbins / float(1<<12)))
 
         # Calculate 'nslots', the number of simultaneous running threads that
         # can be active on the GPU during iteration (and thus the number of
@@ -252,10 +246,10 @@ class Renderer(object):
                              block=(32, self._iter.NTHREADS/32, 1),
                              grid=(ntemporal_samples, 1), stream=iter_stream)
                     _sync_stream(write_stream, iter_stream)
-                    sorter.sort(d_log_sorted, d_log, log_size, start_bit, True,
+                    sorter.sort(d_log_sorted, d_log, log_size, 12, True,
                                 stream=write_stream)
                     _sync_stream(iter_stream, write_stream)
-                    write_fun(d_accum, d_log_sorted, sorter.dglobal, log_shift,
+                    write_fun(d_accum, d_log_sorted, sorter.dglobal,
                               block=(1024, 1, 1), grid=(nwriteblocks, 1),
                               texrefs=[tref], stream=write_stream)
             else:
