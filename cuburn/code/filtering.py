@@ -151,11 +151,9 @@ void density_est(float4 *pixbuf, float4 *outbuf,
             // like MLAA.
             float *dens = reinterpret_cast<float*>(pixbuf);
             int didx = idx * 4 + 3;
-            float x = 0.25f * ( dens[didx+stride*4+4]
-                              - dens[didx-stride*4-4] );
-            float y = 0.25f * ( dens[didx+stride*4-4]
-                              - dens[didx-stride*4+4] );
-            float diag_mag = sqrtf(x*x + y*y);
+            float x = dens[didx+stride*4+4] - dens[didx-stride*4-4];
+            float y = dens[didx+stride*4-4] - dens[didx-stride*4+4];
+            float diag_mag = sqrtf(x*x + y*y) * 0.3333333f;
 
             float ls = k1 * logf(1.0f + in.w * k2) / in.w;
             in.x *= ls;
@@ -175,7 +173,11 @@ void density_est(float4 *pixbuf, float4 *outbuf,
 
             // If the gradient SD is smaller than the minimum SD, we're probably
             // on a strong edge; blur with a standard deviation around 1px.
-            if (diag_sd < fmaxf(est_min, MIN_SD)) sd = 0.333333f;
+            if (diag_sd < MIN_SD && diag_sd < sd) {
+                sd = 0.3333333f;
+                // Uncomment to see which pixels are being clamped
+                // de_g[si] = 1.0f;
+            }
 
             // Clamp the final standard deviation.
             sd = fminf(MAX_SD, fmaxf(sd, est_min));
@@ -265,7 +267,6 @@ void density_est(float4 *pixbuf, float4 *outbuf,
         }
 
         __syncthreads();
-        // TODO: shift instead of copying
         int tid = threadIdx.y * 32 + threadIdx.x;
         for (int i = tid; i < FW*(W2+W2); i += 512) {
             de_r[i] = de_r[i+FW*32];
