@@ -6,7 +6,7 @@ var_code = {}
 var_params = {}
 
 def var(num, name, code, params=None):
-    var_code[name] = Template(code)
+    var_code[name] = Template(code, name)
     if params is not None:
         r = {}
         for p in params.split():
@@ -25,7 +25,7 @@ def var(num, name, code, params=None):
 def precalc(name, code):
     def precalc_fun(pv):
         pre = pv._precalc()
-        pre._code(Template(code).substitute(pre=pre))
+        pre._code(Template(code, name+'_precalc').substitute(pre=pre))
     Template.default_namespace[name+'_precalc'] = precalc_fun
 
 # Variables note: all functions will have their weights as 'w',
