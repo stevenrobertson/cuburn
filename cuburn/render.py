@@ -237,7 +237,7 @@ class Renderer(object):
                                     iter_stream, np.float32(np.nan))
 
             # Get interpolated control points for debugging
-            #stream.synchronize()
+            #iter_stream.synchronize()
             #d_temp = cuda.from_device(d_infos,
                     #(ntemporal_samples, len(self._iter.packer)), np.float32)
             #for i, n in zip(d_temp[5], self._iter.packer.packed):
