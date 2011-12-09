@@ -401,7 +401,8 @@ __launch_bounds__(BS, 1)
 write_shmem(
         float4 *acc,
         const uint32_t *log,
-        const uint32_t *log_bounds
+        const uint32_t *log_bounds,
+        uint32_t nbins
 ) {
     const int tid = threadIdx.x;
     const int bid = blockIdx.x;
@@ -443,16 +444,15 @@ write_shmem(
     float time = tid * rnrounds;
     float time_step = BS * rnrounds;
 
-    int glo_base = bid << SHAB;
-    float4* glo_ptr = &acc[glo_base];
+    int magic = ((blockIdx.x & 0xff) << 3) + ((blockIdx.x & 0xf00) << 12);
+    int magic_mask = 0xf007f8;
 
     for (int i = idx_lo + tid; i < idx_hi; i += BS) {
         int entry = log[i];
+        time += time_step;
 
-        // Constant '12' is 32 - 8 - SHAB, where 8 is the
-        // number of bits assigned to color. TODO: This ignores opacity.
-        bfe_decl(glob_addr, entry, SHAB, 12);
-        if (glob_addr != bid) continue;
+        // TODO: opacity
+        if ((entry & magic_mask) != magic) continue;
 
         asm volatile ({{crep("""
 {
@@ -461,7 +461,10 @@ write_shmem(
     .reg .u64 ptr;
     .reg .f32 rf, gf, bf, df;
 
-    bfi.b32         shoff,  %0,     0,  2,  12;
+    and.b32         shoff,  %0,     0xff800;
+    shr.b32         shoff,  shoff,  6;
+    bfi.b32         shoff,  %0,     shoff,  2,  3;
+
     bfe.u32         color,  %0,     24, 8;
     shl.b32         color,  color,  3;
     cvt.rni.u32.f32 time,   %1;
@@ -476,15 +479,16 @@ acc_write_start:
 @p  ld.shared.volatile.u32  hiw,    [shoff+0x4000];
     add.cc.u32      lo,     los,    low;
     addc.u32        hi,     his,    hiw;
-    setp.lo.u32     q,      hi,     (1023 << 22);
-    selp.b32        hiw,    hi,     0,      q;
-    selp.b32        low,    lo,     0,      q;
+    setp.hs.and.u32 q,      hi,     (1023 << 22),   p;
+    selp.b32        hiw,    0,      hi,     q;
+    selp.b32        low,    0,      lo,     q;
 @p  st.shared.volatile.u32   [shoff+0x4000],    hiw;
     // This instruction will get replaced with an STSUL
 @p  st.shared.volatile.u32   [shoff+0xffff],    low;
-@!p bra             acc_write_start;
-@q  bra             oflow_write_end;
-    shl.b32         shoff,  shoff,  2;
+//@!p bra             acc_write_start;
+@!q bra             oflow_write_end;
+    // TODO: opacity
+    bfi.b32         shoff,  %0,     0,  4,  24;
     cvt.u64.u32     ptr,    shoff;
     add.u64         ptr,    ptr,    %2;
     bfe.u32         r,      hi,     4,      18;
@@ -504,16 +508,18 @@ acc_write_start:
 
 oflow_write_end:
 }
-        """)}}  ::  "r"(entry), "f"(time), "l"(glo_ptr));
-        // TODO: go through the pain of manual address calculation for global ptr
-        time += time_step;
+        """)}}  ::  "r"(entry), "f"(time), "l"(acc));
     }
 
     __syncthreads();
+
+
     int idx = tid;
-    for (int i = 0; i < (SHAW / BS); i++) {
+    int glo_idx = magic | (((idx << 8) | idx) & 0xff807);
+
+    for (int i = 0; i < (SHAW / BS) && glo_idx < nbins; i++) {
         int d, r, g, b;
-        float4 pix = acc[glo_base + idx];
+        float4 pix = acc[glo_idx];
         asm({{crep("""
 {
     .reg .u32 hi, lo;
@@ -530,8 +536,9 @@ oflow_write_end:
         pix.y += g / 255.0f;
         pix.z += b / 255.0f;
         pix.w += d;
-        acc[glo_base + idx] = pix;
+        acc[glo_idx] = pix;
         idx += BS;
+        glo_idx += (BS << 8);
     }
 }
 

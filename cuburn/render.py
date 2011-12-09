@@ -8,6 +8,7 @@ from itertools import cycle, repeat, chain, izip
 from ctypes import *
 from cStringIO import StringIO
 import numpy as np
+from numpy import int32 as i32
 from scipy import ndimage
 
 from fr0stlib import pyflam3
@@ -147,7 +148,9 @@ class Renderer(object):
             d_log = cuda.mem_alloc(log_size * 4)
             d_log_sorted = cuda.mem_alloc(log_size * 4)
             sorter = sort.Sorter(log_size)
-            nwriteblocks = int(np.ceil(nbins / float(1<<12)))
+            # We need to cover each unique tag - address bits 20-23 - with one
+            # write block per sort bin. Or somethinig like that.
+            nwriteblocks = int(np.ceil(nbins / float(1<<20))) * 256
 
         # Calculate 'nslots', the number of simultaneous running threads that
         # can be active on the GPU during iteration (and thus the number of
@@ -267,10 +270,11 @@ class Renderer(object):
                              block=(32, self._iter.NTHREADS/32, 1),
                              grid=(ntemporal_samples, 1), stream=iter_stream)
                     _sync_stream(write_stream, iter_stream)
-                    sorter.sort(d_log_sorted, d_log, log_size, 12, True,
+                    sorter.sort(d_log_sorted, d_log, log_size, 3, True,
                                 stream=write_stream)
+                    #print cuda.from_device(sorter.dglobal, (256,), np.uint32)
                     _sync_stream(iter_stream, write_stream)
-                    write_fun(d_accum, d_log_sorted, sorter.dglobal,
+                    write_fun(d_accum, d_log_sorted, sorter.dglobal, i32(nbins),
                               block=(1024, 1, 1), grid=(nwriteblocks, 1),
                               stream=write_stream)
             else:
@@ -302,5 +306,5 @@ class Renderer(object):
 
     def _trim(self, result):
         g = self.info.gutter
-        return result[g:-g,g:-g].copy()
+        return result[g:-g,g:g+self.info.width].copy()
 
