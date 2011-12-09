@@ -419,6 +419,9 @@ write_shmem(
     }
     __syncthreads();
 
+    // Shut the compiler up
+    idx = s_acc[0];
+
     // log_bounds[] holds inclusive prefix sums, so that log_bounds[0] is the
     // largest index with radix 0, and so on.
     int lb_idx_hi = bid & 0xff;
@@ -438,17 +441,18 @@ write_shmem(
 
     for (int i = idx_lo + tid; i < idx_hi; i += BS) {
         int entry = log[i];
-        time += time_step;
-
-        // TODO: opacity
-        if ((entry & magic_mask) != magic) continue;
 
         asm volatile ({{crep("""
 {
     .reg .pred q;
-    .reg .u32 shoff, color, time, d, r, g, b, hi, lo, hiw, low;
+    .reg .u32 shoff, color, time, d, r, g, b, hi, lo, hiw, low, tmp;
     .reg .u64 ptr;
     .reg .f32 rf, gf, bf, df, rg, gg, dg, bg;
+
+    // TODO: opacity
+    and.b32         tmp,    %0,     %4;
+    setp.eq.u32     q,      tmp,    %3;
+@!q bra             before_sync;
 
     and.b32         shoff,  %0,     0xff800;
     shr.b32         shoff,  shoff,  5;
@@ -462,9 +466,13 @@ write_shmem(
     ld.shared.v2.u32    {hiw, low},     [shoff];
     add.cc.u32          lo,     lo,     low;
     addc.u32            hi,     hi,     hiw;
-    st.shared.v2.u32    [shoff],        {hi, lo};
     setp.hs.u32         q,      hi,     (1023 << 22);
-@!q bra             oflow_write_end;
+@q  bra                 oflow_sync;
+    st.shared.v2.u32    [shoff],        {hi, lo};
+before_sync:
+    bar.sync            0;
+    bra                 oflow_write_end;
+oflow_sync:
     st.shared.v2.u32    [shoff],    {0, 0};
 
     // TODO: opacity
@@ -472,6 +480,8 @@ write_shmem(
     cvt.u64.u32     ptr,    shoff;
     add.u64         ptr,    ptr,    %2;
     ld.global.v4.f32    {dg,bg,gg,rg},  [ptr];
+    bar.sync        0;
+
     bfe.u32         r,      hi,     4,      18;
     bfe.u32         g,      lo,     18,     14;
     bfi.b32         g,      hi,     g,      14,     4;
@@ -487,7 +497,8 @@ write_shmem(
 
 oflow_write_end:
 }
-        """)}}  ::  "r"(entry), "f"(time), "l"(acc));
+        """)}}  ::  "r"(entry), "f"(time), "l"(acc), "r"(magic), "r"(magic_mask));
+        time += time_step;
     }
 
     __syncthreads();
