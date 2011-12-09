@@ -254,10 +254,34 @@ void interp_{{tname}}({{tname}}* out, float *times, float *knots,
     {{endfor}}
 }
 
+__global__
+void interp_palette_hsv_flat(mwc_st *rctxs,
+        const float *times, const float4 *sources,
+        float tstart, float tstep) {
+    int gid = blockIdx.x * blockDim.x + threadIdx.x;
+    mwc_st rctx = rctxs[gid];
+
+    float time = tstart + blockIdx.x * tstep;
+    float4 rgba = interp_color_hsv(times, sources, time);
+
+    // TODO: use YUV; pack Y at full precision, UV at quarter
+    uint2 out;
+
+    uint32_t r = min(255, (uint32_t) (rgba.x * 255.0f + 0.49f * mwc_next_11(rctx)));
+    uint32_t g = min(255, (uint32_t) (rgba.y * 255.0f + 0.49f * mwc_next_11(rctx)));
+    uint32_t b = min(255, (uint32_t) (rgba.z * 255.0f + 0.49f * mwc_next_11(rctx)));
+    out.x = (1 << 22) | (r << 4);
+    out.y = (g << 18) | b;
+    surf2Dwrite(out, flatpal, 8 * threadIdx.x, blockIdx.x);
+    rctxs[gid] = rctx;
+}
+
 """)
 
 
     _decls = Template(r"""
+surface<void, cudaSurfaceType2D> flatpal;
+
 typedef struct {
 {{for name in packed}}
     float   {{'_'.join(name)}};
@@ -314,17 +338,14 @@ void test_cr(const float *times, const float *knots, const float *t, float *r) {
     r[i] = catmull_rom(times, knots, t[i]);
 }
 
-__global__
-void interp_palette_hsv(uchar4 *outs, const float *times, const float4 *sources,
-        float tstart, float tstep) {
-    float time = tstart + blockIdx.x * tstep;
+__device__
+float4 interp_color_hsv(const float *times, const float4 *sources, float time) {
     int idx = fmaxf(bitwise_binsearch(times, time) + 1, 1);
+    float lf = (times[idx] - time) / (times[idx] - times[idx-1]);
+    float rf = 1.0f - lf;
 
     float4 left  = sources[blockDim.x * (idx - 1) + threadIdx.x];
     float4 right = sources[blockDim.x * (idx)     + threadIdx.x];
-
-    float lf = (times[idx] - time) / (times[idx] - times[idx-1]);
-    float rf = 1.0f - lf;
 
     float3 lhsv = rgb2hsv(make_float3(left.x, left.y, left.z));
     float3 rhsv = rgb2hsv(make_float3(right.x, right.y, right.z));
@@ -344,15 +365,25 @@ void interp_palette_hsv(uchar4 *outs, const float *times, const float4 *sources,
         hsv.x -= 6.0f;
     if (hsv.x < 0.0f)
         hsv.x += 6.0f;
-    
+
     float3 rgb = hsv2rgb(hsv);
+    return make_float4(rgb.x, rgb.y, rgb.z, left.w * lf + right.w * rf);
+}
+
+__global__
+void interp_palette_hsv(uchar4 *outs,
+        const float *times, const float4 *sources,
+        float tstart, float tstep) {
+    float time = tstart + blockIdx.x * tstep;
+    float4 rgba = interp_color_hsv(times, sources, time);
 
     uchar4 out;
-    out.x = rgb.x * 255.0f;
-    out.y = rgb.y * 255.0f;
-    out.z = rgb.z * 255.0f;
-    out.w = 255.0f * (left.z * lf + right.z * rf);
+    out.x = rgba.x * 255.0f;
+    out.y = rgba.y * 255.0f;
+    out.z = rgba.z * 255.0f;
+    out.w = rgba.w * 255.0f;
     outs[blockDim.x * blockIdx.x + threadIdx.x] = out;
 }
+
 """)
 

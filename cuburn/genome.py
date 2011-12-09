@@ -108,8 +108,10 @@ class RenderInfo(object):
     # that palette-from-texture is enabled). For most genomes, this doesn't
     # need to be very large at all. However, since only an easily-cached
     # fraction of this will be accessed per SM, larger values shouldn't hurt
-    # performance too much. Power-of-two, please.
-    palette_height = 16
+    # performance too much. When using deferred accumulation, increasing this
+    # value increases the number of uniquely-dithered samples, which is nice.
+    # Power-of-two, please.
+    palette_height = 64
 
     # Maximum width of DE and other spatial filters, and thus in turn the
     # amount of padding applied. Note that, for now, this must not be changed!

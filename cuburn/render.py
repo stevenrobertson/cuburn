@@ -113,7 +113,6 @@ class Renderer(object):
 
         reset_rb_fun = self.mod.get_function("reset_rb")
         packer_fun = self.mod.get_function("interp_iter_params")
-        palette_fun = self.mod.get_function("interp_palette_hsv")
         iter_fun = self.mod.get_function("iter")
         write_fun = self.mod.get_function("write_shmem")
 
@@ -134,7 +133,8 @@ class Renderer(object):
         event_b = None
 
         nbins = info.acc_height * info.acc_stride
-        d_accum = cuda.mem_alloc(16 * nbins)
+        # Extra padding in accum helps with write_shmem overruns
+        d_accum = cuda.mem_alloc(16 * nbins + (1<<16))
         d_out = cuda.mem_alloc(16 * nbins)
 
         acc_size = np.array([info.acc_width, info.acc_height, info.acc_stride])
@@ -168,7 +168,8 @@ class Renderer(object):
         reset_rb_fun(np.int32(rb_size), block=(1,1,1))
 
         d_points = cuda.mem_alloc(nslots * 16)
-        seeds = mwc.MWC.make_seeds(nslots)
+        # We may add extra seeds to simplify palette dithering.
+        seeds = mwc.MWC.make_seeds(max(nslots, 256 * info.palette_height))
         d_seeds = cuda.to_device(seeds)
 
         # We used to auto-calculate this to a multiple of the number of SMs on
@@ -191,13 +192,34 @@ class Renderer(object):
         d_palint_times = cuda.to_device(palint_times)
         d_palint_vals = cuda.to_device(
                 np.concatenate(map(info.db.palettes.get, pals[1::2])))
-        d_palmem = cuda.mem_alloc(256 * info.palette_height * 4)
 
-        pal_array_info = cuda.ArrayDescriptor()
-        pal_array_info.height = info.palette_height
-        pal_array_info.width = 256
-        pal_array_info.array_format = cuda.array_format.UNSIGNED_INT8
-        pal_array_info.num_channels = 4
+        if info.acc_mode == 'deferred':
+            palette_fun = self.mod.get_function("interp_palette_hsv_flat")
+            dsc = cuda.ArrayDescriptor3D()
+            dsc.height = info.palette_height
+            dsc.width = 256
+            dsc.depth = 0
+            dsc.format = cuda.array_format.SIGNED_INT32
+            dsc.num_channels = 2
+            dsc.flags = cuda.array3d_flags.SURFACE_LDST
+            palarray = cuda.Array(dsc)
+
+            tref = self.mod.get_surfref('flatpal')
+            tref.set_array(palarray, 0)
+        else:
+            palette_fun = self.mod.get_function("interp_palette_hsv")
+            dsc = cuda.ArrayDescriptor()
+            dsc.height = info.palette_height
+            dsc.width = 256
+            dsc.format = cuda.array_format.UNSIGNED_INT8
+            dsc.num_channels = 4
+            d_palmem = cuda.mem_alloc(256 * info.palette_height * 4)
+
+            tref = self.mod.get_texref('palTex')
+            tref.set_address_2d(d_palmem, dsc, 1024)
+            tref.set_format(cuda.array_format.UNSIGNED_INT8, 4)
+            tref.set_flags(cuda.TRSF_NORMALIZED_COORDINATES)
+            tref.set_filter_mode(cuda.filter_mode.LINEAR)
 
         h_out_a = cuda.pagelocked_empty((info.acc_height, info.acc_stride, 4),
                                         np.float32)
@@ -206,18 +228,17 @@ class Renderer(object):
         last_idx = None
 
         for idx, start, stop in times:
-            width = np.float32((stop-start) / info.palette_height)
-            palette_fun(d_palmem, d_palint_times, d_palint_vals,
-                        np.float32(start), width,
-                        block=(256,1,1), grid=(info.palette_height,1),
-                        stream=write_stream)
-
-            # TODO: do we need to do this each time in order to reset cache?
-            tref = self.mod.get_texref('palTex')
-            tref.set_address_2d(d_palmem, pal_array_info, 1024)
-            tref.set_format(cuda.array_format.UNSIGNED_INT8, 4)
-            tref.set_flags(cuda.TRSF_NORMALIZED_COORDINATES)
-            tref.set_filter_mode(cuda.filter_mode.LINEAR)
+            twidth = np.float32((stop-start) / info.palette_height)
+            if info.acc_mode == 'deferred':
+                palette_fun(d_seeds, d_palint_times, d_palint_vals,
+                            np.float32(start), twidth,
+                            block=(256,1,1), grid=(info.palette_height,1),
+                            stream=write_stream)
+            else:
+                palette_fun(d_palmem, d_palint_times, d_palint_vals,
+                            np.float32(start), twidth,
+                            block=(256,1,1), grid=(info.palette_height,1),
+                            stream=write_stream)
 
             width = np.float32((stop-start) / ntemporal_samples)
             packer_fun(d_infos, d_genome_times, d_genome_knots,
@@ -251,12 +272,11 @@ class Renderer(object):
                     _sync_stream(iter_stream, write_stream)
                     write_fun(d_accum, d_log_sorted, sorter.dglobal,
                               block=(1024, 1, 1), grid=(nwriteblocks, 1),
-                              texrefs=[tref], stream=write_stream)
+                              stream=write_stream)
             else:
                 iter_fun(np.uint64(d_accum), d_seeds, d_points, d_infos,
                          block=(32, self._iter.NTHREADS/32, 1),
-                         grid=(ntemporal_samples, nrounds),
-                         texrefs=[tref], stream=iter_stream)
+                         grid=(ntemporal_samples, nrounds), stream=iter_stream)
 
             util.BaseCode.fill_dptr(self.mod, d_out, 4 * nbins, filt_stream)
             _sync_stream(filt_stream, write_stream)

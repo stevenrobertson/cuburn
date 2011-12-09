@@ -385,22 +385,6 @@ void iter(
 #define SHAB 12
 #define SHAW (1<<SHAB)
 
-// Read from the shm accumulators and write to the global ones.
-__device__
-void write_shmem_helper(
-        float4 *acc,
-        const int glo_idx,
-        const uint32_t dr,
-        const uint32_t gb
-) {
-    float4 pix = acc[glo_idx];
-    pix.x += (dr & 0xffff) / 127.0f;
-    pix.w += dr >> 16;
-    pix.y += (gb & 0xffff) / 127.0f;
-    pix.z += (gb >> 16) / 127.0f;
-    acc[glo_idx] = pix;
-}
-
 // Read the point log, accumulate in shared memory, and write the results.
 // This kernel is to be launched with one block for every 4,096 addresses to
 // be processed, and will handle those addresses.
@@ -440,8 +424,10 @@ write_shmem(
     s_acc_gb[tid+3*BS] = 0;
     __syncthreads();
 
-    // This predicate is used for the horrible monkey-patching magic.
-    asm volatile(".reg .pred p; setp.lt.u32 p, %0, 42;" :: "r"(s_acc_dr[0]));
+    // This predicate is used for the horrible monkey-patching magic. Second
+    // variable is just to shut the compiler up.
+    asm volatile(".reg .pred p; setp.lt.u32 p, %0, 42;"
+                 :: "r"(s_acc_dr[0]), "r"(s_acc_gb[0]));
 
     // log_bounds[] holds inclusive prefix sums, so that log_bounds[0] is the
     // largest index with radix 0, and so on.
@@ -453,7 +439,7 @@ write_shmem(
     else               idx_lo = 0;
     int idx_hi = (log_bounds[lb_idx_hi] & ~(BS - 1)) + BS;
 
-    float rnrounds = 1.0f / (idx_hi - idx_lo);
+    float rnrounds = {{'%d.0f' % info.palette_height}} / (idx_hi - idx_lo);
     float time = tid * rnrounds;
     float time_step = BS * rnrounds;
 
@@ -468,65 +454,57 @@ write_shmem(
         bfe_decl(glob_addr, entry, SHAB, 12);
         if (glob_addr != bid) continue;
 
-        // Shared memory address, pre-shifted
-        int shr_addr;
-        asm("bfi.b32 %0, %1, 0, 2, 12;" : "=r"(shr_addr) : "r"(entry));
-        bfe_decl(color, entry, 24, 8);
-
-        float colorf = color / 255.0f;
-        float4 outcol = tex2D(palTex, colorf, time);
-
-        // TODO: change texture sampler to return shorts and avoid this
-        uint32_t r = 127.0f * outcol.x;
-        uint32_t g = 127.0f * outcol.y;
-        uint32_t b = 127.0f * outcol.z;
-
-        uint32_t dr = r + 0x10000, gb = g + (b << 16);
-
         asm volatile ({{crep("""
 {
     .reg .pred q;
-    .reg .u32 d, r, g, b, dr, gb, drw, gbw, off;
+    .reg .u32 shoff, color, time, d, r, g, b, hi, lo, his, los, hiw, low;
     .reg .u64 ptr;
     .reg .f32 rf, gf, bf, df;
+
+    bfi.b32         shoff,  %0,     0,  2,  12;
+    bfe.u32         color,  %0,     24, 8;
+    shl.b32         color,  color,  3;
+    cvt.rni.u32.f32 time,   %1;
+
+    suld.b.2d.v2.b32.clamp  {his, los},   [flatpal, {color, time}];
 
 acc_write_start:
     // This instruction will get replaced with a LDSLK that sets 'p'.
     // The 0xffff is a signature to make sure we get the right instruction,
     // and will get replaced with a 0-offset when patching.
-    ld.shared.volatile.u32   dr,     [%2+0xffff];
-@p  ld.shared.volatile.u32   gb,     [%2+0x4000];
-@p  add.u32         %0,     dr,     %0;
-@p  add.u32         %1,     gb,     %1;
-    // TODO: clever use of slct could remove an instruction?
-@p  setp.lo.u32     q,      %0,     32768000;
-@p  selp.b32        drw,    %0,     0,      q;
-@p  selp.b32        gbw,    %1,     0,      q;
-@p  st.shared.volatile.u32   [%2+0x4000],    gbw;
+    ld.shared.volatile.u32  low,    [shoff+0xffff];
+@p  ld.shared.volatile.u32  hiw,    [shoff+0x4000];
+    add.cc.u32      lo,     los,    low;
+    addc.u32        hi,     his,    hiw;
+    setp.lo.u32     q,      hi,     (1023 << 22);
+    selp.b32        hiw,    hi,     0,      q;
+    selp.b32        low,    lo,     0,      q;
+@p  st.shared.volatile.u32   [shoff+0x4000],    hiw;
     // This instruction will get replaced with an STSUL
-@p  st.shared.volatile.u32   [%2+0xffff],    drw;
+@p  st.shared.volatile.u32   [shoff+0xffff],    low;
 @!p bra             acc_write_start;
 @q  bra             oflow_write_end;
-    shl.b32         %2,     %2,     2;
-    cvt.u64.u32     ptr,    %2;
-    add.u64         ptr,    ptr,    %3;
-    and.b32         r,      %0,     0xffff;
-    shr.b32         g,      %1,     16;
-    and.b32         b,      %1,     0xffff;
+    shl.b32         shoff,  shoff,  2;
+    cvt.u64.u32     ptr,    shoff;
+    add.u64         ptr,    ptr,    %2;
+    bfe.u32         r,      hi,     4,      18;
+    bfe.u32         g,      lo,     18,     14;
+    bfi.b32         g,      hi,     g,      14,     4;
+    and.b32         b,      lo,     ((1<<18)-1);
     cvt.rn.f32.u32  rf,     r;
     cvt.rn.f32.u32  gf,     g;
     cvt.rn.f32.u32  bf,     b;
-    mul.ftz.f32     rf,     rf,     0.007874015748031496;
-    mul.ftz.f32     gf,     gf,     0.007874015748031496;
-    mul.ftz.f32     bf,     bf,     0.007874015748031496;
-    red.add.f32     [ptr],   500.0;
-    red.add.f32     [ptr+4], bf;
-    red.add.f32     [ptr+8], gf;
-    red.add.f32     [ptr+12], rf;
+    mul.ftz.f32     rf,     rf,     (1.0/255.0);
+    mul.ftz.f32     gf,     gf,     (1.0/255.0);
+    mul.ftz.f32     bf,     bf,     (1.0/255.0);
+    red.add.f32     [ptr],  rf;
+    red.add.f32     [ptr+4], gf;
+    red.add.f32     [ptr+8], bf;
+    red.add.f32     [ptr+12], 1023.0;
 
 oflow_write_end:
 }
-        """)}}  ::  "r"(dr), "r"(gb), "r"(shr_addr), "l"(glo_ptr));
+        """)}}  ::  "r"(entry), "f"(time), "l"(glo_ptr));
         // TODO: go through the pain of manual address calculation for global ptr
         time += time_step;
     }
@@ -534,7 +512,25 @@ oflow_write_end:
     __syncthreads();
     int idx = tid;
     for (int i = 0; i < (SHAW / BS); i++) {
-        write_shmem_helper(acc, glo_base + idx, s_acc_dr[idx], s_acc_gb[idx]);
+        int d, r, g, b;
+        float4 pix = acc[glo_base + idx];
+        asm({{crep("""
+{
+    .reg .u32 hi, lo;
+    ld.shared.u32   lo,     [%4];
+    ld.shared.u32   hi,     [%4+0x4000];
+    shr.u32         %0,     hi,     22;
+    bfe.u32         %1,     hi,     4,      18;
+    bfe.u32         %2,     lo,     18,     14;
+    bfi.b32         %2,     hi,     %2,     14,     4;
+    and.b32         %3,     lo,     ((1<<18)-1);
+}
+        """)}} : "=r"(d), "=r"(r), "=r"(g), "=r"(b) : "r"(idx*4));
+        pix.x += r / 255.0f;
+        pix.y += g / 255.0f;
+        pix.z += b / 255.0f;
+        pix.w += d;
+        acc[glo_base + idx] = pix;
         idx += BS;
     }
 }
