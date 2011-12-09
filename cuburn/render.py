@@ -82,11 +82,6 @@ class Renderer(object):
         self.cubin = pycuda.compiler.compile(
                 self.src, keep=keep, options=cmp_options,
                 cache_dir=False if keep else None)
-        with open('/tmp/iter_kern.cubin', 'wb') as fp:
-            fp.write(self.cubin)
-        # For now, we apply the monkey-patch manually. May eventually make
-        # this more of a framework if I do it in more than one code segment.
-        self.cubin = self._iter.monkey_patch(self.cubin)
         self.mod = cuda.module_from_buffer(self.cubin, jit_options)
         with open('/tmp/iter_kern.cubin', 'wb') as fp:
             fp.write(self.cubin)

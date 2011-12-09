@@ -410,25 +410,14 @@ write_shmem(
     // These two accumulators, used in write_shmem, hold {density, red} and
     // {green, blue} values as packed u16 pairs. The fixed size represents
     // 4,096 pixels in the accumulator.
-    __shared__ uint32_t s_acc_dr[SHAW];
-    __shared__ uint32_t s_acc_gb[SHAW];
+    __shared__ uint32_t s_acc[SHAW*2];
 
-    // TODO: doesn't respect SHAW/BS
-    // TODO: compare generated code with unrolled for-loop
-    s_acc_dr[tid] = 0;
-    s_acc_gb[tid] = 0;
-    s_acc_dr[tid+BS] = 0;
-    s_acc_gb[tid+BS] = 0;
-    s_acc_dr[tid+2*BS] = 0;
-    s_acc_gb[tid+2*BS] = 0;
-    s_acc_dr[tid+3*BS] = 0;
-    s_acc_gb[tid+3*BS] = 0;
+    int idx = tid;
+    for (int i = 0; i < (SHAW * 2 / BS); i++) {
+        s_acc[idx] = 0;
+        idx += BS;
+    }
     __syncthreads();
-
-    // This predicate is used for the horrible monkey-patching magic. Second
-    // variable is just to shut the compiler up.
-    asm volatile(".reg .pred p; setp.lt.u32 p, %0, 42;"
-                 :: "r"(s_acc_dr[0]), "r"(s_acc_gb[0]));
 
     // log_bounds[] holds inclusive prefix sums, so that log_bounds[0] is the
     // largest index with radix 0, and so on.
@@ -457,40 +446,32 @@ write_shmem(
         asm volatile ({{crep("""
 {
     .reg .pred q;
-    .reg .u32 shoff, color, time, d, r, g, b, hi, lo, his, los, hiw, low;
+    .reg .u32 shoff, color, time, d, r, g, b, hi, lo, hiw, low;
     .reg .u64 ptr;
-    .reg .f32 rf, gf, bf, df;
+    .reg .f32 rf, gf, bf, df, rg, gg, dg, bg;
 
     and.b32         shoff,  %0,     0xff800;
-    shr.b32         shoff,  shoff,  6;
-    bfi.b32         shoff,  %0,     shoff,  2,  3;
+    shr.b32         shoff,  shoff,  5;
+    bfi.b32         shoff,  %0,     shoff,  3,  3;
 
     bfe.u32         color,  %0,     24, 8;
     shl.b32         color,  color,  3;
     cvt.rni.u32.f32 time,   %1;
 
-    suld.b.2d.v2.b32.clamp  {his, los},   [flatpal, {color, time}];
-
-acc_write_start:
-    // This instruction will get replaced with a LDSLK that sets 'p'.
-    // The 0xffff is a signature to make sure we get the right instruction,
-    // and will get replaced with a 0-offset when patching.
-    ld.shared.volatile.u32  low,    [shoff+0xffff];
-@p  ld.shared.volatile.u32  hiw,    [shoff+0x4000];
-    add.cc.u32      lo,     los,    low;
-    addc.u32        hi,     his,    hiw;
-    setp.hs.and.u32 q,      hi,     (1023 << 22),   p;
-    selp.b32        hiw,    0,      hi,     q;
-    selp.b32        low,    0,      lo,     q;
-@p  st.shared.volatile.u32   [shoff+0x4000],    hiw;
-    // This instruction will get replaced with an STSUL
-@p  st.shared.volatile.u32   [shoff+0xffff],    low;
-//@!p bra             acc_write_start;
+    suld.b.2d.v2.b32.clamp  {hi, lo},   [flatpal, {color, time}];
+    ld.shared.v2.u32    {hiw, low},     [shoff];
+    add.cc.u32          lo,     lo,     low;
+    addc.u32            hi,     hi,     hiw;
+    st.shared.v2.u32    [shoff],        {hi, lo};
+    setp.hs.u32         q,      hi,     (1023 << 22);
 @!q bra             oflow_write_end;
+    st.shared.v2.u32    [shoff],    {0, 0};
+
     // TODO: opacity
     bfi.b32         shoff,  %0,     0,  4,  24;
     cvt.u64.u32     ptr,    shoff;
     add.u64         ptr,    ptr,    %2;
+    ld.global.v4.f32    {dg,bg,gg,rg},  [ptr];
     bfe.u32         r,      hi,     4,      18;
     bfe.u32         g,      lo,     18,     14;
     bfi.b32         g,      hi,     g,      14,     4;
@@ -498,13 +479,11 @@ acc_write_start:
     cvt.rn.f32.u32  rf,     r;
     cvt.rn.f32.u32  gf,     g;
     cvt.rn.f32.u32  bf,     b;
-    mul.ftz.f32     rf,     rf,     (1.0/255.0);
-    mul.ftz.f32     gf,     gf,     (1.0/255.0);
-    mul.ftz.f32     bf,     bf,     (1.0/255.0);
-    red.add.f32     [ptr],  rf;
-    red.add.f32     [ptr+4], gf;
-    red.add.f32     [ptr+8], bf;
-    red.add.f32     [ptr+12], 1023.0;
+    fma.rn.ftz.f32  rf,     rf,     (1.0/255.0),    rg;
+    fma.rn.ftz.f32  gf,     gf,     (1.0/255.0),    gg;
+    fma.rn.ftz.f32  bf,     bf,     (1.0/255.0),    bg;
+    add.f32         df,     df,     dg;
+    st.global.v4.f32    [ptr],  {df,bf,gf,rf};
 
 oflow_write_end:
 }
@@ -514,7 +493,7 @@ oflow_write_end:
     __syncthreads();
 
 
-    int idx = tid;
+    idx = tid;
     int glo_idx = magic | (((idx << 8) | idx) & 0xff807);
 
     for (int i = 0; i < (SHAW / BS) && glo_idx < nbins; i++) {
@@ -523,15 +502,14 @@ oflow_write_end:
         asm({{crep("""
 {
     .reg .u32 hi, lo;
-    ld.shared.u32   lo,     [%4];
-    ld.shared.u32   hi,     [%4+0x4000];
+    ld.shared.v2.u32   {hi, lo},    [%4];
     shr.u32         %0,     hi,     22;
     bfe.u32         %1,     hi,     4,      18;
     bfe.u32         %2,     lo,     18,     14;
     bfi.b32         %2,     hi,     %2,     14,     4;
     and.b32         %3,     lo,     ((1<<18)-1);
 }
-        """)}} : "=r"(d), "=r"(r), "=r"(g), "=r"(b) : "r"(idx*4));
+        """)}} : "=r"(d), "=r"(r), "=r"(g), "=r"(b) : "r"(idx*8));
         pix.x += r / 255.0f;
         pix.y += g / 255.0f;
         pix.z += b / 255.0f;
@@ -553,36 +531,3 @@ oflow_write_end:
                               if n != 'final'],
                 **globals())
 
-    @staticmethod
-    def monkey_patch(cubin):
-        LD      = np.uint64(0x851c00fcff0300c1)
-        LDSLK   = np.uint64(0x851c0000000000c4)
-        ST      = np.uint64(0x850000fcff0300c9)
-        STSUL   = np.uint64(0x85000000000000cc)
-        regmask = np.uint64(0x00c0ff0300000000)
-        prdmask = np.uint64(0x003c000000000000)
-
-        O = 64  # Expected offset to last instruction
-
-        offset = cubin.find('\x85')
-        while offset >= 0:
-            # Using these fixed offsets makes this code intentionally
-            # intolerant of compiler instruction reordering
-            if cubin[offset+7] == '\xc1' and cubin[offset+O] == '\x85':
-                ld = np.frombuffer(cubin[offset:offset+8], dtype='>u8')
-                st = np.frombuffer(cubin[offset+O:offset+8+O], dtype='>u8')
-                if ((ld & (~regmask)) == LD and
-                    ((st & (~regmask)) & (~prdmask)) == ST):
-                    break
-            offset = cubin.find('\x85', offset+1)
-        assert offset > 0, 'Could not find patch point!'
-
-        # Note that these bits are still reversed, and we ignore the
-        # (im)possibility of a negative predicate in this case
-        pred = (st & prdmask) >> 50
-        ld = LDSLK | (ld & regmask) | (pred << 10)
-        st = STSUL | (st & regmask) | (st & prdmask)
-
-        return ( cubin[:offset] + ld.byteswap().tostring()
-               + cubin[offset+8:offset+O]
-               + st.byteswap().tostring() + cubin[offset+8+O:] )
