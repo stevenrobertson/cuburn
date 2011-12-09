@@ -296,9 +296,10 @@ __device__
 int bitwise_binsearch(const float *hay, float needle) {
     int lo = 0;
 
+    // TODO: improve efficiency on 64-bit arches
     {{for i in range(search_rounds-1, -1, -1)}}
-    if (needle > hay[lo | {{1 << i}}])
-        lo |= {{1 << i}};
+    if (needle > hay[lo + {{1 << i}}])
+        lo += {{1 << i}};
     {{endfor}}
     return lo;
 }
