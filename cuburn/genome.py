@@ -133,7 +133,7 @@ class RenderInfo(object):
     # position into a single 32-bit int for now, which limits resolution to
     # 1080p when xform opacity is respected, so the other two modes will hang
     # around until that can be extended to be memory-limited again.
-    acc_mode = 'deferred'
+    acc_mode = 'atomic'
 
     # TODO: fix this
     chaos_used = False
