@@ -1,7 +1,7 @@
 import numpy as np
 
 # The maximum number of coeffecients that will ever be retained on the device
-FWIDTH = 21
+FWIDTH = 15
 
 # The number of points on either side of the center in one dimension
 F2 = int(FWIDTH/2)
@@ -12,92 +12,85 @@ COEFF_EPS = 0.0001
 dists2d = np.fromfunction(lambda i, j: np.hypot(i-F2, j-F2), (FWIDTH, FWIDTH))
 dists = dists2d.flatten()
 
-# A flam3 estimator radius corresponds to a Gaussian filter with a standard
-# deviation of 1/3 the radius. We choose 13 as an arbitrary upper bound for the
-# max filter radius. The filter should reject larger radii.
-MAX_SD = 13 / 3.
 
-# The minimum estimator radius can be set as low as 0, but below a certain
-# radius only one coeffecient is retained. Since things get unstable near 0,
-# we explicitly set a minimum threshold below which no coeffecients are
-# retained.
-MIN_SD = np.sqrt(-1 / (2 * np.log(COEFF_EPS)))
+# This translates to a cap on DE filter radius of 50. Even this fits very
+# comfortably within the chosen COEFF_EPS.
+MAX_SCALE = -3/25.
 
-# Using two predicated three-term approximations is much more accurate than
-# using a very large number of terms, due to nonlinear behavior at low SD.
-# Everything above this SD uses one approximation; below, another.
-SPLIT_SD = 0.75
+# When the scale is above this value, we'd be directly clamping to one bin
+MIN_SCALE = np.log(0.0001)
 
-# The lower endpoints are undershot by this proportion to reduce error
-UNDERSHOOT = 0.98
+# Everything above this scale uses one approximation; below, another.
+SPLIT_SCALE = -1.1
 
-sds_hi = np.linspace(SPLIT_SD * UNDERSHOOT, MAX_SD, num=1000)
-sds_lo = np.linspace(MIN_SD * UNDERSHOOT, SPLIT_SD, num=1000)
+# The upper endpoints are overshot by this proportion to reduce error
+OVERSHOOT = 1.01
 
-print 'At MIN_SD = %g, these are the coeffs:' % MIN_SD
-print np.exp(dists2d**2 / (-2 * MIN_SD ** 2))
+# No longer 'scale'-related, but we call it that anyway
+scales_hi = np.linspace(SPLIT_SCALE, MAX_SCALE * OVERSHOOT, num=1000)
+scales_lo = np.linspace(MIN_SCALE, SPLIT_SCALE * OVERSHOOT, num=1000)
 
-def eval_sds(sds, name, nterms):
+def eval_scales(scales, name, nterms):
     # Calculate the filter sums at each coordinate
     sums = []
-    for sd in sds:
-        coeffs = np.exp(dists**2 / (-2 * sd ** 2))
+    for scale in scales:
+        coeffs = np.exp(dists**2 * scale)
         # Note that this sum is the sum of all coordinates, though it should
         # actually be the result of the polynomial approximation. We could do
         # a feedback loop to improve accuracy, but I don't think the difference
         # is worth worrying about.
         sum = np.sum(coeffs)
-        sums.append(np.sum(filter(lambda v: v / sum > COEFF_EPS, coeffs)))
+        sums.append(1./np.sum(filter(lambda v: v / sum > COEFF_EPS, coeffs)))
     print 'Evaluating %s:' % name
-    poly, resid, rank, sing, rcond = np.polyfit(sds, sums, nterms, full=True)
+    poly, resid, rank, sing, rcond = np.polyfit(scales, sums, nterms, full=True)
     print 'Fit for %s:' % name, poly, resid, rank, sing, rcond
     return sums, poly
 
 import matplotlib.pyplot as plt
 
-sums_hi, poly_hi = eval_sds(sds_hi, 'hi', 8)
-sums_lo, poly_lo = eval_sds(sds_lo, 'lo', 7)
+sums_hi, poly_hi = eval_scales(scales_hi, 'hi', 7)
+sums_lo, poly_lo = eval_scales(scales_lo, 'lo', 7)
 
-num_undershoots = len(filter(lambda v: v < SPLIT_SD, sds_hi))
-sds_hi = sds_hi[num_undershoots:]
-sums_hi = sums_hi[num_undershoots:]
+num_overshoots = len(filter(lambda v: v > MAX_SCALE, scales_hi))
+scales_hi = scales_hi[num_overshoots:]
+sums_hi = sums_hi[num_overshoots:]
 
-num_undershoots = len(filter(lambda v: v < MIN_SD, sds_lo))
-sds_lo = sds_lo[num_undershoots:]
-sums_lo = sums_lo[num_undershoots:]
+num_overshoots = len(filter(lambda v: v > SPLIT_SCALE, scales_lo))
+scales_lo = scales_lo[num_overshoots:]
+sums_lo = sums_lo[num_overshoots:]
 
 polyf_hi = np.float32(poly_hi)
-vals_hi = np.polyval(polyf_hi, sds_hi)
+vals_hi = np.polyval(polyf_hi, scales_hi)
 polyf_lo = np.float32(poly_lo)
-vals_lo = np.polyval(polyf_lo, sds_lo)
+vals_lo = np.polyval(polyf_lo, scales_lo)
 
 def print_filt(filts):
-    print '    filtsum = %4.8ff;' % filts[0]
+    print '    filtsum = %4.8ef;' % filts[0]
     for f in filts[1:]:
-        print '    filtsum = filtsum * sd + % 16.8ff;' % f
+        print '    filtsum = filtsum * scale + % 16.8ef;' % f
 
 print '\n\nFor your convenience:'
-print '#define MIN_SD %.8f' % MIN_SD
-print '#define MAX_SD %.8f' % MAX_SD
-print 'if (sd < %g) {' % SPLIT_SD
+print '#define MIN_SCALE %.8gf' % MIN_SCALE
+print '#define MAX_SCALE %.8gf' % MAX_SCALE
+print 'if (scale < %gf) {' % SPLIT_SCALE
 print_filt(polyf_lo)
 print '} else {'
 print_filt(polyf_hi)
 print '}'
 
-sds = np.concatenate([sds_lo, sds_hi])
+scales = np.concatenate([scales_lo, scales_hi])
 sums = np.concatenate([sums_lo, sums_hi])
 vals = np.concatenate([vals_lo, vals_hi])
 
 fig = plt.figure()
 ax = fig.add_subplot(1,1,1)
-ax.plot(sds, sums)
-ax.plot(sds, vals)
+ax.plot(scales, sums)
+ax.plot(scales, vals)
 ax.set_xlabel('stdev')
 ax.set_ylabel('filter sum')
 
 ax = ax.twinx()
-ax.plot(sds, [abs((s-v)/v) for s, v in zip(sums, vals)])
+ax.plot(scales, [abs((s-v)/v) for s, v in zip(sums, vals)])
 ax.set_ylabel('rel err')
 
 plt.show()

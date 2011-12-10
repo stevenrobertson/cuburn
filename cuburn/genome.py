@@ -116,7 +116,7 @@ class RenderInfo(object):
     # Maximum width of DE and other spatial filters, and thus in turn the
     # amount of padding applied. Note that, for now, this must not be changed!
     # The filtering code makes deep assumptions about this value.
-    gutter = 22
+    gutter = 15
 
     # TODO: for now, we always throw away the alpha channel before writing.
     # All code is in place to not do this, we just need to find a way to expose

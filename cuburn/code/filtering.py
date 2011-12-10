@@ -85,9 +85,9 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
 }
 
 
-#define W 21        // Filter width (regardless of standard deviation chosen)
-#define W2 10       // Half of filter width, rounded down
-#define FW 52       // Width of local result storage (NW+W2+W2)
+#define W 15        // Filter width (regardless of standard deviation chosen)
+#define W2 7       // Half of filter width, rounded down
+#define FW 46       // Width of local result storage (NW+W2+W2)
 #define FW2 (FW*FW)
 
 __shared__ float de_r[FW2], de_g[FW2], de_b[FW2], de_a[FW2];
@@ -116,12 +116,12 @@ void logscale(float4 *pixbuf, float4 *outbuf, float k1, float k2) {
 
 
 // See helpers/filt_err.py for source of these values.
-#define MIN_SD 0.23299530f
-#define MAX_SD 4.33333333f
+#define MAX_SCALE -0.12f
+#define MIN_SCALE -9.2103404f
 
 __global__
 void density_est(float4 *pixbuf, float4 *outbuf,
-                 float est_sd, float neg_est_curve, float est_min,
+                 float scale_coeff, float est_curve, float edge_clamp,
                  float k1, float k2, int height, int stride) {
     for (int i = threadIdx.x + 32*threadIdx.y; i < FW2; i += 32)
         de_r[i] = de_g[i] = de_b[i] = de_a[i] = 0.0f;
@@ -164,57 +164,46 @@ void density_est(float4 *pixbuf, float4 *outbuf,
             // Base index of destination for writes
             int si = (threadIdx.y + W2) * FW + threadIdx.x + W2;
 
-            // Calculate standard deviation of Gaussian kernel. The base SD is
-            // then scaled in inverse proportion to the density of the point
-            // being scaled.
-            float sd = est_sd * powf(den+1.0f, neg_est_curve);
-            // And for the gradient...
-            float diag_sd = est_sd * powf(diag_mag+1.0f, neg_est_curve);
+            // Calculate scaling coefficient for the Gaussian kernel. This
+            // does not match with a normal Gaussian; it just fits with
+            // flam3's implementation.
+            float scale = powf(den, est_curve) * scale_coeff;
 
-            // If the gradient SD is smaller than the minimum SD, we're probably
-            // on a strong edge; blur with a standard deviation around 1px.
-            if (diag_sd < MIN_SD && diag_sd < sd) {
-                sd = 0.3333333f;
+            // If the gradient scale is smaller than the minimum scale, we're
+            // probably on a strong edge; blur slightly.
+            if (diag_mag > den * 2.0f) {
+                scale = max(-9.0f, scale);
                 // Uncomment to see which pixels are being clamped
                 // de_g[si] = 1.0f;
             }
 
-            // Clamp the final standard deviation.
-            sd = fminf(MAX_SD, fmaxf(sd, est_min));
-
             // Below a certain threshold, only one coeffecient would be
             // retained anyway; we hop right to it.
-            if (sd <= MIN_SD) {
+            if (scale <= MIN_SCALE) {
                 de_add(si, 0,  0, in);
             } else {
-                // These polynomials approximates the sum of the filters
-                // with the clamping logic used here. See helpers/filt_err.py.
+                // These polynomials approximates the reciprocal of the sum of
+                // all retained filter coefficients. See helpers/filt_err.py.
                 float filtsum;
-                if (sd < 0.75f) {
-                    filtsum = -352.25061035f;
-                    filtsum = filtsum * sd +    1117.09680176f;
-                    filtsum = filtsum * sd +   -1372.48864746f;
-                    filtsum = filtsum * sd +     779.15478516f;
-                    filtsum = filtsum * sd +    -164.04229736f;
-                    filtsum = filtsum * sd +     -12.04892635f;
-                    filtsum = filtsum * sd +       9.04126644f;
-                    filtsum = filtsum * sd +       0.10304667f;
+                if (scale < -1.1f) {
+                    filtsum = 5.20066078e-06f;
+                    filtsum = filtsum * scale +   2.14025771e-04f;
+                    filtsum = filtsum * scale +   3.62761668e-03f;
+                    filtsum = filtsum * scale +   3.21970172e-02f;
+                    filtsum = filtsum * scale +   1.54297248e-01f;
+                    filtsum = filtsum * scale +   3.42210710e-01f;
+                    filtsum = filtsum * scale +   3.06015890e-02f;
+                    filtsum = filtsum * scale +   1.33724615e-01f;
                 } else {
-                    filtsum = 0.01162011f;
-                    filtsum = filtsum * sd +      -0.21552004f;
-                    filtsum = filtsum * sd +       1.66545594f;
-                    filtsum = filtsum * sd +      -7.00809765f;
-                    filtsum = filtsum * sd +      17.55487633f;
-                    filtsum = filtsum * sd +     -26.80626106f;
-                    filtsum = filtsum * sd +      30.61903954f;
-                    filtsum = filtsum * sd +     -12.00870514f;
-                    filtsum = filtsum * sd +       2.46708894f;
+                    filtsum = -1.23516649e-01f;
+                    filtsum = filtsum * scale +  -5.14862895e-01f;
+                    filtsum = filtsum * scale +  -8.61198902e-01f;
+                    filtsum = filtsum * scale +  -7.41916001e-01f;
+                    filtsum = filtsum * scale +  -3.51667106e-01f;
+                    filtsum = filtsum * scale +  -9.07439440e-02f;
+                    filtsum = filtsum * scale +  -3.30008656e-01f;
+                    filtsum = filtsum * scale +  -4.78249392e-04f;
                 }
-                float filtscale = 1.0f / filtsum;
-
-                // The reciprocal SD scaling coeffecient in the Gaussian
-                // exponent: exp(-x^2/(2*sd^2)) = exp2f(x^2*rsd)
-                float rsd = -0.5f * CUDART_L2E_F / (sd * sd);
 
                 for (int jj = 0; jj <= W2; jj++) {
                     float jj2f = jj;
@@ -222,9 +211,8 @@ void density_est(float4 *pixbuf, float4 *outbuf,
 
                     float iif = 0;
                     for (int ii = 0; ii <= jj; ii++) {
-
-                        float coeff = exp2f((jj2f + iif * iif) * rsd)
-                                    * filtscale;
+                        float coeff = expf((jj2f + iif * iif) * scale)
+                                    * filtsum;
                         if (coeff < 0.0001f) break;
                         iif += 1;
 
@@ -317,15 +305,12 @@ class Filtering(object):
             t = fun(dsrc, ddst, k1, k2,
                     block=(512, 1, 1), grid=(nbins/512, 1), stream=stream)
         else:
-            # flam3_gaussian_filter() uses an implicit standard deviation of
-            # 0.5, but the DE filters scale filter distance by the default
-            # spatial support factor of 1.5, so the effective base SD is
-            # (0.5/1.5)=1/3.
-            est_sd = np.float32(cp.de.radius(t) / 3.)
-            neg_est_curve = np.float32(-cp.de.curve(t))
-            est_min = np.float32(cp.de.minimum(t) / 3.)
+            scale_coeff = np.float32(-(1 + cp.de.radius(t)) ** -2.0)
+            est_curve = np.float32(2 * cp.de.curve(t))
+            # TODO: experiment with this
+            edge_clamp = np.float32(2.0)
             fun = self.mod.get_function("density_est")
-            fun(dsrc, ddst, est_sd, neg_est_curve, est_min, k1, k2,
+            fun(dsrc, ddst, scale_coeff, est_curve, edge_clamp, k1, k2,
                 np.int32(info.acc_height), np.int32(info.acc_stride),
                 block=(32, 32, 1), grid=(info.acc_width/32, 1), stream=stream)
 
