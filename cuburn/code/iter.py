@@ -435,6 +435,7 @@ oflow_end:
 __global__
 void flush_atom(uint64_t out_ptr, uint64_t atom_ptr, int nbins) {
     int i = (blockIdx.y * gridDim.x + blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= nbins) return;
     asm volatile ({{crep("""
 {
     .reg .u32   off, hi, lo, d, r, g, b;
