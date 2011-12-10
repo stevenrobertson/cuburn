@@ -187,8 +187,10 @@ void iter(
         uint64_t out_ptr,
         mwc_st *msts,
         float4 *points,
-        const iter_params *all_params,
-        int nsamps_to_generate
+        const iter_params *all_params
+{{if info.acc_mode == 'atomic'}}
+      , uint64_t atom_ptr
+{{endif}}
 ) {
     const iter_params *global_params = &(all_params[blockIdx.x]);
 
@@ -207,10 +209,14 @@ void iter(
     int this_rb_idx = rb_idx + threadIdx.x + 32 * threadIdx.y;
     mwc_st rctx = msts[this_rb_idx];
 
-{{if info.acc_mode != 'deferred'}}
+{{if info.acc_mode == 'global'}}
     __shared__ float time_frac;
     time_frac = blockIdx.x / (float) gridDim.x;
 {{else}}
+    {{if info.acc_mode == 'atomic'}}
+    // TODO: spare the register, reuse at call site?
+    int time = blockIdx.x >> 4;
+    {{endif}}
     float color_dither = 0.49f * mwc_next_11(rctx);
 {{endif}}
 
@@ -224,10 +230,10 @@ void iter(
     // Shared memory size can be reduced by a factor of four using a slower
     // 4-stage reduce, but on Fermi hardware shmem use isn't a bottleneck
     __shared__ float swap[{{4*NTHREADS}}];
-    __shared__ float cosel[{{NWARPS}}];
+    __shared__ float cosel[{{2*NWARPS}}];
 
     // This is normally done after the swap-sync in the main loop
-    if (threadIdx.y == 0 && threadIdx.x < {{NWARPS}})
+    if (threadIdx.y == 0 && threadIdx.x < {{NWARPS*2}})
         cosel[threadIdx.x] = mwc_next_01(rctx);
     __syncthreads();
 {{endif}}
@@ -295,7 +301,7 @@ void iter(
         __syncthreads();
 
         // We select the next xforms here, since we've just synced.
-        if (threadIdx.y == 0 && threadIdx.x < {{NWARPS}})
+        if (threadIdx.y == 0 && threadIdx.x < {{NWARPS*2}})
             cosel[threadIdx.x] = mwc_next_01(rctx);
 
         fuse = swap[sr];
@@ -345,15 +351,60 @@ void iter(
         }
 
         uint32_t i = iy * acc_size.stride + ix;
-
 {{if info.acc_mode == 'atomic'}}
-        float4 outcol = tex2D(palTex, cc, time_frac);
-        float *accbuf_f = reinterpret_cast<float*>(out_ptr + (16*i));
-        atomicAdd(accbuf_f,   outcol.x);
-        atomicAdd(accbuf_f+1, outcol.y);
-        atomicAdd(accbuf_f+2, outcol.z);
-        atomicAdd(accbuf_f+3, 1.0f);
-{{elif info.acc_mode == 'global'}}
+        asm volatile ({{crep("""
+{
+    .reg .pred  p;
+    .reg .u32   off, color, hi, lo, d, r, g, b;
+    .reg .f32   colorf, rf, gf, bf, df;
+    .reg .u64   ptr, val;
+
+    // TODO: coord dithering better, or pre-supersampled palette?
+    fma.rn.ftz.f32      colorf, %0,     255.0,  %1;
+    cvt.rni.u32.f32     color,  colorf;
+    shl.b32             color,  color,  3;
+
+    suld.b.2d.v2.b32.clamp      {lo, hi},   [flatpal, {color, %2}];
+    mov.b64             val,    {lo, hi};
+    shl.b32             off,    %3,     3;
+    cvt.u64.u32         ptr,    off;
+    add.u64             ptr,    ptr,    %4;
+    setp.le.f32         p,      %5,     0.98;
+@p  red.global.add.u64  [ptr],  val;
+@p  bra                 oflow_end;
+    atom.global.add.u64 val,    [ptr],  val;
+    mov.b64             {lo, hi},       val;
+    setp.lo.u32         p,      hi,     (256 << 22);
+@p  bra                 oflow_end;
+    atom.global.exch.b64 val,   [ptr],  0;
+    mov.b64             {lo, hi},       val;
+    shr.u32             d,      hi,     22;
+    bfe.u32             r,      hi,     4,      18;
+    bfe.u32             g,      lo,     18,     14;
+    bfi.b32             g,      hi,     g,      14,     4;
+    and.b32             b,      lo,     ((1<<18)-1);
+    cvt.rn.f32.u32      rf,     r;
+    cvt.rn.f32.u32      gf,     g;
+    cvt.rn.f32.u32      bf,     b;
+    cvt.rn.f32.u32      df,     d;
+    mul.rn.ftz.f32      rf,     rf,     (1.0/255.0);
+    mul.rn.ftz.f32      gf,     gf,     (1.0/255.0);
+    mul.rn.ftz.f32      bf,     bf,     (1.0/255.0);
+    shl.b32             off,    %3,     4;
+    cvt.u64.u32         ptr,    off;
+    add.u64             ptr,    ptr,    %6;
+    red.global.add.f32  [ptr],          rf;
+    red.global.add.f32  [ptr+4],        gf;
+    red.global.add.f32  [ptr+8],        bf;
+    red.global.add.f32  [ptr+12],       df;
+oflow_end:
+}
+        """)}}  ::  "f"(cc), "f"(color_dither), "r"(time), "r"(i),
+                    "l"(atom_ptr), "f"(cosel[threadIdx.y + {{NWARPS}}]),
+                    "l"(out_ptr));
+{{endif}}
+
+{{if info.acc_mode == 'global'}}
         float4 outcol = tex2D(palTex, cc, time_frac);
         float4 *accbuf = reinterpret_cast<float4*>(out_ptr + (16*i));
         float4 pix = *accbuf;
@@ -379,6 +430,47 @@ void iter(
     msts[this_rb_idx] = rctx;
     return;
 }
+
+{{if info.acc_mode == 'atomic'}}
+__global__
+void flush_atom(uint64_t out_ptr, uint64_t atom_ptr, int nbins) {
+    int i = (blockIdx.y * gridDim.x + blockIdx.x) * blockDim.x + threadIdx.x;
+    asm volatile ({{crep("""
+{
+    .reg .u32   off, hi, lo, d, r, g, b;
+    .reg .u64   val, ptr;
+    .reg .f32   rf, gf, bf, df, rg, gg, bg, dg;
+
+    // TODO: use explicit movs to handle this
+    shl.b32             off,    %0,     3;
+    cvt.u64.u32         ptr,    off;
+    add.u64             ptr,    ptr,    %1;
+    ld.global.v2.u32    {lo, hi},   [ptr];
+    shl.b32             off,    %0,     4;
+    cvt.u64.u32         ptr,    off;
+    add.u64             ptr,    ptr,    %2;
+    ld.global.v4.f32    {rg,gg,bg,dg},  [ptr];
+    shr.u32             d,      hi,     22;
+    bfe.u32             r,      hi,     4,      18;
+    bfe.u32             g,      lo,     18,     14;
+    bfi.b32             g,      hi,     g,      14,     4;
+    and.b32             b,      lo,     ((1<<18)-1);
+    cvt.rn.f32.u32      rf,     r;
+    cvt.rn.f32.u32      gf,     g;
+    cvt.rn.f32.u32      bf,     b;
+    cvt.rn.f32.u32      df,     d;
+    fma.rn.ftz.f32      rg,     rf,     (1.0/255.0),    rg;
+    fma.rn.ftz.f32      gg,     gf,     (1.0/255.0),    gg;
+    fma.rn.ftz.f32      bg,     bf,     (1.0/255.0),    bg;
+    add.rn.ftz.f32      dg,     df,     dg;
+    st.global.v4.f32    [ptr],  {rg,gg,bg,dg};
+}
+    """)}}  ::  "r"(i), "l"(atom_ptr), "l"(out_ptr));
+}
+
+{{endif}}
+
+{{if info.acc_mode == 'deferred'}}
 
 // Block size, shared accumulation bits, shared accumulation width.
 #define BS 1024
@@ -462,8 +554,8 @@ write_shmem(
     shl.b32         color,  color,  3;
     cvt.rni.u32.f32 time,   %1;
 
-    suld.b.2d.v2.b32.clamp  {hi, lo},   [flatpal, {color, time}];
-    ld.shared.v2.u32    {hiw, low},     [shoff];
+    suld.b.2d.v2.b32.clamp  {lo, hi},   [flatpal, {color, time}];
+    ld.shared.v2.u32    {low, hiw},     [shoff];
     add.cc.u32          lo,     lo,     low;
     addc.u32            hi,     hi,     hiw;
     setp.hs.u32         q,      hi,     (1023 << 22);
@@ -513,7 +605,7 @@ oflow_write_end:
         asm({{crep("""
 {
     .reg .u32 hi, lo;
-    ld.shared.v2.u32   {hi, lo},    [%4];
+    ld.shared.v2.u32   {lo, hi},    [%4];
     shr.u32         %0,     hi,     22;
     bfe.u32         %1,     hi,     4,      18;
     bfe.u32         %2,     lo,     18,     14;
@@ -530,7 +622,7 @@ oflow_write_end:
         glo_idx += (BS << 8);
     }
 }
-
+{{endif}}
 ''', 'iter_kern')
         return tmpl.substitute(
                 info = self.info,

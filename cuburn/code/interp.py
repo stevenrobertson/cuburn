@@ -270,8 +270,8 @@ void interp_palette_hsv_flat(mwc_st *rctxs,
     uint32_t r = min(255, (uint32_t) (rgba.x * 255.0f + 0.49f * mwc_next_11(rctx)));
     uint32_t g = min(255, (uint32_t) (rgba.y * 255.0f + 0.49f * mwc_next_11(rctx)));
     uint32_t b = min(255, (uint32_t) (rgba.z * 255.0f + 0.49f * mwc_next_11(rctx)));
-    out.x = (1 << 22) | (r << 4);
-    out.y = (g << 18) | b;
+    out.y = (1 << 22) | (r << 4);
+    out.x = (g << 18) | b;
     surf2Dwrite(out, flatpal, 8 * threadIdx.x, blockIdx.x);
     rctxs[gid] = rctx;
 }

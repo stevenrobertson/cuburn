@@ -8,7 +8,7 @@ from itertools import cycle, repeat, chain, izip
 from ctypes import *
 from cStringIO import StringIO
 import numpy as np
-from numpy import int32 as i32
+from numpy import int32 as i32, uint64 as u64
 from scipy import ndimage
 
 from fr0stlib import pyflam3
@@ -110,7 +110,6 @@ class Renderer(object):
         reset_rb_fun = self.mod.get_function("reset_rb")
         packer_fun = self.mod.get_function("interp_iter_params")
         iter_fun = self.mod.get_function("iter")
-        write_fun = self.mod.get_function("write_shmem")
 
         info = self.info
 
@@ -119,6 +118,7 @@ class Renderer(object):
         filt_stream = cuda.Stream()
         if info.acc_mode == 'deferred':
             write_stream = cuda.Stream()
+            write_fun = self.mod.get_function("write_shmem")
         else:
             write_stream = iter_stream
 
@@ -132,6 +132,9 @@ class Renderer(object):
         # Extra padding in accum helps with write_shmem overruns
         d_accum = cuda.mem_alloc(16 * nbins + (1<<16))
         d_out = cuda.mem_alloc(16 * nbins)
+        if info.acc_mode == 'atomic':
+            d_atom = cuda.mem_alloc(8 * nbins)
+            flush_fun = self.mod.get_function("flush_atom")
 
         acc_size = np.array([info.acc_width, info.acc_height, info.acc_stride])
         d_acc_size = self.mod.get_global('acc_size')[0]
@@ -191,7 +194,7 @@ class Renderer(object):
         d_palint_vals = cuda.to_device(
                 np.concatenate(map(info.db.palettes.get, pals[1::2])))
 
-        if info.acc_mode == 'deferred':
+        if info.acc_mode in ('deferred', 'atomic'):
             palette_fun = self.mod.get_function("interp_palette_hsv_flat")
             dsc = cuda.ArrayDescriptor3D()
             dsc.height = info.palette_height
@@ -227,7 +230,7 @@ class Renderer(object):
 
         for idx, start, stop in times:
             twidth = np.float32((stop-start) / info.palette_height)
-            if info.acc_mode == 'deferred':
+            if info.acc_mode in ('deferred', 'atomic'):
                 palette_fun(d_seeds, d_palint_times, d_palint_vals,
                             np.float32(start), twidth,
                             block=(256,1,1), grid=(info.palette_height,1),
@@ -257,6 +260,8 @@ class Renderer(object):
                 #print '%60s %g' % ('_'.join(n), i)
 
             util.BaseCode.fill_dptr(self.mod, d_accum, 4 * nbins, write_stream)
+            if info.acc_mode == 'atomic':
+                util.BaseCode.fill_dptr(self.mod, d_atom, 2 * nbins, write_stream)
             nrounds = ( (info.density * info.width * info.height)
                       / (ntemporal_samples * 256 * 256) ) + 1
             if info.acc_mode == 'deferred':
@@ -273,9 +278,16 @@ class Renderer(object):
                               block=(1024, 1, 1), grid=(nwriteblocks, 1),
                               stream=write_stream)
             else:
-                iter_fun(np.uint64(d_accum), d_seeds, d_points, d_infos,
-                         block=(32, self._iter.NTHREADS/32, 1),
+                args = [u64(d_accum), d_seeds, d_points, d_infos]
+                if info.acc_mode == 'atomic':
+                    args.append(u64(d_atom))
+                iter_fun(*args, block=(32, self._iter.NTHREADS/32, 1),
                          grid=(ntemporal_samples, nrounds), stream=iter_stream)
+                if info.acc_mode == 'atomic':
+                    nblocks = int(np.ceil(np.sqrt(nbins/float(512))))
+                    flush_fun(u64(d_accum), u64(d_atom), i32(nbins),
+                              block=(512, 1, 1), grid=(nblocks, nblocks),
+                              stream=iter_stream)
 
             util.BaseCode.fill_dptr(self.mod, d_out, 4 * nbins, filt_stream)
             _sync_stream(filt_stream, write_stream)
