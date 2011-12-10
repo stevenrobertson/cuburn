@@ -369,7 +369,7 @@ void iter(
     shl.b32             off,    %3,     3;
     cvt.u64.u32         ptr,    off;
     add.u64             ptr,    ptr,    %4;
-    setp.le.f32         p,      %5,     0.98;
+    setp.le.f32         p,      %5,     0.97;
 @p  red.global.add.u64  [ptr],  val;
 @p  bra                 oflow_end;
     atom.global.add.u64 val,    [ptr],  val;
