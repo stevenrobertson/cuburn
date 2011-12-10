@@ -169,7 +169,7 @@ void apply_xf_{{xfid}}(float &ox, float &oy, float &color, mwc_st &rctx) {
     float csp = {{px.color_speed}};
     color = color * (1.0f - csp) + {{px.color}} * csp;
 };
-""")
+""", 'apply_xf_'+xfid)
         g = dict(globals())
         g.update(locals())
         return tmpl.substitute(g)
@@ -531,7 +531,7 @@ oflow_write_end:
     }
 }
 
-''')
+''', 'iter_kern')
         return tmpl.substitute(
                 info = self.info,
                 cp = self.info.genome,
