@@ -79,115 +79,86 @@ class SplEval(object):
             return self.knots[1][0]
         return list(self.knots.T.flat)
 
-    @classmethod
-    def wrap(cls, obj):
-        """
-        Given a dict 'obj' representing, for instance, a Genome object, walk
-        through the object recursively and in-place, turning any number or
-        list of numbers into an SplEval.
-        """
-        for k, v in obj.items():
-            if (isinstance(v, (float, int)) or
-                    (isinstance(v, list) and isinstance(v[1], (float, int)))):
-                obj[k] = cls(v)
-            elif isinstance(v, dict):
-                cls.wrap(v)
-
-class RenderInfo(object):
-    """
-    Determine features and constants required to render a particular set of
-    genomes. The values of this class are fixed before compilation begins.
-    """
-    # Number of iterations to iterate without write after generating a new
-    # point. This number is currently fixed pretty deeply in the set of magic
-    # constants which govern buffer sizes; changing the value here won't
-    # actually change the code on the device to do something different.
-    fuse = 256
-
-    # Height of the texture pallete which gets uploaded to the GPU (assuming
-    # that palette-from-texture is enabled). For most genomes, this doesn't
-    # need to be very large at all. However, since only an easily-cached
-    # fraction of this will be accessed per SM, larger values shouldn't hurt
-    # performance too much. When using deferred accumulation, increasing this
-    # value increases the number of uniquely-dithered samples, which is nice.
-    # Power-of-two, please.
-    palette_height = 64
-
-    # Maximum width of DE and other spatial filters, and thus in turn the
-    # amount of padding applied. Note that, for now, this must not be changed!
-    # The filtering code makes deep assumptions about this value.
-    gutter = 15
-
-    # TODO: for now, we always throw away the alpha channel before writing.
-    # All code is in place to not do this, we just need to find a way to expose
-    # this preference via the API (or push alpha blending entirely on the client,
-    # which I'm not opposed to)
-    alpha_output_channel = False
-
-    # There are three settings for this somewhat ersatz paramater. 'global'
-    # uses unsynchronized global writes to accumulate sample points, 'atomic'
-    # uses atomic global writes, and 'deferred' stores color and position in a
-    # sample log, sorts the log by position, and uses shared memory to
-    # perform the accumulation. Deferred has the accuracy of 'atomic' and
-    # the speed of 'global' (it's actually faster!), but packs color and
-    # position into a single 32-bit int for now, which limits resolution to
-    # 1080p when xform opacity is respected, so the other two modes will hang
-    # around until that can be extended to be memory-limited again.
-    acc_mode = 'atomic'
-
-    # TODO: fix this
-    chaos_used = False
-
-    def __init__(self, db, **kwargs):
-        self.db = db
-        # Copy all args into this object's namespace
-        self.__dict__.update(kwargs)
-
-        self.acc_width = self.width + 2 * self.gutter
-        self.acc_height = self.height + 2 * self.gutter
-        self.acc_stride = 32 * int(np.ceil(self.acc_width / 32.))
-        self.density = self.quality
-
-        # Deref genome
-        self.genome = self.db.genomes[self.genome]
-
-        for k, v in self.db.palettes.items():
-            pal = np.fromstring(base64.b64decode(v), np.uint8)
-            pal = np.reshape(pal, (256, 3))
-            pal_a = np.ones((256, 4), np.float32)
-            pal_a[:,:3] = pal / 255.0
-            self.db.palettes[k] = pal_a
+class Palette(object):
+    """Wafer-thin wrapper around palettes. For the future!"""
+    def __init__(self, datastr, fmt='rgb8'):
+        if fmt != 'rgb8':
+            raise NotImplementedError
+        if len(datastr) != 768:
+            raise ValueError("Unsupported palette width")
+        self.width = 256
+        pal = np.reshape(np.fromstring(datastr, np.uint8), (256, 3))
+        self.data = np.ones((256, 4), np.float32)
+        self.data[:,:3] = pal / 255.0
 
 class _AttrDict(dict):
     def __getattr__(self, name):
         return self[name]
 
-def load_info(contents):
-    result = json.loads(contents, object_hook=_AttrDict)
-    SplEval.wrap(result.genomes)
+    @classmethod
+    def _wrap(cls, dct):
+        for k, v in dct.items():
+            if (isinstance(v, (float, int)) or
+                    (isinstance(v, list) and isinstance(v[1], (float, int)))):
+                dct[k] = SplEval(v)
+            elif isinstance(v, dict):
+                dct[k] = cls._wrap(cls(v))
+        return dct
 
-    # A Job object will have more details or something
-    result = RenderInfo(result, **result.renders.values()[0])
-    return result
+class Genome(_AttrDict):
+    # For now, we base the Genome class on an _AttrDict, letting its structure
+    # be defined implicitly by the way it is used in device code. More formal
+    # unpacking will happen soon.
+    def __init__(self, gnm, base_den):
+        super(Genome, self).__init__(gnm)
+        for k, v in self.items():
+            v = _AttrDict(v)
+            if k not in ('info', 'time'):
+                _AttrDict._wrap(v)
+            self[k] = v
+        # TODO: this is a hack, figure out how to solve it more elegantly
+        self.spp = SplEval(self.camera.density.knotlist)
+        self.spp.knots[1] *= base_den
+        # TODO: decide how to handle palettes. For now, it's the caller's
+        # responsibility to replace this list with actual palettes.
+        pal = self.color.palette
+        if isinstance(pal, basestring):
+            self.color.palette = [(0.0, pal), (1.0, pal)]
+        elif isinstance(pal, list):
+            self.color.palette = zip(pal[::2], pal[1::2])
 
-class HacketyGenome(object):
-    """
-    Holdover class to postpone a very deep refactoring as long as possible.
-    Converts property accesses into interpolations over predetermined times.
-    """
-    def __init__(self, referent, times):
-        # Times can be singular
-        self.referent, self.times = referent, times
-    def __getattr__(self, name):
-        r = getattr(self.referent, str(name))
-        if isinstance(r, _AttrDict):
-            return HacketyGenome(r, self.times)
-        elif isinstance(r, SplEval):
-            return r(self.times)
-        return r
-    __getitem__ = __getattr__
+        # TODO: caller also needs to call set_timing()
+        self.adj_frame_width = None
+        self.canonical_right = (not self.get('link') or not self.link == 'self'
+                                or not self.link.get('right'))
 
-if __name__ == "__main__":
-    import sys
-    import pprint
-    pprint.pprint(read_genome(sys.stdin))
+    def set_timing(self, base_dur, fps, offset=0.0, err_spread=True):
+        """
+        Set frame timing. Must be called at least once prior to rendering.
+        """
+        # TODO: test!
+        dur = self.time.duration
+        if isinstance(dur, basestring):
+            clock = float(dur[:-1]) + offset
+        else:
+            clock = dur * base_dur + offset
+        if self.canonical_right:
+            nframes = int(np.floor(clock * fps))
+        else:
+            nframes = int(np.ceil(clock * fps))
+        err = (clock - nframes / fps) / clock
+
+        fw = self.time.frame_width
+        if not isinstance(fw, list):
+            fw = [0, fw, 1, fw]
+        fw = [float(f[:-1]) * fps if isinstance(f, basestring)
+              else float(f) / (clock * fps) for f in fw]
+        self.adj_frame_width = SplEval(fw)
+
+        times = np.linspace(offset, 1 - err, nframes + 1)
+        # Move each time to a center time, and discard the last value
+        times = times[:-1] + 0.5 * (times[1] - times[0])
+        if err_spread:
+            epts = np.linspace(-2*np.pi, 2*np.pi, nframes)
+            times = times + 0.5 * err * (np.tanh(epts) + 1)
+        return err, times

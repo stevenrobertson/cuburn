@@ -226,8 +226,11 @@ class GenomePacker(HunkOCode):
     _defs = Template(r"""
 
 __global__
-void interp_{{tname}}({{tname}}* out, float *times, float *knots,
-        float tstart, float tstep, mwc_st *rctxes, int maxid) {
+void interp_{{tname}}(
+        {{tname}}* out, mwc_st *rctxes,
+        const float *times, const float *knots,
+        float tstart, float tstep, int maxid
+) {
     int id = gtid();
     if (id >= maxid) return;
     out = &out[id];

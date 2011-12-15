@@ -1,5 +1,7 @@
 
 import numpy as np
+from numpy import float32 as f32, int32 as i32
+
 import pycuda.compiler
 from pycuda.gpuarray import vec
 
@@ -10,8 +12,8 @@ _CODE = '''
 
 __global__
 void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
-               float linrange, float lingam, float3 bkgd, int fbsize,
-               int alpha_output_channel) {
+               float linrange, float lingam, float3 bkgd,
+               int fbsize, int blend_background_color) {
     int i = threadIdx.x + blockDim.x * (blockIdx.x + gridDim.x * blockIdx.y);
     if (i >= fbsize) return;
 
@@ -30,8 +32,17 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
         alpha = (1.0f - frac) * pix.w * lingam + frac * alpha;
     }
 
-    float ls = vibrancy * alpha / pix.w;
+    if (!blend_background_color) {
+        float ls = alpha / pix.w;
+        pix.x *= ls;
+        pix.y *= ls;
+        pix.z *= ls;
+        pix.w = alpha;
+        pixbuf[i] = pix;
+        return;
+    }
 
+    float ls = vibrancy * alpha / pix.w;
     alpha = fminf(1.0f, fmaxf(0.0f, alpha));
 
     float maxc = fmaxf(pix.x, fmaxf(pix.y, pix.z));
@@ -64,29 +75,21 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
     pix.y += (1.0f - vibrancy) * powf(opix.y, gamma);
     pix.z += (1.0f - vibrancy) * powf(opix.z, gamma);
 
-    if (alpha_output_channel) {
-        float one_alpha = 1.0f / alpha;
-        pix.x *= one_alpha;
-        pix.y *= one_alpha;
-        pix.z *= one_alpha;
-    } else {
-        pix.x += (1.0f - alpha) * bkgd.x;
-        pix.y += (1.0f - alpha) * bkgd.y;
-        pix.z += (1.0f - alpha) * bkgd.z;
-    }
-    pix.w = alpha;
+    pix.x += (1.0f - alpha) * bkgd.x;
+    pix.y += (1.0f - alpha) * bkgd.y;
+    pix.z += (1.0f - alpha) * bkgd.z;
 
-    // Clamp values. I think this is superfluous, but I'm not certain.
     pix.x = fminf(1.0f, pix.x);
     pix.y = fminf(1.0f, pix.y);
     pix.z = fminf(1.0f, pix.z);
+    pix.w = alpha;
 
     pixbuf[i] = pix;
 }
 
 
 #define W 15        // Filter width (regardless of standard deviation chosen)
-#define W2 7       // Half of filter width, rounded down
+#define W2 7        // Half of filter width, rounded down
 #define FW 46       // Width of local result storage (NW+W2+W2)
 #define FW2 (FW*FW)
 
@@ -288,52 +291,45 @@ class Filtering(object):
     def __init__(self):
         self.init_mod()
 
-    def de(self, ddst, dsrc, info, start, stop, stream=None):
-        # TODO: use integration to obtain parameter values
-        t = (start + stop) / 2
-        cp = info.genome
-
-        k1 = np.float32(cp.color.brightness(t) * 268 / 256)
+    def de(self, ddst, dsrc, gnm, dim, tc, stream=None):
+        k1 = f32(gnm.color.brightness(tc) * 268 / 256)
         # Old definition of area is (w*h/(s*s)). Since new scale 'ns' is now
         # s/w, new definition is (w*h/(s*s*w*w)) = (h/(s*s*w))
-        area = info.height / (cp.camera.scale(t) ** 2 * info.width)
-        k2 = np.float32(1 / (area * info.density))
+        area = dim.h / (gnm.camera.scale(tc) ** 2 * dim.w)
+        k2 = f32(1 / (area * gnm.spp(tc)))
 
-        if cp.de.radius == 0:
-            nbins = info.acc_height * info.acc_stride
+        if gnm.de.radius == 0:
+            nbins = dim.ah * dim.astride
             fun = self.mod.get_function("logscale")
             t = fun(dsrc, ddst, k1, k2,
                     block=(512, 1, 1), grid=(nbins/512, 1), stream=stream)
         else:
-            scale_coeff = np.float32(-(1 + cp.de.radius(t)) ** -2.0)
-            est_curve = np.float32(2 * cp.de.curve(t))
+            scale_coeff = f32(-(1 + gnm.de.radius(tc)) ** -2.0)
+            est_curve = f32(2 * gnm.de.curve(tc))
             # TODO: experiment with this
-            edge_clamp = np.float32(2.0)
+            edge_clamp = f32(1.2)
             fun = self.mod.get_function("density_est")
             fun(dsrc, ddst, scale_coeff, est_curve, edge_clamp, k1, k2,
-                np.int32(info.acc_height), np.int32(info.acc_stride),
-                block=(32, 32, 1), grid=(info.acc_width/32, 1), stream=stream)
+                i32(dim.ah), i32(dim.astride), block=(32, 32, 1),
+                grid=(dim.aw/32, 1), stream=stream)
 
-    def colorclip(self, dbuf, info, start, stop, stream=None):
-        f32 = np.float32
-        t = (start + stop) / 2
-        cp = info.genome
-        nbins = info.acc_height * info.acc_stride
+    def colorclip(self, dbuf, gnm, dim, tc, blend, stream=None):
+        nbins = dim.ah * dim.astride
 
         # TODO: implement integration over cubic splines?
-        gam = f32(1 / cp.color.gamma(t))
-        vib = f32(cp.color.vibrancy(t))
-        hipow = f32(cp.color.highlight_power(t))
-        lin = f32(cp.color.gamma_threshold(t))
+        gam = f32(1 / gnm.color.gamma(tc))
+        vib = f32(gnm.color.vibrancy(tc))
+        hipow = f32(gnm.color.highlight_power(tc))
+        lin = f32(gnm.color.gamma_threshold(tc))
         lingam = f32(lin ** (gam-1.0) if lin > 0 else 0)
         bkgd = vec.make_float3(
-                cp.color.background.r(t),
-                cp.color.background.g(t),
-                cp.color.background.b(t))
+                gnm.color.background.r(tc),
+                gnm.color.background.g(tc),
+                gnm.color.background.b(tc))
 
         color_fun = self.mod.get_function("colorclip")
         blocks = int(np.ceil(np.sqrt(nbins / 256)))
-        color_fun(dbuf, gam, vib, hipow, lin, lingam, bkgd, np.int32(nbins),
-                  np.int32(0),
-                  block=(256, 1, 1), grid=(blocks, blocks), stream=stream)
+        color_fun(dbuf, gam, vib, hipow, lin, lingam, bkgd, i32(nbins),
+                  i32(blend), block=(256, 1, 1), grid=(blocks, blocks),
+                  stream=stream)
 

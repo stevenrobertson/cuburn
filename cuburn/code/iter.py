@@ -53,7 +53,7 @@ def precalc_chaos(pcp, std_xforms):
 
     """).substitute(locals()))
 
-def precalc_camera(info, pcam):
+def precalc_camera(pcam):
     pre_cam = pcam._precalc()
 
     # Maxima code to check my logic:
@@ -68,7 +68,7 @@ def precalc_camera(info, pcam):
         float rot = {{pre_cam.rotation}} * M_PI / 180.0f;
         float rotsin = sin(rot), rotcos = cos(rot);
         float cenx = {{pre_cam.center.x}}, ceny = {{pre_cam.center.y}};
-        float scale = {{pre_cam.scale}} * {{info.width}};
+        float scale = {{pre_cam.scale}} * acc_size.width;
 
         float ditherwidth = {{pre_cam.dither_width}} * 0.33f;
         float u0 = mwc_next_01(rctx);
@@ -81,12 +81,12 @@ def precalc_camera(info, pcam):
         {{pre_cam._set('xx')}} = scale * rotcos;
         {{pre_cam._set('xy')}} = scale * -rotsin;
         {{pre_cam._set('xo')}} = scale * (rotsin * ceny - rotcos * cenx)
-                              + {{0.5 * (info.width + info.gutter + 1)}} + ditherx;
+                               + 0.5f * acc_size.awidth + ditherx;
 
         {{pre_cam._set('yx')}} = scale * rotsin;
         {{pre_cam._set('yy')}} = scale * rotcos;
         {{pre_cam._set('yo')}} = scale * -(rotsin * cenx + rotcos * ceny)
-                              + {{0.5 * (info.height + info.gutter + 1)}} + dithery;
+                               + 0.5f * acc_size.aheight + dithery;
 
     """).substitute(locals()))
 
@@ -113,13 +113,12 @@ class IterCode(HunkOCode):
     # The number of threads per block
     NTHREADS = 256
 
-    def __init__(self, info):
-        self.info = info
+    def __init__(self, info, genome):
         self.packer = interp.GenomePacker('iter_params')
-        self.pcp = self.packer.view('params', self.info.genome, 'cp')
+        self.pcp = self.packer.view('params', genome, 'cp')
 
-        iterbody = self._iterbody()
-        bodies = [self._xfbody(i,x) for i,x in sorted(info.genome.xforms.items())]
+        iterbody = self._iterbody(info, genome)
+        bodies = [self._xfbody(i,x) for i,x in sorted(genome.xforms.items())]
         bodies.append(iterbody)
         self.defs = '\n'.join(bodies)
 
@@ -132,7 +131,9 @@ __device__ int rb_head, rb_tail, rb_size;
 typedef struct {
     uint32_t width;
     uint32_t height;
-    uint32_t stride;
+    uint32_t awidth;
+    uint32_t aheight;
+    uint32_t astride;
 } acc_size_t;
 __constant__ acc_size_t acc_size;
 
@@ -174,7 +175,7 @@ void apply_xf_{{xfid}}(float &ox, float &oy, float &color, mwc_st &rctx) {
         g.update(locals())
         return tmpl.substitute(g)
 
-    def _iterbody(self):
+    def _iterbody(self, info, genome):
         tmpl = Template(r'''
 
 __global__ void reset_rb(int size) {
@@ -331,7 +332,7 @@ void iter(
 
         float cx, cy, cc;
 
-        {{precalc_camera(info, pcp.camera)}}
+        {{precalc_camera(pcp.camera)}}
 
 {{if 'final' in cp.xforms}}
         {{apply_affine('fx', 'fy', 'cx', 'cy', pcp.camera)}}
@@ -343,14 +344,14 @@ void iter(
 
         uint32_t ix = trunca(cx), iy = trunca(cy);
 
-        if (ix >= acc_size.width || iy >= acc_size.height) {
+        if (ix >= acc_size.awidth || iy >= acc_size.aheight) {
 {{if info.acc_mode == 'deferred'}}
             *log = 0xffffffff;
 {{endif}}
             continue;
         }
 
-        uint32_t i = iy * acc_size.stride + ix;
+        uint32_t i = iy * acc_size.astride + ix;
 {{if info.acc_mode == 'atomic'}}
         asm volatile ({{crep("""
 {
@@ -626,12 +627,11 @@ oflow_write_end:
 {{endif}}
 ''', 'iter_kern')
         return tmpl.substitute(
-                info = self.info,
-                cp = self.info.genome,
+                info = info,
+                cp = genome,
                 pcp = self.pcp,
                 NTHREADS = self.NTHREADS,
                 NWARPS = self.NTHREADS / 32,
-                std_xforms = [n for n in sorted(self.info.genome.xforms)
-                              if n != 'final'],
+                std_xforms = [n for n in sorted(genome.xforms) if n != 'final'],
                 **globals())
 
