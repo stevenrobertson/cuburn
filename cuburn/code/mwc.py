@@ -2,6 +2,8 @@
 The multiply-with-carry random number generator.
 """
 
+import os
+import warnings
 import numpy as np
 
 from util import *
@@ -41,20 +43,34 @@ __device__ float mwc_next_11(mwc_st &st) {
 """
 
     @staticmethod
-    def make_seeds(nthreads, host_seed=None):
+    def load_mults():
+        pfpath = os.path.join(os.path.dirname(__file__), 'primes.bin')
+        if os.path.isfile(pfpath):
+            with open(pfpath) as fp:
+                return np.frombuffer(fp.read(), dtype='<u4')
+
+        warnings.warn('primes.bin not found, trying to download it')
+        import bz2, urllib2
+        ufp = urllib2.urlopen('http://aduro.strobe.cc/primes.diff.bin.bz2')
+        diffs = np.frombuffer(bz2.decompress(ufp.read()), dtype='<u2')
+        mults = np.cumsum(-np.array(diffs, dtype='<u4'), dtype='<u4')
+        with open(pfpath, 'wb') as fp:
+            fp.write(mults)
+        return mults
+
+    mults = None
+    @classmethod
+    def make_seeds(cls, nthreads, host_seed=None):
+        if cls.mults is None:
+            cls.mults = cls.load_mults()
         if host_seed:
             rand = np.random.RandomState(host_seed)
         else:
             rand = np.random
 
-        # Load raw big-endian u32 multipliers from primes.bin.
-        with open('primes.bin', 'rb') as primefp:
-            dt = np.dtype(np.uint32).newbyteorder('B')
-            mults = np.frombuffer(primefp.read(), dtype=dt)
-
         # Create the seed structures. TODO: check that struct is 4-byte aligned
         seeds = np.empty((3, nthreads), dtype=np.uint32, order='F')
-        seeds[0][:] = mults[:nthreads]
+        seeds[0][:] = cls.mults[:nthreads]
 
         # Excludes 0xffffffff for 32-bit compatibility with laziness
         seeds[1] = rand.randint(1, 0x7fffffff, size=nthreads)
