@@ -251,7 +251,7 @@ class Renderer(object):
         palint_times.fill(1e10)
         palint_times[:len(ptimes)] = ptimes
         d_palint_times = cuda.to_device(palint_times)
-        pvals = [genome.decoded_palettes[i].data for i in pidxs]
+        pvals = [genome.decoded_palettes[i] for i in pidxs]
         d_palint_vals = cuda.to_device(np.concatenate(pvals))
 
         if self.acc_mode in ('deferred', 'atomic'):
