@@ -127,7 +127,6 @@ class Genome(_AttrDict):
             self[k] = v
 
         self.decoded_palettes = map(Palette, self.palettes)
-        print self.color
         pal = self.color.palette_times
         if isinstance(pal, basestring):
             self.palette_times = [(0.0, int(pal)), (1.0, int(pal))]
