@@ -7,6 +7,8 @@ import tempita
 
 def crep(s):
     """Escape for PTX assembly"""
+    if isinstance(s, unicode):
+        s = s.encode('utf-8')
     return '"%s"' % s.encode("string_escape")
 
 class Template(tempita.Template):

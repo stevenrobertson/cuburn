@@ -1,6 +1,7 @@
-import json
 import base64
 import numpy as np
+
+from code.util import crep
 
 class SplEval(object):
     _mat = np.matrix([[1.,-2, 1, 0], [2,-3, 0, 1],
@@ -80,14 +81,12 @@ class SplEval(object):
         return list(self.knots.T.flat)
 
 class Palette(object):
-    """Wafer-thin wrapper around palettes. For the future!"""
-    def __init__(self, datastr, fmt='rgb8'):
-        if fmt != 'rgb8':
+    def __init__(self, datastrs):
+        if datastrs[0] != 'rgb8':
             raise NotImplementedError
-        if len(datastr) != 768:
-            raise ValueError("Unsupported palette width")
         self.width = 256
-        pal = np.reshape(np.fromstring(datastr, np.uint8), (256, 3))
+        raw = base64.b64decode(''.join(datastrs[1:]))
+        pal = np.reshape(np.fromstring(raw, np.uint8), (256, 3))
         self.data = np.ones((256, 4), np.float32)
         self.data[:,:3] = pal / 255.0
 
@@ -106,36 +105,61 @@ class _AttrDict(dict):
         return dct
 
 class Genome(_AttrDict):
+    """
+    Load a genome description, wrapping all data structures in _AttrDicts,
+    converting lists of numbers to splines, and deriving some values. Derived
+    values are stored as instance properties, rather than replacing the
+    original values, such that JSON-encoding this structure should always
+    print a valid genome.
+    """
     # For now, we base the Genome class on an _AttrDict, letting its structure
-    # be defined implicitly by the way it is used in device code. More formal
-    # unpacking will happen soon.
-    def __init__(self, gnm, base_den):
+    # be defined implicitly by the way it is used in device code, except for
+    # these derived properties.
+    def __init__(self, gnm):
         super(Genome, self).__init__(gnm)
         for k, v in self.items():
+            if not isinstance(v, dict):
+                continue
             v = _AttrDict(v)
+            # These two properties must be handled separately
             if k not in ('info', 'time'):
                 _AttrDict._wrap(v)
             self[k] = v
-        # TODO: this is a hack, figure out how to solve it more elegantly
-        self.spp = SplEval(self.camera.density.knotlist)
-        self.spp.knots[1] *= base_den
-        # TODO: decide how to handle palettes. For now, it's the caller's
-        # responsibility to replace this list with actual palettes.
-        pal = self.color.palette
+
+        self.decoded_palettes = map(Palette, self.palettes)
+        print self.color
+        pal = self.color.palette_times
         if isinstance(pal, basestring):
-            self.color.palette = [(0.0, pal), (1.0, pal)]
-        elif isinstance(pal, list):
-            self.color.palette = zip(pal[::2], pal[1::2])
+            self.palette_times = [(0.0, int(pal)), (1.0, int(pal))]
+        else:
+            self.palette_times = zip(pal[::2], map(int, pal[1::2]))
 
-        # TODO: caller also needs to call set_timing()
-        self.adj_frame_width = None
-        self.canonical_right = (not self.get('link') or not self.link == 'self'
-                                or not self.link.get('right'))
+        self.adj_frame_width, self.spp = None, None
+        self.canonical_right = not (self.get('link') and
+                (self.link == 'self' or self.link.get('right')))
 
-    def set_timing(self, base_dur, fps, offset=0.0, err_spread=True):
+    def set_profile(self, prof, offset=0.0, err_spread=True):
         """
-        Set frame timing. Must be called at least once prior to rendering.
+        Sets the instance props which are dependent on a profile. Also
+        calculates timing information, which is returned instead of being
+        attached to the genome. May be called multiple times to set different
+        options.
+
+        ``prof`` is a profile dictionary. ``offset`` is the time in seconds
+        that the first frame's effective presentation time should be offset
+        from the natural presentation time. ``err_spread`` will spread the
+        rounding error in this frame across all frames, such that PTS+(1/FPS)
+        is exactly equal to the requested duration.
+
+        Returns ``(err, times)``, where ``err`` is the rounding error in
+        seconds (taking ``offset`` into account), and ``times`` is a list of
+        the central time of each frame in the animation in relative-time
+        coordinates. Also sets the ``spp`` and ``adj_frame_width`` properties.
         """
+        self.spp = SplEval(self.camera.density.knotlist)
+        self.spp.knots[1] *= prof['quality']
+        fps, base_dur = prof['fps'], prof['duration']
+
         # TODO: test!
         dur = self.time.duration
         if isinstance(dur, basestring):
@@ -162,3 +186,43 @@ class Genome(_AttrDict):
             epts = np.linspace(-2*np.pi, 2*np.pi, nframes)
             times = times + 0.5 * err * (np.tanh(epts) + 1)
         return err, times
+
+def json_encode_genome(obj, indent=0):
+    """
+    Encode an object into JSON notation. This serializer only works on the
+    subset of JSON used in genomes.
+    """
+    # TODO: test, like so many other things
+    isnum = lambda v: isinstance(v, (float, int, np.number))
+
+    def wrap(pairs, delims):
+        do, dc = delims
+        i = ' ' * indent
+        out = ''.join([do, ', '.join(pairs), dc])
+        if '\n' not in out and len(out) + indent < 70:
+            return out
+        return ''.join(['\n', i, do, ' ', ('\n'+i+', ').join(pairs),
+                        '\n', i, dc])
+
+    if isinstance(obj, dict):
+        if not obj:
+            return '{}'
+        ks, vs = zip(*sorted(obj.items()))
+        if ks == ('b', 'g', 'r'):
+            ks, vs = reversed(ks), reversed(vs)
+        ks = [crep('%.8g' % k if isnum(k) else str(k)) for k in ks]
+        vs = [json_encode_genome(v, indent+2) for v in vs]
+        return wrap(['%s: %s' % p for p in zip(ks, vs)], '{}')
+    elif isinstance(obj, list):
+        vs = [json_encode_genome(v, indent+2) for v in obj]
+        if vs and len(vs) % 2 == 0 and isnum(obj[0]):
+            vs = map(', '.join, zip(vs[::2], vs[1::2]))
+        return wrap(vs, '[]')
+    elif isinstance(obj, SplEval):
+        return json_encode_genome(obj.knotlist, indent)
+    elif isinstance(obj, basestring):
+        return crep(obj)
+    elif isnum(obj):
+        return '%.8g' % obj
+    raise TypeError("Don't know how to serialize %s of type %s" %
+                    (obj, type(obj)))

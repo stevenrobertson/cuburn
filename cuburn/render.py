@@ -250,15 +250,13 @@ class Renderer(object):
         info_size = 4 * len(self._iter.packer) * ntemporal_samples
         d_infos = cuda.mem_alloc(info_size)
 
-        pals = genome.color.palette
-        if isinstance(pals, basestring):
-            pals = [0.0, pals, 1.0, pals]
+        ptimes, pidxs = zip(*genome.palette_times)
         palint_times = np.empty(len(genome_times[0]), f32)
-        palint_times.fill(100.0)
-        palint_times[:len(pals)] = [p[0] for p in pals]
+        palint_times.fill(1e10)
+        palint_times[:len(ptimes)] = ptimes
         d_palint_times = cuda.to_device(palint_times)
-        d_palint_vals = cuda.to_device(
-                np.concatenate([p[1].data for p in pals]))
+        pvals = [genome.decoded_palettes[i].data for i in pidxs]
+        d_palint_vals = cuda.to_device(np.concatenate(pvals))
 
         if self.acc_mode in ('deferred', 'atomic'):
             palette_fun = self.mod.get_function("interp_palette_hsv_flat")

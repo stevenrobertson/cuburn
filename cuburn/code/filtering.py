@@ -11,7 +11,7 @@ _CODE = '''
 #include<math_constants.h>
 
 __global__
-void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
+void colorclip(float4 *pixbuf, float gamma, float vibrance, float highpow,
                float linrange, float lingam, float3 bkgd,
                int fbsize, int blend_background_color) {
     int i = threadIdx.x + blockDim.x * (blockIdx.x + gridDim.x * blockIdx.y);
@@ -42,7 +42,7 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
         return;
     }
 
-    float ls = vibrancy * alpha / pix.w;
+    float ls = vibrance * alpha / pix.w;
     alpha = fminf(1.0f, fmaxf(0.0f, alpha));
 
     float maxc = fmaxf(pix.x, fmaxf(pix.y, pix.z));
@@ -71,9 +71,9 @@ void colorclip(float4 *pixbuf, float gamma, float vibrancy, float highpow,
         }
     }
 
-    pix.x += (1.0f - vibrancy) * powf(opix.x, gamma);
-    pix.y += (1.0f - vibrancy) * powf(opix.y, gamma);
-    pix.z += (1.0f - vibrancy) * powf(opix.z, gamma);
+    pix.x += (1.0f - vibrance) * powf(opix.x, gamma);
+    pix.y += (1.0f - vibrance) * powf(opix.y, gamma);
+    pix.z += (1.0f - vibrance) * powf(opix.z, gamma);
 
     pix.x += (1.0f - alpha) * bkgd.x;
     pix.y += (1.0f - alpha) * bkgd.y;
@@ -318,7 +318,7 @@ class Filtering(object):
 
         # TODO: implement integration over cubic splines?
         gam = f32(1 / gnm.color.gamma(tc))
-        vib = f32(gnm.color.vibrancy(tc))
+        vib = f32(gnm.color.vibrance(tc))
         hipow = f32(gnm.color.highlight_power(tc))
         lin = f32(gnm.color.gamma_threshold(tc))
         lingam = f32(lin ** (gam-1.0) if lin > 0 else 0)
