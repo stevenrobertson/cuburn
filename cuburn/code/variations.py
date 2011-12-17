@@ -1,6 +1,6 @@
 import numpy as np
 
-from cuburn.code.util import Template
+from util import Template
 
 var_code = {}
 var_params = {}

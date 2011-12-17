@@ -4,7 +4,6 @@ import numpy as np
 
 import tempita
 from cuburn.code.util import HunkOCode, Template
-from cuburn.genome import SplEval
 
 class GenomePackerName(str):
     """Class to indicate that a property is precalculated on the device"""
@@ -54,11 +53,8 @@ class GenomePackerView(object):
         # allocate things. This makes for neater embedded code, which is where
         # the real complexity lies, but it also means printf() debugging when
         # templating will screw with the allocation tables!
-        if isinstance(self.wrapped, SplEval):
+        if not isinstance(self.wrapped, GenomePackerName):
             self.packer._require(self.prefix)
-        elif not isinstance(self.wrapped, GenomePackerName):
-            raise TypeError("Tried to pack something that wasn't a spline or "
-                            "a precalculated value")
         # TODO: verify namespace stomping, etc
         return '%s.%s' % (self.ptr_name, '_'.join(self.prefix))
 
@@ -217,8 +213,6 @@ class GenomePacker(HunkOCode):
             attr = self.ns[gname[0]]
             for g in gname[1:]:
                 attr = getattr(attr, g)
-            if not isinstance(attr, SplEval):
-                raise TypeError("%s isn't a spline" % '.'.join(gname))
             out[0][idx][:len(attr.knots[0])] = attr.knots[0]
             out[1][idx][:len(attr.knots[1])] = attr.knots[1]
         return out
