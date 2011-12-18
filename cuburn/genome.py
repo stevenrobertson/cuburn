@@ -105,7 +105,7 @@ def palette_encode(data, format='rgb8'):
     """
     if format != 'rgb8':
         raise NotImplementedError
-    enc = base64.b64encode(np.uint8(data*255.0))
+    enc = base64.b64encode(np.uint8(data[:,:3]*255.0))
     return ['rgb8'] + [enc[i:i+64] for i in range(0, len(enc), 64)]
 
 class _AttrDict(dict):
@@ -260,14 +260,15 @@ class XMLGenomeParser(object):
             assert self._flame is None
             self._flame = dict(attrs)
             self._flame['xforms'] = []
-            self._flame['palette'] = np.zeros((256, 3), dtype=np.uint8)
+            self._flame['palette'] = np.ones((256, 4), dtype=np.float32)
         elif name == 'xform':
             self._flame['xforms'].append(dict(attrs))
         elif name == 'finalxform':
             self._flame['finalxform'] = dict(attrs)
         elif name == 'color':
             idx = int(attrs['index'])
-            self._flame['palette'][idx] = map(float, attrs['rgb'].split())
+            self._flame['palette'][idx][:3] = [float(v) / 255.0
+                                               for v in attrs['rgb'].split()]
     def end_element(self, name):
         if name == 'flame':
             self.flames.append(self._flame)
