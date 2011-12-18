@@ -105,12 +105,15 @@ def palette_encode(data, format='rgb8'):
     """
     if format != 'rgb8':
         raise NotImplementedError
-    enc = base64.b64encode(np.uint8(data[:,:3]*255.0))
+    clamp = np.maximum(0, np.minimum(255, np.round(data[:,:3]*255.0)))
+    enc = base64.b64encode(np.uint8(clamp))
     return ['rgb8'] + [enc[i:i+64] for i in range(0, len(enc), 64)]
 
 class _AttrDict(dict):
     def __getattr__(self, name):
-        return self[name]
+        if name in self:
+            return self[name]
+        raise AttributeError('%s not a dict key' % name)
 
     @classmethod
     def _wrap(cls, dct):
@@ -296,9 +299,12 @@ def convert_flame(flame):
     }
 
     info = {}
-    for k, f in [('name', 'name'), ('author_url', 'url'), ('author', 'nick')]:
-        if f in flame:
-            info[k] = flame[f]
+    if 'name' in flame:
+        info['name'] = flame['name']
+    if 'nick' in flame:
+        info['authors'] = [flame['nick']]
+        if 'url' in flame:
+            info['authors'][0] = info['authors'][0] + ', http://' + flame['url']
 
     time = dict(frame_width=float(flame.get('temporal_filter_width', 1)),
                 duration=1)
@@ -317,15 +323,16 @@ def convert_flame(flame):
                  ('estimator_minimum', 'minimum', 0),
                  ('estimator_curve', 'curve', 0.6)])
 
-    xfs = dict([(str(k), convert_xform(v))
+    num_xf = len(flame['xforms'])
+    xfs = dict([(str(k), convert_xform(v, num_xf))
                 for k, v in enumerate(flame['xforms'])])
     if 'finalxform' in flame:
-        xfs['final'] = convert_xform(flame['finalxform'], True)
+        xfs['final'] = convert_xform(flame['finalxform'], num_xf, True)
 
     return dict(camera=camera, color=color, de=de, xforms=xfs,
                 info=info, time=time, palettes=[pal], link='self')
 
-def convert_xform(xf, isfinal=False):
+def convert_xform(xf, num_xf, isfinal=False):
     # TODO: chaos
     xf = dict(xf)
     symm = float(xf.pop('symmetry', 0))
@@ -337,6 +344,15 @@ def convert_xform(xf, isfinal=False):
     out['affine'] = convert_affine(xf.pop('coefs'), anim)
     if 'post' in xf and map(float, xf['post'].split()) != [1, 0, 0, 1, 0, 0]:
         out['post'] = convert_affine(xf.pop('post'))
+    if 'chaos' in xf:
+        chaos = map(float, xf.pop('chaos').split())
+        out['chaos'] = dict()
+        for i in range(num_xf):
+            if i < len(chaos):
+                out['chaos'][str(i)] = chaos[i]
+            else:
+                out['chaos'][str(i)] = 1.0
+        
     out['variations'] = {}
     for k in var_code:
         if k in xf:
@@ -344,7 +360,7 @@ def convert_xform(xf, isfinal=False):
             for param, default in var_params.get(k, {}).items():
                 var[param] = float(xf.pop('%s_%s' % (k, param), default))
             out['variations'][k] = var
-    assert not xf, 'Unrecognized parameters remain: ' + xf
+    assert not xf, 'Unrecognized parameters remain: ' + str(xf)
     return out
 
 def convert_affine(aff, animate=False):
