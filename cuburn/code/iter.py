@@ -25,7 +25,7 @@ def precalc_densities(pcp, std_xforms):
         sum += den_{{n}} * rsum;
         {{pre_cp._set('den_' + n)}} = sum;
         {{endfor}}
-    """).substitute(locals()))
+    """, name='precalc_densities').substitute(locals()))
 
 def precalc_chaos(pcp, std_xforms):
     pre_cp = pcp._precalc()
@@ -51,7 +51,7 @@ def precalc_chaos(pcp, std_xforms):
 
         {{endfor}}
 
-    """).substitute(locals()))
+    """, name='precalc_chaos').substitute(locals()))
 
 def precalc_camera(pcam):
     pre_cam = pcam._precalc()
