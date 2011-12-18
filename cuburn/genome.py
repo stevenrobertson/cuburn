@@ -329,7 +329,7 @@ def convert_xform(xf, isfinal=False):
     # TODO: chaos
     xf = dict(xf)
     symm = float(xf.pop('symmetry', 0))
-    anim = xf.pop('animate', symm >= 0)
+    anim = xf.pop('animate', symm <= 0)
     out = dict((k, float(xf.pop(k, v))) for k, v in
                dict(color=0, color_speed=(1-symm)/2, opacity=1).items())
     if not isfinal:
