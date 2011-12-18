@@ -105,7 +105,8 @@ def palette_encode(data, format='rgb8'):
     """
     if format != 'rgb8':
         raise NotImplementedError
-    enc = base64.b64encode(np.uint8(data[:,:3]*255.0))
+    clamp = np.maximum(0, np.minimum(255, np.round(data[:,:3]*255.0)))
+    enc = base64.b64encode(np.uint8(clamp))
     return ['rgb8'] + [enc[i:i+64] for i in range(0, len(enc), 64)]
 
 class _AttrDict(dict):
