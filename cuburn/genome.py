@@ -111,7 +111,9 @@ def palette_encode(data, format='rgb8'):
 
 class _AttrDict(dict):
     def __getattr__(self, name):
-        return self[name]
+        if name in self:
+            return self[name]
+        raise AttributeError('%s not a dict key' % name)
 
     @classmethod
     def _wrap(cls, dct):
