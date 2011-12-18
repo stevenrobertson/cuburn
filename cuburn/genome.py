@@ -255,9 +255,6 @@ class XMLGenomeParser(object):
         self.parser.StartElementHandler = self.start_element
         self.parser.EndElementHandler = self.end_element
 
-    def parse(self, file):
-        self.parser.ParseFile(file)
-
     def start_element(self, name, attrs):
         if name == 'flame':
             assert self._flame is None
@@ -275,6 +272,12 @@ class XMLGenomeParser(object):
         if name == 'flame':
             self.flames.append(self._flame)
             self._flame = None
+
+    @classmethod
+    def parse(cls, src):
+        parser = cls()
+        parser.parser.Parse(src, True)
+        return parser.flames
 
 def convert_flame(flame):
     """
@@ -372,12 +375,11 @@ def convert_affine(aff, animate=False):
 
 def convert_file(path):
     """Quick one-shot conversion for an XML genome."""
-    p = GenomeParser()
-    p.parse(open(path))
-    if len(p.flames) > 10:
+    flames = XMLGenomeParser.parse(open(path).read())
+    if len(flames) > 10:
         warnings.warn("Lot of flames in this file. Sure it's not a "
                       "frame-based animation?")
-    for flame in p.flames:
+    for flame in flames:
         yield convert_flame(flame)
 
 if __name__ == "__main__":
