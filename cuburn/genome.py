@@ -299,9 +299,12 @@ def convert_flame(flame):
     }
 
     info = {}
-    for k, f in [('name', 'name'), ('author_url', 'url'), ('author', 'nick')]:
-        if f in flame:
-            info[k] = flame[f]
+    if 'name' in flame:
+        info['name'] = flame['name']
+    if 'nick' in flame:
+        info['authors'] = [flame['nick']]
+        if 'url' in flame:
+            info['authors'][0] = info['authors'][0] + ', http://' + flame['url']
 
     time = dict(frame_width=float(flame.get('temporal_filter_width', 1)),
                 duration=1)
