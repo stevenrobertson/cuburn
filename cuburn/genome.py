@@ -224,7 +224,8 @@ def json_encode_genome(obj, indent=0):
     if isinstance(obj, dict):
         if not obj:
             return '{}'
-        ks, vs = zip(*sorted(obj.items()))
+        digsort = lambda kv: (int(kv[0]), kv[1]) if kv[0].isdigit() else kv
+        ks, vs = zip(*sorted(obj.items(), key=digsort))
         if ks == ('b', 'g', 'r'):
             ks, vs = reversed(ks), reversed(vs)
         ks = [crep('%.8g' % k if isnum(k) else str(k)) for k in ks]
@@ -316,7 +317,8 @@ def convert_flame(flame):
                  ('estimator_minimum', 'minimum', 0),
                  ('estimator_curve', 'curve', 0.6)])
 
-    xfs = dict(enumerate(map(convert_xform, flame['xforms'])))
+    xfs = dict([(str(k), convert_xform(v))
+                for k, v in enumerate(flame['xforms'])])
     if 'finalxform' in flame:
         xfs['final'] = convert_xform(flame['finalxform'], True)
 
