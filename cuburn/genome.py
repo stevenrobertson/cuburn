@@ -13,8 +13,7 @@ class SplEval(object):
                       [1,-1, 0, 0], [-2, 3, 0, 0]])
     _deriv = np.matrix(np.diag([3,2,1], 1))
 
-    def __init__(self, knots):
-        # If a single value is passed, normalize to a constant set of knots
+    def __init__(self, knots, v0=None, v1=None):
         if isinstance(knots, (int, float)):
             knots = [-0.1, knots, 0.0, knots, 1.0, knots, 1.1, knots]
         elif not np.all(np.diff(np.float32(np.asarray(knots))[::2]) > 0):
@@ -22,16 +21,15 @@ class SplEval(object):
                     "nextafterf()-spaced times to anchor tangents.)")
 
         # If stabilizing knots are missing before or after the edges of the
-        # [0,1] interval, add them. We choose knots that preserve the first
-        # differential, which is probably what is expected when two knots are
-        # present but may be less accurate for three. Of course, one can just
-        # add stabilizing knots to the genome to change this.
+        # [0,1] interval, add them.
         if knots[0] >= 0:
-            m = (knots[3] - knots[1]) / (knots[2] - knots[0])
-            knots = [-0.1, knots[1] + -0.1 * m] + knots
+            if v0 is None:
+                v0 = (knots[3] - knots[1]) / (knots[2] - knots[0])
+            knots = [-2, knots[3] + (knots[2] - 2) * v0] + knots
         if knots[-2] <= 1:
-            m = (knots[-1] - knots[-3]) / (knots[-2] - knots[-4])
-            knots.extend([1.1, knots[-1] + 0.1 * m])
+            if v1 is None:
+                v1 = (knots[-1] - knots[-3]) / (knots[-2] - knots[-4])
+            knots.extend([3, knots[-3] + (3 - knots[-4]) * v1])
 
         self.knots = np.zeros((2, len(knots)/2))
         self.knots.T.flat[:] = knots
