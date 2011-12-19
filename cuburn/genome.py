@@ -234,7 +234,7 @@ def _js_enc_obj(obj, indent=0):
         ks, vs = zip(*sorted(obj.items(), key=digsort))
         if ks == ('b', 'g', 'r'):
             ks, vs = reversed(ks), reversed(vs)
-        ks = [crep('%.8g' % k if isnum(k) else str(k)) for k in ks]
+        ks = [crep('%.6g' % k if isnum(k) else str(k)) for k in ks]
         vs = [_js_enc_obj(v, indent+2) for v in vs]
         return wrap(['%s: %s' % p for p in zip(ks, vs)], '{}')
     elif isinstance(obj, list):
@@ -247,7 +247,7 @@ def _js_enc_obj(obj, indent=0):
     elif isinstance(obj, basestring):
         return crep(obj)
     elif isnum(obj):
-        return '%.8g' % obj
+        return '%.6g' % obj
     raise TypeError("Don't know how to serialize %s of type %s" %
                     (obj, type(obj)))
 
