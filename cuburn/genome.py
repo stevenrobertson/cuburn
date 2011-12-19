@@ -308,7 +308,7 @@ def convert_flame(flame):
         info['name'] = flame['name']
     if 'nick' in flame:
         info['authors'] = [flame['nick']]
-        if 'url' in flame:
+        if flame.get('url'):
             info['authors'][0] = info['authors'][0] + ', http://' + flame['url']
 
     time = dict(frame_width=float(flame.get('temporal_filter_width', 1)),
