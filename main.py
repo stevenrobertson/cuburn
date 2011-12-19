@@ -161,7 +161,7 @@ if __name__ == "__main__":
     prof.add_argument('--quality', type=int, metavar='SPP',
         help="Set base samples per pixel")
     prof.add_argument('--fps', type=float, dest='fps',
-        help="Set frames per second")
+        help="Set frames per second (24)")
     prof.add_argument('--width', type=int, metavar='PX')
     prof.add_argument('--height', type=int, metavar='PX')
 
