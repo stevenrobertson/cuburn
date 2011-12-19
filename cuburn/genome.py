@@ -273,6 +273,8 @@ class XMLGenomeParser(object):
             idx = int(attrs['index'])
             self._flame['palette'][idx][:3] = [float(v) / 255.0
                                                for v in attrs['rgb'].split()]
+        elif name == 'symmetry':
+            self._flame['symmetry'] = int(attrs['kind'])
     def end_element(self, name):
         if name == 'flame':
             self.flames.append(self._flame)
@@ -326,6 +328,8 @@ def convert_flame(flame):
     num_xf = len(flame['xforms'])
     xfs = dict([(str(k), convert_xform(v, num_xf))
                 for k, v in enumerate(flame['xforms'])])
+    if 'symmetry' in flame:
+        xfs.update(make_symm_xforms(flame['symmetry'], len(xfs)))
     if 'finalxform' in flame:
         xfs['final'] = convert_xform(flame['finalxform'], num_xf, True)
 
@@ -391,6 +395,25 @@ def convert_affine(aff, animate=False):
 
     return dict(spread=spread, magnitude={'x': xm, 'y': ym},
                 angle=angle, offset={'x': xo, 'y': yo})
+
+def make_symm_xforms(kind, offset):
+    assert kind != 0, 'Pick your own damn symmetry.'
+    out = []
+    boring_xf = dict(color=1, color_speed=0, density=1, opacity=1,
+                     variations={'linear': {'weight': 1}})
+    if kind < 0:
+        out.append(boring_xf.copy())
+        out[-1]['affine'] = dict(angle=135, magnitude={'x': 1, 'y': 1},
+                                 spread=-45, offset={'x': 0, 'y': 0})
+        kind = -kind
+    for i in range(1, kind):
+        out.append(boring_xf.copy())
+        if kind >= 3:
+            out[-1]['color'] = (i - 1) / (kind - 2.0)
+        ang = (45 + 360 * i / float(kind)) % 360
+        out[-1]['affine'] = dict(angle=ang, magnitude={'x': 1, 'y': 1},
+                                 spread=-45, offset={'x': 0, 'y': 0})
+    return dict((str(i+offset), v) for i, v in enumerate(out))
 
 def convert_file(path):
     """Quick one-shot conversion for an XML genome."""
