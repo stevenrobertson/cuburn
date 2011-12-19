@@ -207,11 +207,16 @@ class Genome(_AttrDict):
             times = times + 0.5 * err * (np.tanh(epts) + 1)
         return err, times
 
-def json_encode_genome(obj, indent=0):
+def json_encode_genome(obj):
     """
     Encode an object into JSON notation. This serializer only works on the
     subset of JSON used in genomes.
     """
+    result = _js_enc_obj(obj).lstrip()
+    result = '\n'.join(l.rstrip() for l in result.split('\n'))
+    return result + '\n'
+
+def _js_enc_obj(obj, indent=0):
     # TODO: test, like so many other things
     isnum = lambda v: isinstance(v, (float, int, np.number))
 
@@ -232,15 +237,15 @@ def json_encode_genome(obj, indent=0):
         if ks == ('b', 'g', 'r'):
             ks, vs = reversed(ks), reversed(vs)
         ks = [crep('%.8g' % k if isnum(k) else str(k)) for k in ks]
-        vs = [json_encode_genome(v, indent+2) for v in vs]
+        vs = [_js_enc_obj(v, indent+2) for v in vs]
         return wrap(['%s: %s' % p for p in zip(ks, vs)], '{}')
     elif isinstance(obj, list):
-        vs = [json_encode_genome(v, indent+2) for v in obj]
+        vs = [_js_enc_obj(v, indent+2) for v in obj]
         if vs and len(vs) % 2 == 0 and isnum(obj[0]):
             vs = map(', '.join, zip(vs[::2], vs[1::2]))
         return wrap(vs, '[]')
     elif isinstance(obj, SplEval):
-        return json_encode_genome(obj.knotlist, indent)
+        return _js_enc_obj(obj.knotlist, indent)
     elif isinstance(obj, basestring):
         return crep(obj)
     elif isnum(obj):
