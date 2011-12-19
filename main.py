@@ -16,9 +16,7 @@ import time
 import json
 import warnings
 import argparse
-import multiprocessing
 from subprocess import Popen
-from ctypes import *
 from itertools import ifilter
 
 import numpy as np
