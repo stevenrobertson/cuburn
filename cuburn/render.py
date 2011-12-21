@@ -293,7 +293,7 @@ class Renderer(object):
                         block=(256,1,1), grid=(self.palette_height,1),
                         stream=write_stream)
 
-            packer_fun(d_infos, d_seeds, d_genome_times, d_genome_knots,
+            packer_fun(d_infos, d_genome_times, d_genome_knots,
                        f32(ts), f32(td / ntemporal_samples),
                        i32(ntemporal_samples), block=(256,1,1),
                        grid=(int(np.ceil(ntemporal_samples/256.)),1),

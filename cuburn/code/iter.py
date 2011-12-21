@@ -70,23 +70,15 @@ def precalc_camera(pcam):
         float cenx = {{pre_cam.center.x}}, ceny = {{pre_cam.center.y}};
         float scale = {{pre_cam.scale}} * acc_size.width;
 
-        float ditherwidth = {{pre_cam.dither_width}} * 0.33f;
-        float u0 = mwc_next_01(rctx);
-        float r = ditherwidth * sqrtf(-2.0f * log2f(u0) / M_LOG2E);
-
-        float u1 = 2.0f * M_PI * mwc_next_01(rctx);
-        float ditherx = r * cos(u1);
-        float dithery = r * sin(u1);
-
         {{pre_cam._set('xx')}} = scale * rotcos;
         {{pre_cam._set('xy')}} = scale * -rotsin;
         {{pre_cam._set('xo')}} = scale * (rotsin * ceny - rotcos * cenx)
-                               + 0.5f * acc_size.awidth + ditherx;
+                               + 0.5f * acc_size.awidth;
 
         {{pre_cam._set('yx')}} = scale * rotsin;
         {{pre_cam._set('yy')}} = scale * rotcos;
         {{pre_cam._set('yo')}} = scale * -(rotsin * cenx + rotcos * ceny)
-                               + 0.5f * acc_size.aheight + dithery;
+                               + 0.5f * acc_size.aheight;
 
     """).substitute(locals()))
 
@@ -203,12 +195,23 @@ void iter(
             reinterpret_cast<const float*>(global_params)[i];
 
     __shared__ int rb_idx;
-    if (threadIdx.x == 1 && threadIdx.y == 1)
+    if (threadIdx.y == 1 && threadIdx.x == 1)
         rb_idx = 32 * blockDim.y * (atomicAdd(&rb_head, 1) % rb_size);
 
     __syncthreads();
     int this_rb_idx = rb_idx + threadIdx.x + 32 * threadIdx.y;
     mwc_st rctx = msts[this_rb_idx];
+
+    {{precalc_camera(pcp.camera)}}
+    if (threadIdx.y == 5 && threadIdx.x == 4) {
+        float ditherwidth = {{pcp.camera.dither_width}} * 0.5f;
+        float u0 = mwc_next_01(rctx);
+        float r = ditherwidth * sqrtf(-2.0f * log2f(u0) / M_LOG2E);
+
+        float u1 = 2.0f * M_PI * mwc_next_01(rctx);
+        {{pcp.camera.xo}} += r * cos(u1);
+        {{pcp.camera.yo}} += r * sin(u1);
+    }
 
 {{if info.acc_mode == 'global'}}
     __shared__ float time_frac;
@@ -331,8 +334,6 @@ void iter(
 {{endif}}
 
         float cx, cy, cc;
-
-        {{precalc_camera(pcp.camera)}}
 
 {{if 'final' in cp.xforms}}
         {{apply_affine('fx', 'fy', 'cx', 'cy', pcp.camera)}}
