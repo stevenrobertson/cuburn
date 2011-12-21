@@ -20,6 +20,7 @@ for i, v in enumerate(gnm['xforms'].values()):
                        'y': [0, cv(0)*csp(0), 1, cv(1)*csp(1)]}
         }
     v.pop('post', False)
+gnm['color']['highlight_power'] = 0
 gnm['camera'].update(center={'x': 0,'y':-0.5}, rotation=0, scale=9. / 16,
         filter_width=2)
 name = sys.argv[1].rsplit('.', 1)[0] + '.showpal.json'
