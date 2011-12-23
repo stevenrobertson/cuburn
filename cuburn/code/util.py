@@ -148,6 +148,25 @@ void write_half(float &xy, float x, float y, float den) {
         : "=f"(xy) : "f"(x), "f"(y), "f"(den));
 }
 
+
+/* This conversion uses the JPEG full-range standard, though it does *not* add
+ * an offset to UV to bias them into the positive regime. */
+__device__
+float3 rgb2yuv(float3 rgb) {
+    return make_float3(
+        0.299f      * rgb.x + 0.587f    * rgb.y + 0.114f    * rgb.z,
+        -0.168736f  * rgb.x - 0.331264f * rgb.y + 0.5f      * rgb.z,
+        0.5f        * rgb.x - 0.418688f * rgb.y - 0.081312f * rgb.z);
+}
+
+__device__
+float3 yuv2rgb(float3 yuv) {
+    return make_float3(
+        yuv.x                    + 1.402f   * yuv.z,
+        yuv.x - 0.34414f * yuv.y - 0.71414f * yuv.z,
+        yuv.x + 1.772f   * yuv.y);
+}
+
 __device__
 float3 rgb2hsv(float3 rgb) {
     float M = fmaxf(fmaxf(rgb.x, rgb.y), rgb.z);

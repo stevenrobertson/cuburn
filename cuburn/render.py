@@ -17,7 +17,7 @@ import pycuda.tools
 
 import cuburn.genome
 from cuburn import affine
-from cuburn.code import util, mwc, iter, filtering, sort
+from cuburn.code import util, mwc, iter, interp, filtering, sort
 
 RenderedImage = namedtuple('RenderedImage', 'buf idx gpu_time')
 Dimensions = namedtuple('Dimensions', 'w h aw ah astride')
@@ -48,6 +48,9 @@ class Renderer(object):
     # pre-dithered surfaces.
     palette_height = 64
 
+    # Palette color interpolation mode (see code.interp.Palette)
+    palette_interp_mode = 'yuv'
+
     # Maximum width of DE and other spatial filters, and thus in turn the
     # amount of padding applied. Note that, for now, this must not be changed!
     # The filtering code makes deep assumptions about this value.
@@ -63,7 +66,7 @@ class Renderer(object):
     keep = False
 
     def __init__(self):
-        self._iter = self.src = self.cubin = self.mod = None
+        self._iter = self.pal = self.src = self.cubin = self.mod = None
 
         # Ensure class options don't get contaminated on an instance
         self.cmp_options = list(self.cmp_options)
@@ -85,8 +88,9 @@ class Renderer(object):
 
         self._iter = iter.IterCode(self, genome)
         self._iter.packer.finalize()
+        self.pal = interp.Palette(self.palette_interp_mode)
         self.src = util.assemble_code(util.BaseCode, mwc.MWC, self._iter.packer,
-                                      self._iter)
+                                      self.pal, self._iter)
         with open(os.path.join(tempfile.gettempdir(), 'kernel.cu'), 'w') as fp:
             fp.write(self.src)
         self.cubin = pycuda.compiler.compile(
@@ -251,11 +255,11 @@ class Renderer(object):
         palint_times.fill(1e10)
         palint_times[:len(ptimes)] = ptimes
         d_palint_times = cuda.to_device(palint_times)
-        pvals = [genome.decoded_palettes[i] for i in pidxs]
+        pvals = self.pal.prepare([genome.decoded_palettes[i] for i in pidxs])
         d_palint_vals = cuda.to_device(np.concatenate(pvals))
 
         if self.acc_mode in ('deferred', 'atomic'):
-            palette_fun = self.mod.get_function("interp_palette_hsv_flat")
+            palette_fun = self.mod.get_function("interp_palette_flat")
             dsc = argset(cuda.ArrayDescriptor3D(), height=self.palette_height,
                     width=256, depth=0, format=cuda.array_format.SIGNED_INT32,
                     num_channels=2, flags=cuda.array3d_flags.SURFACE_LDST)
@@ -264,7 +268,7 @@ class Renderer(object):
             tref = self.mod.get_surfref('flatpal')
             tref.set_array(palarray, 0)
         else:
-            palette_fun = self.mod.get_function("interp_palette_hsv")
+            palette_fun = self.mod.get_function("interp_palette")
             dsc = argset(cuda.ArrayDescriptor(), height=self.palette_height,
                     width=256, format=cuda.array_format.UNSIGNED_INT8,
                     num_channels=4)
