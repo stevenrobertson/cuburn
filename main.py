@@ -104,11 +104,11 @@ def main(args, prof):
         def poll(dt):
             out = next(gen, False)
             if out is False:
-                if args.nopause:
-                    pyglet.app.exit()
-                else:
+                if args.pause:
                     label.text = "Done. ('q' to quit)"
-                    pyglet.clock.unschedule(poll)
+                    #pyglet.clock.unschedule(poll)
+                else:
+                    pyglet.app.exit()
             elif out is not None:
                 real_dt = time.time() - last_time[0]
                 last_time[0] = time.time()
@@ -143,8 +143,8 @@ if __name__ == "__main__":
         help="Output directory", default='.')
     parser.add_argument('--resume', action='store_true', dest='resume',
         help="Don't overwrite output files that are newer than the input")
-    parser.add_argument('--nopause', action='store_true',
-        help="Don't pause after rendering the last frame when previewing")
+    parser.add_argument('--pause', action='store_true',
+        help="Don't close the preview window after rendering is finished")
 
     parser.add_argument('--keep', action='store_true', dest='keep',
         help='Keep compilation directory (disables kernel caching)')
