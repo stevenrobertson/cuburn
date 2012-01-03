@@ -78,10 +78,11 @@ def main(args, prof):
 
     if args.gfx:
         import pyglet
-        window = pyglet.window.Window(w, h)
+        window = pyglet.window.Window(w, h, vsync=False)
         image = pyglet.image.CheckerImagePattern().create_image(w, h)
-        label = pyglet.text.Label('Rendering first frame', x=5, y=5,
-                font_size=16, bold=True)
+        label = pyglet.text.Label('Rendering first frame', x=5, y=h-5,
+                                  width=w, anchor_y='top', font_size=16,
+                                  bold=True, multiline=True)
 
         @window.event
         def on_draw():
