@@ -59,7 +59,9 @@ def main(args, prof):
     basename = os.path.basename(args.flame.name).rsplit('.', 1)[0] + '_'
     if args.flame.name == '-':
         basename = ''
-    prefix = os.path.join(args.dir, args.name or basename)
+    if args.name is not None:
+        basename = args.name
+    prefix = os.path.join(args.dir, basename)
     frames = [(prefix + '%05d.jpg' % (i+1), t) for i, t in enumerate(times)]
     if args.end:
         frames = frames[:args.end]
