@@ -67,7 +67,12 @@ def main(args, prof):
         frames = frames[:args.end]
     frames = frames[args.start::prof['skip']+1]
     if args.resume:
-        frames = ifilter(lambda r: not os.path.isfile(r[0]), frames)
+        m = 0
+        if args.flame.name != '-':
+            m = os.path.getmtime(args.flame.name)
+        frames = (f for f in frames
+                  if not os.path.isfile(f[0]) or m > os.path.getmtime(f[0]))
+
     w, h = prof['width'], prof['height']
     gen = anim.render(gnm, frames, w, h)
 
@@ -136,7 +141,7 @@ if __name__ == "__main__":
     parser.add_argument('-o', metavar='DIR', type=str, dest='dir',
         help="Output directory", default='.')
     parser.add_argument('--resume', action='store_true', dest='resume',
-        help="Do not render any frame for which a .jpg already exists.")
+        help="Don't overwrite output files that are newer than the input")
     parser.add_argument('--nopause', action='store_true',
         help="Don't pause after rendering the last frame when previewing")
 
