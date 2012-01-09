@@ -174,8 +174,8 @@ void density_est(float4 *pixbuf, float4 *outbuf,
 
             // If the gradient scale is smaller than the minimum scale, we're
             // probably on a strong edge; blur slightly.
-            if (diag_mag > den * 2.0f) {
-                scale = max(-9.0f, scale);
+            if (diag_mag > den * edge_clamp) {
+                scale = -2.0f;
                 // Uncomment to see which pixels are being clamped
                 // de_g[si] = 1.0f;
             }
