@@ -29,6 +29,7 @@ from cuburn import genome, render
 profiles = {
     '1080p': dict(fps=24, width=1920, height=1080, quality=3000, skip=0),
     '720p': dict(fps=24, width=1280, height=720, quality=2500, skip=0),
+    '540p': dict(fps=24, width=960, height=540, quality=2500, skip=0),
     'preview': dict(fps=24, width=640, height=360, quality=800, skip=1)
 }
 
