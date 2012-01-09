@@ -347,8 +347,7 @@ class Palette(HunkOCode):
         # TODO: premultiply alpha or some nonsense like that?
         y, u, v = np.array(cls.YUV * pal.T[:3])
         uvr = np.hypot(u, v)
-        uvt = np.arctan2(v, u)
-        cls.monotonify(uvt)
+        uvt = np.unwrap(np.arctan2(v, u))
         return y, uvr, uvt, pal.T[3]
 
     @classmethod
@@ -358,13 +357,6 @@ class Palette(HunkOCode):
         r, g, b = np.array(cls.YUV.I * np.array([y, u, v]))
         # Ensure Fortran order so that the memory gets laid out correctly
         return np.array([r, g, b, a], order='F').T
-
-    @staticmethod
-    def monotonify(uvt):
-        """Eliminate sign-flips in an array of radian angles (in-place)."""
-        diff = np.diff(uvt)
-        for i in np.nonzero(np.abs(diff) > np.pi)[0]:
-            uvt[i:] -= np.sign(diff[i]) * 2 * np.pi
 
     modes = ['hsv', 'yuv', 'yuvpolar']
     decls = "surface<void, cudaSurfaceType2D> flatpal;\n"
