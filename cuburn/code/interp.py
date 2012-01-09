@@ -3,7 +3,7 @@ from itertools import cycle
 import numpy as np
 
 import tempita
-from cuburn.code.util import HunkOCode, Template
+from util import HunkOCode, Template, BaseCode, assemble_code
 
 class GenomePackerName(str):
     """Class to indicate that a property is precalculated on the device"""
@@ -466,3 +466,33 @@ void interp_palette_flat(mwc_st *rctxs,
 }
 """)
 
+if __name__ == "__main__":
+    import pycuda.driver as cuda
+    from pycuda.compiler import SourceModule
+    import pycuda.autoinit
+    from cuburn.genome import SplEval
+
+    gp = GenomePacker("unused")
+    gp.finalize()
+    mod = SourceModule(assemble_code(BaseCode, gp))
+    times = np.sort(np.concatenate(([-2.0, 0.0, 1.0, 3.0], np.random.rand(12))))
+    knots = np.random.randn(16)
+
+    print times
+    print knots
+
+    evaltimes = np.float32(np.linspace(0, 1, 1024))
+    sp = SplEval([x for k in zip(times, knots) for x in k])
+    vals = np.array([sp(t) for t in evaltimes], dtype=np.float32)
+
+    dtimes = np.empty((32,), dtype=np.float32)
+    dtimes.fill(1e9)
+    dtimes[:16] = times
+    dknots = np.zeros_like(dtimes)
+    dknots[:16] = knots
+
+    dvals = np.empty_like(vals)
+    mod.get_function("test_cr")(cuda.In(dtimes), cuda.In(dknots),
+            cuda.In(evaltimes), cuda.Out(dvals), block=(1024, 1, 1))
+    for t, v, d in zip(evaltimes, vals, dvals):
+        print '%6f %8g %8g' % (t, v, d)
