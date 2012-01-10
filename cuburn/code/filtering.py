@@ -140,7 +140,7 @@ void blur_density_v(float4 *pixbuf, const float *scratch,
     den += dsrc[astride*min(astride-1, y+2)] * 0.00135f;
 
     float *ddst = reinterpret_cast<float*>(&pixbuf[astride * y + x]) + 3;
-    *ddst = den;
+    *ddst = min(*ddst, den);
 }
 
 #define W 15        // Filter width (regardless of standard deviation chosen)
