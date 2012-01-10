@@ -190,7 +190,7 @@ void density_est(float4 *outbuf, const float4 *pixbuf,
                 // does not match with a normal Gaussian; it just fits with
                 // flam3's implementation.
                 float scale = powf(den * ss, est_curve) * scale_coeff;
-                scale = min(scale, 1.41421f);
+                scale = min(scale, 2.0f);
 
                 for (int jj = -W2; jj < W2; jj++) {
                     float jjf = (jj - ssxo) * scale;
