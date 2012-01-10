@@ -68,7 +68,7 @@ def precalc_camera(pcam):
         float rot = {{pre_cam.rotation}} * M_PI / 180.0f;
         float rotsin = sin(rot), rotcos = cos(rot);
         float cenx = {{pre_cam.center.x}}, ceny = {{pre_cam.center.y}};
-        float scale = {{pre_cam.scale}} * acc_size.width;
+        float scale = {{pre_cam.scale}} * acc_size.width * acc_size.ss;
 
         {{pre_cam._set('xx')}} = scale * rotcos;
         {{pre_cam._set('xy')}} = scale * -rotsin;
@@ -126,6 +126,7 @@ typedef struct {
     uint32_t awidth;
     uint32_t aheight;
     uint32_t astride;
+    uint32_t ss;
 } acc_size_t;
 __constant__ acc_size_t acc_size;
 
@@ -203,7 +204,7 @@ void iter(
     mwc_st rctx = msts[this_rb_idx];
 
     {{precalc_camera(pcp.camera)}}
-    if (threadIdx.y == 5 && threadIdx.x == 4) {
+    if (acc_size.ss == 1 && threadIdx.y == 5 && threadIdx.x == 4) {
         float ditherwidth = {{pcp.camera.dither_width}} * 0.33f;
         float u0 = mwc_next_01(rctx);
         float r = ditherwidth * sqrtf(-2.0f * log2f(u0) / M_LOG2E);

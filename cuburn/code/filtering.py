@@ -7,8 +7,9 @@ from pycuda.gpuarray import vec
 
 from cuburn.code.util import *
 
-_CODE = '''
+_CODE = r'''
 #include<math_constants.h>
+#include<stdio.h>
 
 __global__
 void colorclip(float4 *pixbuf, float gamma, float vibrance, float highpow,
@@ -87,22 +88,6 @@ void colorclip(float4 *pixbuf, float gamma, float vibrance, float highpow,
     pixbuf[i] = pix;
 }
 
-
-#define W 15        // Filter width (regardless of standard deviation chosen)
-#define W2 7        // Half of filter width, rounded down
-#define FW 46       // Width of local result storage (NW+W2+W2)
-#define FW2 (FW*FW)
-
-__shared__ float de_r[FW2], de_g[FW2], de_b[FW2], de_a[FW2];
-
-__device__ void de_add(int ibase, int ii, int jj, float4 scaled) {
-    int idx = ibase + FW * ii + jj;
-    atomicAdd(de_r+idx, scaled.x);
-    atomicAdd(de_g+idx, scaled.y);
-    atomicAdd(de_b+idx, scaled.z);
-    atomicAdd(de_a+idx, scaled.w);
-}
-
 __global__
 void logscale(float4 *pixbuf, float4 *outbuf, float k1, float k2) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
@@ -117,129 +102,110 @@ void logscale(float4 *pixbuf, float4 *outbuf, float k1, float k2) {
     outbuf[i] = pix;
 }
 
+// SS must be no greater than 4x
+__global__
+void blur_density_h(float *scratch, const float4 *pixbuf, int astride) {
+    // TODO: respect supersampling? configurable blur width?
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    if (x > astride) return;
+    int y = blockIdx.y;
+    const float *dsrc =
+        reinterpret_cast<const float*>(&pixbuf[astride * y]) + 3;
 
-// See helpers/filt_err.py for source of these values.
-#define MAX_SCALE -0.12f
-#define MIN_SCALE -9.2103404f
+    float den = 0.0f;
+
+    den += dsrc[4*max(0, x-2)] * 0.00135f;
+    den += dsrc[4*max(0, x-1)] * 0.1573f;
+    den += dsrc[4*x] * 0.6827f;
+    den += dsrc[4*min(astride-1, x+1)] * 0.1573f;
+    den += dsrc[4*min(astride-1, x+2)] * 0.00135f;
+    scratch[astride * y + x] = den;
+}
 
 __global__
-void density_est(float4 *pixbuf, float4 *outbuf,
+void blur_density_v(float4 *pixbuf, const float *scratch,
+                    int astride, int aheight) {
+    // TODO: respect supersampling? configurable blur width?
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    if (x > astride) return;
+    int y = blockIdx.y;
+    const float *dsrc = scratch + x;
+
+    float den = 0.0f;
+
+    den += dsrc[astride*max(0, y-2)] * 0.00135f;
+    den += dsrc[astride*max(0, y-1)] * 0.1573f;
+    den += dsrc[astride*y] * 0.6827f;
+    den += dsrc[astride*min(astride-1, y+1)] * 0.1573f;
+    den += dsrc[astride*min(astride-1, y+2)] * 0.00135f;
+
+    float *ddst = reinterpret_cast<float*>(&pixbuf[astride * y + x]) + 3;
+    *ddst = den;
+}
+
+#define W 15        // Filter width (regardless of standard deviation chosen)
+#define W2 7        // Half of filter width, rounded down
+#define FW 46       // Width of local result storage (NW+W2+W2)
+#define FW2 (FW*FW)
+
+__global__
+void density_est(float4 *outbuf, const float4 *pixbuf,
                  float scale_coeff, float est_curve, float edge_clamp,
-                 float k1, float k2, int height, int stride) {
-    for (int i = threadIdx.x + 32*threadIdx.y; i < FW2; i += 32)
+                 float k1, float k2, int height, int stride, int ss) {
+    __shared__ float de_r[FW2], de_g[FW2], de_b[FW2], de_a[FW2];
+
+    for (int i = threadIdx.x + 32*threadIdx.y; i < FW2; i += 1024)
         de_r[i] = de_g[i] = de_b[i] = de_a[i] = 0.0f;
     __syncthreads();
 
-    for (int imrow = threadIdx.y + W2; imrow < (height - W2); imrow += 32)
-    {
-        int idx = stride * imrow + blockIdx.x * 32 + threadIdx.x + W2;
+    for (int imrow = threadIdx.y; imrow < height; imrow += 32) {
+        for (int ssx = 0; ssx < ss; ssx++) {
+            float ssxo = (0.5f + ssx) / ss;
+            for (int ssy = 0; ssy < ss; ssy++) {
+                float ssyo = (0.5f + ssy) / ss;
 
-        float4 in = pixbuf[idx];
-        float den = in.w;
+                int col = blockIdx.x * 32 + threadIdx.x;
+                int in_idx = ss * (stride * (imrow * ss + ssy) + col) + ssx;
+                float4 in = pixbuf[in_idx];
+                // TODO: compute maximum filter radius needed across all warps
+                // to limit rounds in advance
+                float den = in.w;
 
-        if (den > 0) {
+                float ls = k1 * logf(1.0f + in.w * k2) / in.w;
 
-            // Compute a fast and dirty approximation of a "gradient" using
-            // a [[-1 0 0][0 0 0][0 0 1]]/4 matrix (and its reflection)
-            // for angled edge detection, and limit blurring in those regions
-            // to both provide a bit of smoothing and prevent irregular
-            // bleed-out along gradients close to the image grid.
-            //
-            // For such a simple operator - particularly one whose entire
-            // justification is "it feels right" - it gives very good results
-            // over a wide range of images without any per-flame
-            // parameter tuning. In rare cases, color clamping and extreme
-            // palette changes can cause aliasing to reappear after the DE
-            // step; the only way to fix that is through a color-buffer AA
-            // like MLAA.
-            float *dens = reinterpret_cast<float*>(pixbuf);
-            int didx = idx * 4 + 3;
-            float x = dens[didx+stride*4+4] - dens[didx-stride*4-4];
-            float y = dens[didx+stride*4-4] - dens[didx-stride*4+4];
-            float diag_mag = sqrtf(x*x + y*y) * 0.3333333f;
+                // The synchronization model used now prevents us from
+                // cutting early in the case of a zero point, so we just carry
+                // it along with us here
+                if (den <= 0) ls = 0.0f;
 
-            float ls = k1 * logf(1.0f + in.w * k2) / in.w;
-            in.x *= ls;
-            in.y *= ls;
-            in.z *= ls;
-            in.w *= ls;
+                in.x *= ls;
+                in.y *= ls;
+                in.z *= ls;
+                in.w *= ls;
 
-            // Base index of destination for writes
-            int si = (threadIdx.y + W2) * FW + threadIdx.x + W2;
+                // Base index of destination for writes
+                int si = (threadIdx.y + W2) * FW + threadIdx.x + W2;
 
-            // Calculate scaling coefficient for the Gaussian kernel. This
-            // does not match with a normal Gaussian; it just fits with
-            // flam3's implementation.
-            float scale = powf(den, est_curve) * scale_coeff;
+                // Calculate scaling coefficient for the Gaussian kernel. This
+                // does not match with a normal Gaussian; it just fits with
+                // flam3's implementation.
+                float scale = powf(den * ss, est_curve) * scale_coeff;
+                scale = min(scale, 1.41421f);
 
-            // If the gradient scale is smaller than the minimum scale, we're
-            // probably on a strong edge; blur slightly.
-            if (diag_mag > den * edge_clamp) {
-                scale = -2.0f;
-                // Uncomment to see which pixels are being clamped
-                // de_g[si] = 1.0f;
-            }
+                for (int jj = -W2; jj < W2; jj++) {
+                    float jjf = (jj - ssxo) * scale;
+                    float jdiff = erff(jjf + scale) - erff(jjf);
 
-            // Below a certain threshold, only one coeffecient would be
-            // retained anyway; we hop right to it.
-            if (scale <= MIN_SCALE) {
-                de_add(si, 0,  0, in);
-            } else {
-                // These polynomials approximates the reciprocal of the sum of
-                // all retained filter coefficients. See helpers/filt_err.py.
-                float filtsum;
-                if (scale < -1.1f) {
-                    filtsum = 5.20066078e-06f;
-                    filtsum = filtsum * scale +   2.14025771e-04f;
-                    filtsum = filtsum * scale +   3.62761668e-03f;
-                    filtsum = filtsum * scale +   3.21970172e-02f;
-                    filtsum = filtsum * scale +   1.54297248e-01f;
-                    filtsum = filtsum * scale +   3.42210710e-01f;
-                    filtsum = filtsum * scale +   3.06015890e-02f;
-                    filtsum = filtsum * scale +   1.33724615e-01f;
-                } else {
-                    filtsum = -1.23516649e-01f;
-                    filtsum = filtsum * scale +  -5.14862895e-01f;
-                    filtsum = filtsum * scale +  -8.61198902e-01f;
-                    filtsum = filtsum * scale +  -7.41916001e-01f;
-                    filtsum = filtsum * scale +  -3.51667106e-01f;
-                    filtsum = filtsum * scale +  -9.07439440e-02f;
-                    filtsum = filtsum * scale +  -3.30008656e-01f;
-                    filtsum = filtsum * scale +  -4.78249392e-04f;
-                }
+                    for (int ii = -W2; ii < W2; ii++) {
+                        float iif = (ii - ssyo) * scale;
+                        float coeff = 0.25f * jdiff * (erff(iif + scale) - erff(iif));
 
-                for (int jj = 0; jj <= W2; jj++) {
-                    float jj2f = jj;
-                    jj2f *= jj2f;
-
-                    float iif = 0;
-                    for (int ii = 0; ii <= jj; ii++) {
-                        float coeff = expf((jj2f + iif * iif) * scale)
-                                    * filtsum;
-                        if (coeff < 0.0001f) break;
-                        iif += 1;
-
-                        float4 scaled;
-                        scaled.x = in.x * coeff;
-                        scaled.y = in.y * coeff;
-                        scaled.z = in.z * coeff;
-                        scaled.w = in.w * coeff;
-
-                        de_add(si,  ii,  jj, scaled);
-                        if (jj == 0) continue;
-                        de_add(si,  ii, -jj, scaled);
-                        if (ii != 0) {
-                            de_add(si, -ii,  jj, scaled);
-                            de_add(si, -ii, -jj, scaled);
-                            if (ii == jj) continue;
-                        }
-                        de_add(si,  jj,  ii, scaled);
-                        de_add(si, -jj,  ii, scaled);
-
-                        if (ii == 0) continue;
-                        de_add(si, -jj, -ii, scaled);
-                        de_add(si,  jj, -ii, scaled);
-
+                        int idx = si + FW * ii + jj;
+                        de_r[idx] += in.x * coeff;
+                        de_g[idx] += in.y * coeff;
+                        de_b[idx] += in.z * coeff;
+                        de_a[idx] += in.w * coeff;
+                        __syncthreads();
                     }
                 }
             }
@@ -248,9 +214,9 @@ void density_est(float4 *pixbuf, float4 *outbuf,
         __syncthreads();
         // TODO: could coalesce this, but what a pain
         for (int i = threadIdx.x; i < FW; i += 32) {
-            idx = stride * imrow + blockIdx.x * 32 + i + W2;
+            int out_idx = stride * imrow + blockIdx.x * 32 + i + W2;
             int si = threadIdx.y * FW + i;
-            float *out = reinterpret_cast<float*>(&outbuf[idx]);
+            float *out = reinterpret_cast<float*>(&outbuf[out_idx]);
             atomicAdd(out,   de_r[si]);
             atomicAdd(out+1, de_g[si]);
             atomicAdd(out+2, de_b[si]);
@@ -259,7 +225,7 @@ void density_est(float4 *pixbuf, float4 *outbuf,
 
         __syncthreads();
         int tid = threadIdx.y * 32 + threadIdx.x;
-        for (int i = tid; i < FW*(W2+W2); i += 512) {
+        for (int i = tid; i < FW*(W2+W2); i += 1024) {
             de_r[i] = de_r[i+FW*32];
             de_g[i] = de_g[i+FW*32];
             de_b[i] = de_b[i+FW*32];
@@ -267,7 +233,7 @@ void density_est(float4 *pixbuf, float4 *outbuf,
         }
 
         __syncthreads();
-        for (int i = tid + FW*(W2+W2); i < FW2; i += 512) {
+        for (int i = tid + FW*(W2+W2); i < FW2; i += 1024) {
             de_r[i] = 0.0f;
             de_g[i] = 0.0f;
             de_b[i] = 0.0f;
@@ -291,12 +257,20 @@ class Filtering(object):
     def __init__(self):
         self.init_mod()
 
+    def blur_density(self, ddst, dscratch, dim, stream=None):
+        blur_h = self.mod.get_function("blur_density_h")
+        blur_h(dscratch, ddst, i32(dim.astride), block=(192, 1, 1),
+               grid=(dim.astride / 192, dim.ah), stream=stream)
+        blur_v = self.mod.get_function("blur_density_v")
+        blur_v(ddst, dscratch, i32(dim.astride), i32(dim.ah), block=(192, 1, 1),
+               grid=(dim.astride / 192, dim.ah), stream=stream)
+
     def de(self, ddst, dsrc, gnm, dim, tc, stream=None):
         k1 = f32(gnm.color.brightness(tc) * 268 / 256)
         # Old definition of area is (w*h/(s*s)). Since new scale 'ns' is now
         # s/w, new definition is (w*h/(s*s*w*w)) = (h/(s*s*w))
         area = dim.h / (gnm.camera.scale(tc) ** 2 * dim.w)
-        k2 = f32(1 / (area * gnm.spp(tc)))
+        k2 = f32(1.0 / (area * gnm.spp(tc)))
 
         if gnm.de.radius == 0:
             nbins = dim.ah * dim.astride
@@ -304,17 +278,17 @@ class Filtering(object):
             t = fun(dsrc, ddst, k1, k2,
                     block=(512, 1, 1), grid=(nbins/512, 1), stream=stream)
         else:
-            scale_coeff = f32(-(1 + gnm.de.radius(tc)) ** -2.0)
-            est_curve = f32(2 * gnm.de.curve(tc))
+            scale_coeff = f32(1.0 / gnm.de.radius(tc))
+            est_curve = f32(gnm.de.curve(tc))
             # TODO: experiment with this
             edge_clamp = f32(1.2)
             fun = self.mod.get_function("density_est")
-            fun(dsrc, ddst, scale_coeff, est_curve, edge_clamp, k1, k2,
-                i32(dim.ah), i32(dim.astride), block=(32, 32, 1),
-                grid=(dim.aw/32, 1), stream=stream)
+            fun(ddst, dsrc, scale_coeff, est_curve, edge_clamp, k1, k2,
+                i32(dim.ah / dim.ss), i32(dim.astride / dim.ss), i32(dim.ss),
+                block=(32, 32, 1), grid=(dim.aw/(32*dim.ss), 1), stream=stream)
 
     def colorclip(self, dbuf, gnm, dim, tc, blend, stream=None):
-        nbins = dim.ah * dim.astride
+        nbins = dim.ah * dim.astride / dim.ss ** 2
 
         # TODO: implement integration over cubic splines?
         gam = f32(1 / gnm.color.gamma(tc))
@@ -332,4 +306,3 @@ class Filtering(object):
         color_fun(dbuf, gam, vib, hipow, lin, lingam, bkgd, i32(nbins),
                   i32(blend), block=(256, 1, 1), grid=(blocks, blocks),
                   stream=stream)
-

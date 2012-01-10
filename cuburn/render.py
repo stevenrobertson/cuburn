@@ -20,7 +20,7 @@ from cuburn import affine
 from cuburn.code import util, mwc, iter, interp, filtering, sort
 
 RenderedImage = namedtuple('RenderedImage', 'buf idx gpu_time')
-Dimensions = namedtuple('Dimensions', 'w h aw ah astride')
+Dimensions = namedtuple('Dimensions', 'w h aw ah astride ss')
 
 def _sync_stream(dst, src):
     dst.wait_for_event(cuda.Event(cuda.event_flags.DISABLE_TIMING).record(src))
@@ -138,7 +138,7 @@ class Renderer(object):
         next(r)
         return ifilter(None, imap(r.send, chain(times, [None])))
 
-    def render_gen(self, genome, width, height, blend=True):
+    def render_gen(self, genome, width, height, ss=1, blend=True):
         """
         Render frames. This method is wrapped by the ``render()`` method; see
         its docstring for warnings and details.
@@ -182,24 +182,25 @@ class Renderer(object):
         event_a = cuda.Event().record(filt_stream)
         event_b = None
 
-        awidth = width + 2 * self.gutter
-        aheight = height + 2 * self.gutter
-        astride = 32 * int(np.ceil(awidth / 32.))
-        dim = Dimensions(width, height, awidth, aheight, astride)
+        owidth = width + 2 * self.gutter
+        oheight = height + 2 * self.gutter
+        ostride = 32 * int(np.ceil(owidth / 32.))
+        awidth, aheight, astride = owidth * ss, oheight * ss, ostride * ss
+        dim = Dimensions(width, height, awidth, aheight, astride, ss)
         d_acc_size = self.mod.get_global('acc_size')[0]
         cuda.memcpy_htod_async(d_acc_size, u32(list(dim)), write_stream)
 
         nbins = awidth * aheight
         # Extra padding in accum helps with write_shmem overruns
         d_accum = cuda.mem_alloc(16 * nbins + (1<<16))
-        d_out = cuda.mem_alloc(16 * nbins)
+        d_out = cuda.mem_alloc(16 * oheight * ostride)
         if self.acc_mode == 'atomic':
             d_atom = cuda.mem_alloc(8 * nbins)
             flush_fun = self.mod.get_function("flush_atom")
 
         obuf_copy = argset(cuda.Memcpy2D(),
             src_y=self.gutter, src_x_in_bytes=16*self.gutter,
-            src_pitch=16*astride, dst_pitch=16*width,
+            src_pitch=16*ostride, dst_pitch=16*width,
             width_in_bytes=16*width, height=height)
         obuf_copy.set_src_device(d_out)
         h_out_a = cuda.pagelocked_empty((height, width, 4), f32)
@@ -343,8 +344,10 @@ class Renderer(object):
                               block=(512, 1, 1), grid=(nblocks, nblocks),
                               stream=iter_stream)
 
-            util.BaseCode.fill_dptr(self.mod, d_out, 4 * nbins, filt_stream)
             _sync_stream(filt_stream, write_stream)
+            filt.blur_density(d_accum, d_out, dim, stream=filt_stream)
+            util.BaseCode.fill_dptr(self.mod, d_out, 4 * nbins / ss ** 2,
+                                    filt_stream)
             filt.de(d_out, d_accum, genome, dim, tc, stream=filt_stream)
             _sync_stream(write_stream, filt_stream)
             filt.colorclip(d_out, genome, dim, tc, blend, stream=filt_stream)
