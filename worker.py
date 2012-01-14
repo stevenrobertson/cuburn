@@ -179,8 +179,11 @@ def run_jobs(r, rev, jobs):
             waiting.remove(sidx)
         if sidx in retry:
             retry.remove(sidx)
-        pending.pop(sidx)
-        if retry and retry[0] < sidx:
+        if sidx in pending:
+            pending.pop(sidx)
+        else:
+            print 'Got two responses for %d' % sidx
+        if retry and retry[0] < sidx - 2 * QUEUE_LENGTH:
             # TODO: better exception
             raise ValueError("Double retry!")
         expired, waiting[:] = partition(lambda w: w < sidx - QUEUE_LENGTH,
