@@ -24,7 +24,7 @@ pycuda = None
 QUEUE_LENGTH=50
 
 def partition(pred, arg):
-    return filter(lambda a: not pred(a), arg), filter(pred, arg)
+    return filter(pred, arg), filter(lambda a: not pred(a), arg)
 
 def git_rev():
     if not os.environ['FLOCK_PATH_IGNORE']:
