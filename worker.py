@@ -27,7 +27,8 @@ def partition(pred, arg):
     return filter(pred, arg), filter(lambda a: not pred(a), arg)
 
 def git_rev():
-    if not os.environ['FLOCK_PATH_IGNORE']:
+    os.environ['GIT_DIR'] = os.path.join(os.path.dirname(__file__) or '.', '.git')
+    if 'FLOCK_PATH_IGNORE' not in os.environ:
         if check_output('git status -z -uno'.split()):
             return None
     return check_output('git rev-parse HEAD'.split()).strip()[:10]
