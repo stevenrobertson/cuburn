@@ -67,8 +67,6 @@ def work(server):
     rev = git_rev()
     r = redis.StrictRedis(server)
     wid = uu('workers')
-    # TODO: store information about this worker in a WID-named string with an
-    # expiration, and touch/update it every so often
     r.sadd('renderpool:' + rev + ':workers', wid)
     r.hmset(wid, {
         'host': socket.gethostname(),
@@ -95,7 +93,7 @@ def work(server):
             continue
 
         sid, sidx, pid, gid, ftime, ftag = task[1].split(' ', 5)
-        if pid != last_pid or gid != last_gid:
+        if pid != last_pid or gid != last_gid or not riter:
             if riter:
                 push_frame(r, riter.send(None))
             gnm = genome.Genome(json.loads(r.get(gid)))
