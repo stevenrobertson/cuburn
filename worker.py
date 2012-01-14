@@ -193,14 +193,18 @@ def run_jobs(r, rev, jobs):
             retry.append(i)
         return sidx, gpu_time, ftag, jpg
 
-    for sidx, job in enumerate(jobs):
-        while len(pending) > QUEUE_LENGTH:
-            yield pull(True)
-        ret = pull(False)
-        if ret:
-            yield ret
-        pending[sidx] = job
-        push(sidx, job)
+    try:
+        for sidx, job in enumerate(jobs):
+            while len(pending) > QUEUE_LENGTH:
+                yield pull(True)
+            ret = pull(False)
+            if ret:
+                yield ret
+            pending[sidx] = job
+            waiting.append(sidx)
+            push(sidx, job)
+    except KeyboardInterrupt:
+        print 'Interrupt received, flushing already-dispatched frames'
 
     while pending:
         yield pull(True)
@@ -229,4 +233,3 @@ if __name__ == "__main__":
         work('192.168.1.3')
     else:
         client(sys.argv[1], sys.argv[2:])
-
