@@ -121,14 +121,14 @@ def iter_genomes(prof, gpaths):
         gnm = genome.Genome(json.loads(gsrc))
         err, times = gnm.set_profile(prof)
         odir = 'out/540p/%s/untracked' % gname
-        if not os.path.isdir(odir):
-            os.makedirs(odir)
         gtimes = []
         for i, t in enumerate(times):
             opath = os.path.join(odir, '%05d.jpg' % (i+1))
             if not os.path.isfile(opath):
                 gtimes.append((t, opath))
         if gtimes:
+            if not os.path.isdir(odir):
+                os.makedirs(odir)
             yield gsrc, gtimes
 
 def create_jobs(r, psrc, genomes):
