@@ -129,6 +129,9 @@ def iter_genomes(prof, gpaths):
         if gtimes:
             if not os.path.isdir(odir):
                 os.makedirs(odir)
+            latest = odir.rsplit('/', 1)[0] + '/latest'
+            if not os.path.isdir(latest):
+                os.symlink('untracked', latest)
             yield gsrc, gtimes
 
 def create_jobs(r, psrc, genomes):
