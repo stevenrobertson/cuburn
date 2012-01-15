@@ -306,7 +306,7 @@ class XMLGenomeParser(object):
         parser.parser.Parse(src, True)
         return parser.flames
 
-def convert_flame(flame):
+def convert_flame(flame, arc=-360, offset=0):
     """
     Convert an XML flame (as returned by XMLGenomeParser) into a plain dict
     in cuburn's JSON genome format representing a loop edge. Caller is
@@ -330,7 +330,7 @@ def convert_flame(flame):
             info['authors'][0] = info['authors'][0] + ', http://' + flame['url']
 
     time = dict(frame_width=float(flame.get('temporal_filter_width', 1)),
-                duration=1)
+                duration=abs(arc)/360.)
 
     color = cvt(['brightness', 'gamma'])
     color.update((k, float(flame.get(k, d))) for k, d in
@@ -347,17 +347,17 @@ def convert_flame(flame):
                  ('estimator_curve', 'curve', 0.6)])
 
     num_xf = len(flame['xforms'])
-    xfs = dict([(str(k), convert_xform(v, num_xf))
+    xfs = dict([(str(k), convert_xform(v, num_xf, arc, offset))
                 for k, v in enumerate(flame['xforms'])])
     if 'symmetry' in flame:
         xfs.update(make_symm_xforms(flame['symmetry'], len(xfs)))
     if 'finalxform' in flame:
-        xfs['final'] = convert_xform(flame['finalxform'], num_xf, True)
-
+        xfs['final'] = convert_xform(flame['finalxform'], num_xf,
+                                     arc, offset, True)
     return dict(camera=camera, color=color, de=de, xforms=xfs,
                 info=info, time=time, palettes=[pal], link='self')
 
-def convert_xform(xf, num_xf, isfinal=False):
+def convert_xform(xf, num_xf, arc, offset, isfinal=False):
     # TODO: chaos
     xf = dict(xf)
     symm = float(xf.pop('symmetry', 0))
@@ -366,9 +366,9 @@ def convert_xform(xf, num_xf, isfinal=False):
                dict(color=0, color_speed=(1-symm)/2, opacity=1).items())
     if not isfinal:
         out['density'] = float(xf.pop('weight'))
-    out['affine'] = convert_affine(xf.pop('coefs'), anim)
+    out['affine'] = convert_affine(xf.pop('coefs'), arc, offset, anim)
     if 'post' in xf and map(float, xf['post'].split()) != [1, 0, 0, 1, 0, 0]:
-        out['post'] = convert_affine(xf.pop('post'))
+        out['post'] = convert_affine(xf.pop('post'), arc, offset)
     if 'chaos' in xf:
         chaos = map(float, xf.pop('chaos').split())
         out['chaos'] = dict()
@@ -377,7 +377,7 @@ def convert_xform(xf, num_xf, isfinal=False):
                 out['chaos'][str(i)] = chaos[i]
             else:
                 out['chaos'][str(i)] = 1.0
-        
+
     out['variations'] = {}
     for k in var_code:
         if k in xf:
@@ -388,7 +388,7 @@ def convert_xform(xf, num_xf, isfinal=False):
     assert not xf, 'Unrecognized parameters remain: ' + str(xf)
     return out
 
-def convert_affine(aff, animate=False):
+def convert_affine(aff, arc, offset, animate=False):
     xx, yx, xy, yy, xo, yo = map(float, aff.split())
     # Invert all instances of y (yy is inverted twice)
     yx, xy, yo = -yx, -xy, -yo
@@ -412,7 +412,7 @@ def convert_affine(aff, animate=False):
         angle += 360.0
 
     if animate:
-        angle = [0, angle, 1, angle - 360]
+        angle = [0, angle + offset, 1, angle + arc + offset]
 
     return dict(spread=spread, magnitude={'x': xm, 'y': ym},
                 angle=angle, offset={'x': xo, 'y': yo})
