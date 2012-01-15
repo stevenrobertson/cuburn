@@ -168,8 +168,6 @@ class Genome(_AttrDict):
             self.palette_times = zip(pal[::2], map(int, pal[1::2]))
 
         self.adj_frame_width, self.spp = None, None
-        self.canonical_right = not (self.get('link') and
-                (self.link == 'self' or self.link.get('right')))
 
     def set_profile(self, prof, offset=0.0, err_spread=True):
         """
@@ -199,7 +197,12 @@ class Genome(_AttrDict):
             clock = float(dur[:-1]) + offset
         else:
             clock = dur * base_dur + offset
-        if self.canonical_right:
+        if (not isinstance(self.get('link'), dict) or
+                not self.link.get('right')):
+            warnings.warn("Genomes with missing or string-valued 'link' "
+                    "properties are deprecated, and will be axed shortly.")
+            nframes = int(np.ceil(clock * fps))
+        elif self.link.right == 'reference':
             nframes = int(np.floor(clock * fps))
         else:
             nframes = int(np.ceil(clock * fps))
@@ -230,7 +233,6 @@ def json_encode_genome(obj):
     return result + '\n'
 
 def _js_enc_obj(obj, indent=0):
-    # TODO: test, like so many other things
     isnum = lambda v: isinstance(v, (float, int, np.number))
 
     def wrap(pairs, delims):
@@ -307,7 +309,8 @@ class XMLGenomeParser(object):
 def convert_flame(flame):
     """
     Convert an XML flame (as returned by XMLGenomeParser) into a plain dict
-    in cuburn's JSON genome format representing a loop edge.
+    in cuburn's JSON genome format representing a loop edge. Caller is
+    responsible for correctly setting the 'link' dict.
     """
     cvt = lambda ks: dict((k, float(flame[k])) for k in ks)
     camera = {
