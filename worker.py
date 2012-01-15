@@ -210,6 +210,7 @@ def run_jobs(r, rev, jobs):
         print 'Interrupt received, flushing already-dispatched frames'
 
     while pending:
+        print '%d...' % len(pending)
         yield pull(True)
 
 def client(ppath, gpaths):
