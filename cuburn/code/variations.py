@@ -140,16 +140,20 @@ var(14, 'bent', """
     oy += w * ny * ty;
     """)
 
+precalc('waves', """
+        float dx = {{prex.affine.offset.x}};
+        float dy = {{prex.affine.offset.y}};
+        {{pre._set('dx2')}} = 1.0f / (dx * dx + 1.0e-20f);
+        {{pre._set('dy2')}} = 1.0f / (dy * dy + 1.0e-20f);
+        """)
+
 var(15, 'waves', """
+    {{waves_precalc(pv, px)}}
     float c10 = {{px.affine.xy}};
     float c11 = {{px.affine.yy}};
-    float dx = {{px.affine.xo}};
-    float dy = {{px.affine.yo}};
-    float dx2 = 1.0f / (dx * dx);
-    float dy2 = 1.0f / (dy * dy);
 
-    ox += w * (tx + c10 * sinf(ty * dx2));
-    oy += w * (ty + c11 * sinf(tx * dy2));
+    ox += w * (tx + c10 * sinf(ty * {{pv.dx2}}));
+    oy += w * (ty + c11 * sinf(tx * {{pv.dy2}}));
     """)
 
 var(16, 'fisheye', """
