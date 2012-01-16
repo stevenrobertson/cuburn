@@ -23,9 +23,10 @@ def var(num, name, code, params=None):
 
 # TODO: This is a shitty hack
 def precalc(name, code):
-    def precalc_fun(pv):
+    def precalc_fun(pv, px=None):
         pre = pv._precalc()
-        pre._code(Template(code, name+'_precalc').substitute(pre=pre))
+        prex = px._precalc() if px is not None else None
+        pre._code(Template(code, name+'_precalc').substitute(**locals()))
     Template.default_namespace[name+'_precalc'] = precalc_fun
 
 # Variables note: all functions will have their weights as 'w',
