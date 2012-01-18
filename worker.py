@@ -37,7 +37,10 @@ uu = lambda t: ':'.join((t, uuid.uuid1().hex))
 
 def get_temperature():
     id = pycuda.autoinit.device.pci_bus_id()
-    out = check_output('nvidia-smi -q -d TEMPERATURE'.split())
+    try:
+        out = check_output('nvidia-smi -q -d TEMPERATURE'.split())
+    except:
+        return ''
     idx = out.find('\nGPU ' + id)
     if idx >= 0:
         out.find('Gpu', idx)
