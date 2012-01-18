@@ -98,13 +98,14 @@ def work(server):
 
         sid, sidx, pid, gid, ftime, ftag = task[1].split(' ', 5)
         if pid != last_pid or gid != last_gid or not riter:
-            if riter:
-                push_frame(r, riter.send(None))
             gnm = genome.Genome(json.loads(r.get(gid)))
             prof = json.loads(r.get(pid))
             gnm.set_profile(prof)
             renderer = render.Renderer()
             renderer.load(gnm)
+
+            if riter:
+                push_frame(r, riter.send(None))
 
             riter = renderer.render_gen(gnm, prof['width'], prof['height'])
             next(riter)
