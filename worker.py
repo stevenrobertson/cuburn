@@ -68,6 +68,7 @@ def work(server):
     global pycuda
     import pycuda.autoinit
     rev = git_rev()
+    assert rev, 'Repository must be clean!'
     r = redis.StrictRedis(server)
     wid = uu('workers')
     r.sadd('renderpool:' + rev + ':workers', wid)
