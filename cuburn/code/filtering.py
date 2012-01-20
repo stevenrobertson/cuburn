@@ -25,6 +25,10 @@ void colorclip(float4 *pixbuf, float gamma, float vibrance, float highpow,
         return;
     }
 
+    pix.x = fmaxf(0.0f, pix.x);
+    pix.y = fmaxf(0.0f, pix.y);
+    pix.z = fmaxf(0.0f, pix.z);
+
     float4 opix = pix;
 
     float alpha = powf(pix.w, gamma);
