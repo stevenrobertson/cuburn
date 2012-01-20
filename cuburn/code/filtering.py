@@ -114,6 +114,32 @@ __device__ void fmav(float4 &dst, float4 src, float scale) {
     dst.w += src.w * scale;
 }
 
+/*
+// The 7-tap filters are missing the leading zero to compensate for delay. I
+// have no frigging clue what the theory behind that is, but it seems to work.
+__constant__ float daub97_lo[9] = {
+     0.03782845550726404f, -0.023849465019556843f, -0.11062440441843718f,
+     0.37740285561283066f,  0.8526986790088938f,    0.37740285561283066f,
+    -0.11062440441843718f, -0.023849465019556843f,  0.03782845550726404f
+};
+__constant__ float daub97_hi[9] = {
+                           -0.06453888262869706f,   0.04068941760916406f,
+     0.41809227322161724f, -0.7884856164055829f,    0.41809227322161724f,
+     0.04068941760916406f, -0.06453888262869706f,   0.0f,
+};
+__constant__ float daub97_ilo[9] = {
+                           -0.06453888262869706f,  -0.04068941760916406f,
+     0.41809227322161724f,  0.7884856164055829f,    0.41809227322161724f,
+    -0.04068941760916406f, -0.06453888262869706f,   0.0f
+};
+__constant__ float daub97_ihi[9] = {
+    -0.03782845550726404f, -0.023849465019556843f,  0.11062440441843718f,
+     0.37740285561283066f, -0.8526986790088938f,    0.37740285561283066f,
+     0.11062440441843718f, -0.023849465019556843f, -0.03782845550726404f
+};
+*/
+
+
 // The 7-tap filters are missing the leading zero to compensate for delay. I
 // have no frigging clue what the theory behind that is, but it seems to work.
 __constant__ float daub97_lo[9] = {
@@ -137,10 +163,13 @@ __constant__ float daub97_ihi[9] = {
      0.11062440441843718f, -0.023849465019556843f, -0.03782845550726404f
 };
 
+
 /*
 #define S 0.7071067811f
-__constant__ float daub97[4][9] = {
-  { 0, 0, 0, S, S}, {0, 0, 0, -S, S}, {0, 0, 0, S, S}, {0, 0, 0, S, -S}};
+__constant__ float daub97_lo[9] = { S, S };
+__constant__ float daub97_hi[9] = { -S, S };
+__constant__ float daub97_ilo[9] = { 0, 0, 0, 0, 0, 0, S, S };
+__constant__ float daub97_ihi[9] = { 0, 0, 0, 0, 0, 0, S, -S };
 */
 
 texture<float4, cudaTextureType2D> conv_down_src;
@@ -155,7 +184,7 @@ void conv_down(float4 *dst, int astride, int as_eff, int ah_eff,
 
     if (vert) {
         if (xi >= as_eff) return;
-        float x = xi - xo, y = yi * 2 - yo;
+        float x = xi, y = yi * 2 - yo;
 
         #pragma unroll
         for (int i = 0; i < 9; i++) {
@@ -168,7 +197,7 @@ void conv_down(float4 *dst, int astride, int as_eff, int ah_eff,
         dst[(yi + ah_eff / 2) * astride + xi] = hi;
     } else {
         if (xi >= as_eff / 2) return;
-        float x = xi * 2 - xo, y = yi - yo;
+        float x = xi * 2 - xo, y = yi;
 
         #pragma unroll
         for (int i = 0; i < 9; i++) {
@@ -201,6 +230,7 @@ void conv_up(float4 *dst, int astride, int as_eff,
             y += 1.0f;
             if (y >= gridDim.y / 2) y = 0.0f;
         }
+        yi -= yo;
     } else {
         float x = xi / 2, y = yi;
         for (int i = ~xi & 1; i < 9; i+=2) {
@@ -209,11 +239,10 @@ void conv_up(float4 *dst, int astride, int as_eff,
             x += 1.0f;
             if (x >= as_eff / 2) x = 0.0f;
         }
+        xi -= xo;
     }
-    xi += xo;
-    yi += yo;
-    if (xi >= as_eff) xi -= as_eff;
-    if (yi >= gridDim.y) yi -= gridDim.y;
+    if (xi < 0) xi += as_eff;
+    if (yi < 0) yi += gridDim.y;
     dst[yi * astride + xi] = out;
 }
 
@@ -224,11 +253,25 @@ void simple_thresh(float4 *buf, int astride, float thr, int min_x, int min_y) {
     if (x >= astride || (x < min_x && y < min_y)) return;
 
     float4 val = buf[y * astride + x];
-    float fact = 1.0f - expf(powf(fabsf(val.w), 1.2) * -0.2f);
+    float fact = expf(val.w * val.w * thr) < 0.2f ? 1.0f : 0.0f;
     val.x *= fact;
     val.y *= fact;
     val.z *= fact;
     val.w *= fact;
+    buf[y * astride + x] = val;
+}
+
+__global__
+void buf_abs(float4 *buf, int astride) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y;
+    if (x >= astride) return;
+
+    float4 val = buf[y * astride + x];
+    val.x = fabsf(val.x);
+    val.y = fabsf(val.y);
+    val.z = fabsf(val.z);
+    val.w = fabsf(val.w);
     buf[y * astride + x] = val;
 }
 
@@ -390,7 +433,6 @@ class Filtering(object):
 
     def de(self, ddst, dsrc, gnm, dim, tc, stream=None):
         from cuburn.render import argset
-        print dim.ah
         np.set_printoptions(linewidth=160, precision=4)
 
         k1 = f32(gnm.color.brightness(tc) * 268 / 256)
@@ -406,6 +448,7 @@ class Filtering(object):
         if self.scratch is None:
             self.scratch = cuda.mem_alloc(bs)
             self.hi = cuda.mem_alloc(bs)
+            self.aux = cuda.mem_alloc(bs)
         q = np.zeros((dim.ah, dim.astride * 4), dtype=np.float32)
         q[100:102,128:1024] = 1
         #cuda.memcpy_htod(dsrc, q)
@@ -421,14 +464,15 @@ class Filtering(object):
             tref.set_filter_mode(cuda.filter_mode.POINT)
             tref.set_address_mode(0, cuda.address_mode.WRAP)
             tref.set_address_mode(1, cuda.address_mode.WRAP)
-            print tref.get_address_mode(0)
-            print tref.get_address_mode(1)
             return tref
         conv_down_src, conv_up_src_lo, conv_up_src_hi = map(get_tref,
                 ['conv_down_src', 'conv_up_src_lo', 'conv_up_src_hi'])
 
         conv_down = self.mod.get_function('conv_down')
         conv_up = self.mod.get_function('conv_up')
+        fma_buf = self.mod.get_function('fma_buf')
+        thresh = self.mod.get_function('simple_thresh')
+        buf_abs = self.mod.get_function('buf_abs')
 
         memcpy = cuda.Memcpy2D()
         memcpy.src_pitch = sb
@@ -436,20 +480,34 @@ class Filtering(object):
         memcpy.set_src_device(self.scratch)
         memcpy.set_dst_device(self.hi)
 
-        STEPS=3
+        STEPS=4
+        SHIFTS = [(0, 0), (0, 1), (1, 1), (1, 0),
+                  (3, 0), (5, 0), (7, 0), (15, 0),
+                  (0, 3), (0, 5), (0, 7), (0, 15),
+                  (3, 3), (5, 5), (7, 7), (15, 15)]
 
-        print dim
+        #SHIFTS = [(0, 0)]
+        #SHIFTS = [(0, 0), (3, 0)]
+
         def th(x):
             x = np.int64(x*1e6)
             v = np.nonzero(x)[0]
             print np.array((v, x[v]))
 
-        for xo, yo in [(0, 0), (1, 1), (3, 3), (1, 3), (3, 1), (2, 2), (0, 0)]:
+        stream.synchronize()
+        cuda.memset_d32(ddst, int(0), bs / 4)
+
+        cuda.memcpy_dtod_async(self.aux, dsrc, bs, stream)
+
+        for xo, yo in SHIFTS:
             for i in range(STEPS):
                 xon, yon = (xo, yo) if i == 0 else (0, 0)
                 as_eff, ah_eff = dim.astride >> i, dim.ah >> i
                 dsc.width, dsc.height = as_eff, ah_eff
-                conv_down_src.set_address_2d(dsrc, dsc, sb)
+                if i == 0:
+                    conv_down_src.set_address_2d(self.aux, dsc, sb)
+                else:
+                    conv_down_src.set_address_2d(dsrc, dsc, sb)
                 conv_down(self.scratch, i32(dim.astride),
                           i32(as_eff), i32(ah_eff), i32(1), f32(xon), f32(yon),
                           block=bl, grid=gr(i, i+1),
@@ -462,14 +520,15 @@ class Filtering(object):
                           texrefs=[conv_down_src], stream=stream)
                 #cuda.memcpy_dtod_async(dsrc, self.scratch, bs, stream)
                 #th(cuda.from_device_like(self.scratch, q).T[128])
-            cuda.memcpy_dtod_async(ddst, dsrc, bs, stream)
 
-            thresh = self.mod.get_function('simple_thresh')
-            thresh(dsrc, i32(dim.astride), f32(1),
-                   i32(dim.astride >> STEPS), i32(dim.ah >> STEPS),
-                   block=bl, grid=gr(0, 0), stream=stream)
+            for i, t in enumerate([-0.05, -0.1, -0.3, -0.5]):
+                thresh(dsrc, i32(dim.astride), f32(t),
+                       i32(dim.astride >> (i+1)), i32(dim.ah >> (i+1)),
+                       block=bl, grid=gr(i, i), stream=stream)
+            #buf_abs(dsrc, i32(dim.astride),
+                   #block=bl, grid=gr(0, 0), stream=stream)
 
-            for i in list(reversed(range(STEPS))):
+            for i in reversed(range(STEPS)):
                 xon, yon = (xo, yo) if i == 0 else (0, 0)
                 dsc.width, dsc.height = dim.astride >> i, dim.ah >> (i+1)
                 conv_up_src_lo.set_address_2d(dsrc, dsc, sb)
@@ -494,7 +553,10 @@ class Filtering(object):
                 #cuda.memcpy_dtod_async(dsrc, self.scratch, bs, stream)
 
             #th(cuda.from_device_like(self.scratch, q).T[128])
-        cuda.memcpy_dtod_async(ddst, dsrc, bs, stream)
+            fma_buf(ddst, dsrc, i32(dim.astride), f32(1.0 / len(SHIFTS)),
+                    block=bl, grid=gr(0, 0), stream=stream)
+
+        cuda.memcpy_dtod_async(dsrc, ddst, bs, stream)
 
         #y = cuda.from_device_like(self.scratch, q)
         #print y[93:110,128].T
