@@ -2,6 +2,7 @@
 import numpy as np
 from numpy import float32 as f32, int32 as i32
 
+import pycuda.driver as cuda
 import pycuda.compiler
 from pycuda.gpuarray import vec
 
@@ -106,45 +107,142 @@ void logscale(float4 *pixbuf, float4 *outbuf, float k1, float k2) {
     outbuf[i] = pix;
 }
 
-// SS must be no greater than 4x
+__device__ void fmav(float4 &dst, float4 src, float scale) {
+    dst.x += src.x * scale;
+    dst.y += src.y * scale;
+    dst.z += src.z * scale;
+    dst.w += src.w * scale;
+}
+
+// The 7-tap filters are missing the leading zero to compensate for delay. I
+// have no frigging clue what the theory behind that is, but it seems to work.
+__constant__ float daub97_lo[9] = {
+     0.03782845550726404f, -0.023849465019556843f, -0.11062440441843718f,
+     0.37740285561283066f,  0.8526986790088938f,    0.37740285561283066f,
+    -0.11062440441843718f, -0.023849465019556843f,  0.03782845550726404f
+};
+__constant__ float daub97_hi[9] = {
+                           -0.06453888262869706f,   0.04068941760916406f,
+     0.41809227322161724f, -0.7884856164055829f,    0.41809227322161724f,
+     0.04068941760916406f, -0.06453888262869706f,   0.0f,
+};
+__constant__ float daub97_ilo[9] = {
+                           -0.06453888262869706f,  -0.04068941760916406f,
+     0.41809227322161724f,  0.7884856164055829f,    0.41809227322161724f,
+    -0.04068941760916406f, -0.06453888262869706f,   0.0f
+};
+__constant__ float daub97_ihi[9] = {
+    -0.03782845550726404f, -0.023849465019556843f,  0.11062440441843718f,
+     0.37740285561283066f, -0.8526986790088938f,    0.37740285561283066f,
+     0.11062440441843718f, -0.023849465019556843f, -0.03782845550726404f
+};
+
+/*
+#define S 0.7071067811f
+__constant__ float daub97[4][9] = {
+  { 0, 0, 0, S, S}, {0, 0, 0, -S, S}, {0, 0, 0, S, S}, {0, 0, 0, S, -S}};
+*/
+
+texture<float4, cudaTextureType2D> conv_down_src;
 __global__
-void blur_density_h(float *scratch, const float4 *pixbuf, int astride) {
-    // TODO: respect supersampling? configurable blur width?
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    if (x > astride) return;
-    int y = blockIdx.y;
-    const float *dsrc =
-        reinterpret_cast<const float*>(&pixbuf[astride * y]) + 3;
+void conv_down(float4 *dst, int astride, int as_eff, int ah_eff,
+               int vert, float xo, float yo) {
+    int xi = blockIdx.x * blockDim.x + threadIdx.x;
+    int yi = blockIdx.y;
 
-    float den = 0.0f;
+    float4 lo = make_float4(0, 0, 0, 0);
+    float4 hi = make_float4(0, 0, 0, 0);
 
-    den += dsrc[4*max(0, x-2)] * 0.00135f;
-    den += dsrc[4*max(0, x-1)] * 0.1573f;
-    den += dsrc[4*x] * 0.6827f;
-    den += dsrc[4*min(astride-1, x+1)] * 0.1573f;
-    den += dsrc[4*min(astride-1, x+2)] * 0.00135f;
-    scratch[astride * y + x] = den;
+    if (vert) {
+        if (xi >= as_eff) return;
+        float x = xi - xo, y = yi * 2 - yo;
+
+        #pragma unroll
+        for (int i = 0; i < 9; i++) {
+            float4 src = tex2D(conv_down_src, x, y);
+            fmav(lo, src, daub97_lo[i]);
+            fmav(hi, src, daub97_hi[i]);
+            y -= 1.0f;
+            if (y < 0) y += ah_eff;
+        }
+        dst[(yi + ah_eff / 2) * astride + xi] = hi;
+    } else {
+        if (xi >= as_eff / 2) return;
+        float x = xi * 2 - xo, y = yi - yo;
+
+        #pragma unroll
+        for (int i = 0; i < 9; i++) {
+            float4 src = tex2D(conv_down_src, x, y);
+            fmav(lo, src, daub97_lo[i]);
+            fmav(hi, src, daub97_hi[i]);
+            x -= 1.0f;
+            if (x < 0) x += as_eff;
+        }
+        dst[yi * astride + xi + as_eff / 2] = hi;
+    }
+    dst[yi * astride + xi] = lo;
+}
+
+texture<float4, cudaTextureType2D> conv_up_src_lo;
+texture<float4, cudaTextureType2D> conv_up_src_hi;
+__global__
+void conv_up(float4 *dst, int astride, int as_eff,
+             int vert, int xo, int yo) {
+    int xi = blockIdx.x * blockDim.x + threadIdx.x;
+    int yi = blockIdx.y;
+    if (xi >= as_eff) return;
+
+    float4 out = make_float4(0, 0, 0, 0);
+    if (vert) {
+        float x = xi, y = yi / 2;
+        for (int i = ~yi & 1; i < 9; i+=2) {
+            fmav(out, tex2D(conv_up_src_lo, x, y), daub97_ilo[8-i]);
+            fmav(out, tex2D(conv_up_src_hi, x, y), daub97_ihi[8-i]);
+            y += 1.0f;
+            if (y >= gridDim.y / 2) y = 0.0f;
+        }
+    } else {
+        float x = xi / 2, y = yi;
+        for (int i = ~xi & 1; i < 9; i+=2) {
+            fmav(out, tex2D(conv_up_src_lo, x, y), daub97_ilo[8-i]);
+            fmav(out, tex2D(conv_up_src_hi, x, y), daub97_ihi[8-i]);
+            x += 1.0f;
+            if (x >= as_eff / 2) x = 0.0f;
+        }
+    }
+    xi += xo;
+    yi += yo;
+    if (xi >= as_eff) xi -= as_eff;
+    if (yi >= gridDim.y) yi -= gridDim.y;
+    dst[yi * astride + xi] = out;
 }
 
 __global__
-void blur_density_v(float4 *pixbuf, const float *scratch,
-                    int astride, int aheight) {
-    // TODO: respect supersampling? configurable blur width?
+void simple_thresh(float4 *buf, int astride, float thr, int min_x, int min_y) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
-    if (x > astride) return;
     int y = blockIdx.y;
-    const float *dsrc = scratch + x;
+    if (x >= astride || (x < min_x && y < min_y)) return;
 
-    float den = 0.0f;
+    float4 val = buf[y * astride + x];
+    float fact = 1.0f - expf(powf(fabsf(val.w), 1.2) * -0.2f);
+    val.x *= fact;
+    val.y *= fact;
+    val.z *= fact;
+    val.w *= fact;
+    buf[y * astride + x] = val;
+}
 
-    den += dsrc[astride*max(0, y-2)] * 0.00135f;
-    den += dsrc[astride*max(0, y-1)] * 0.1573f;
-    den += dsrc[astride*y] * 0.6827f;
-    den += dsrc[astride*min(astride-1, y+1)] * 0.1573f;
-    den += dsrc[astride*min(astride-1, y+2)] * 0.00135f;
-
-    float *ddst = reinterpret_cast<float*>(&pixbuf[astride * y + x]) + 3;
-    *ddst = min(*ddst, den);
+__global__
+void fma_buf(float4 *dst, const float4 *sub, int astride, float scale) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int i = blockIdx.y * astride + x;
+    if (x >= astride) return;
+    float4 d = dst[i], s = sub[i];
+    d.x += s.x * scale;
+    d.y += s.y * scale;
+    d.z += s.z * scale;
+    d.w += s.w * scale;
+    dst[i] = d;
 }
 
 #define W 21        // Filter width (regardless of standard deviation chosen)
@@ -280,23 +378,136 @@ class Filtering(object):
 
     def __init__(self):
         self.init_mod()
+        self.scratch = None
 
     def blur_density(self, ddst, dscratch, dim, stream=None):
         blur_h = self.mod.get_function("blur_density_h")
         blur_h(dscratch, ddst, i32(dim.astride), block=(192, 1, 1),
-               grid=(dim.astride / 192, dim.ah), stream=stream)
+               grid=(1 + dim.astride / 192, dim.ah), stream=stream)
         blur_v = self.mod.get_function("blur_density_v")
         blur_v(ddst, dscratch, i32(dim.astride), i32(dim.ah), block=(192, 1, 1),
-               grid=(dim.astride / 192, dim.ah), stream=stream)
+               grid=(1 + dim.astride / 192, dim.ah), stream=stream)
 
     def de(self, ddst, dsrc, gnm, dim, tc, stream=None):
+        from cuburn.render import argset
+        print dim.ah
+        np.set_printoptions(linewidth=160, precision=4)
+
         k1 = f32(gnm.color.brightness(tc) * 268 / 256)
         # Old definition of area is (w*h/(s*s)). Since new scale 'ns' is now
         # s/w, new definition is (w*h/(s*s*w*w)) = (h/(s*s*w))
         area = dim.h / (gnm.camera.scale(tc) ** 2 * dim.w)
         k2 = f32(1.0 / (area * gnm.spp(tc)))
 
-        if gnm.de.radius == 0:
+        # Stride in bytes, buffer size
+        sb = 16 * dim.astride
+        bs = sb * dim.ah
+
+        if self.scratch is None:
+            self.scratch = cuda.mem_alloc(bs)
+            self.hi = cuda.mem_alloc(bs)
+        q = np.zeros((dim.ah, dim.astride * 4), dtype=np.float32)
+        q[100:102,128:1024] = 1
+        #cuda.memcpy_htod(dsrc, q)
+
+        dsc = argset(cuda.ArrayDescriptor(), height=dim.ah,
+                width=dim.astride, format=cuda.array_format.FLOAT,
+                num_channels=4)
+        bl = (192, 1, 1)
+        gr = lambda x, y: (1 + dim.astride / (192 << x), dim.ah >> y)
+
+        def get_tref(name):
+            tref = self.mod.get_texref(name)
+            tref.set_filter_mode(cuda.filter_mode.POINT)
+            tref.set_address_mode(0, cuda.address_mode.WRAP)
+            tref.set_address_mode(1, cuda.address_mode.WRAP)
+            print tref.get_address_mode(0)
+            print tref.get_address_mode(1)
+            return tref
+        conv_down_src, conv_up_src_lo, conv_up_src_hi = map(get_tref,
+                ['conv_down_src', 'conv_up_src_lo', 'conv_up_src_hi'])
+
+        conv_down = self.mod.get_function('conv_down')
+        conv_up = self.mod.get_function('conv_up')
+
+        memcpy = cuda.Memcpy2D()
+        memcpy.src_pitch = sb
+        memcpy.src_height = memcpy.dst_height = memcpy.height = dim.ah
+        memcpy.set_src_device(self.scratch)
+        memcpy.set_dst_device(self.hi)
+
+        STEPS=3
+
+        print dim
+        def th(x):
+            x = np.int64(x*1e6)
+            v = np.nonzero(x)[0]
+            print np.array((v, x[v]))
+
+        for xo, yo in [(0, 0), (1, 1), (3, 3), (1, 3), (3, 1), (2, 2), (0, 0)]:
+            for i in range(STEPS):
+                xon, yon = (xo, yo) if i == 0 else (0, 0)
+                as_eff, ah_eff = dim.astride >> i, dim.ah >> i
+                dsc.width, dsc.height = as_eff, ah_eff
+                conv_down_src.set_address_2d(dsrc, dsc, sb)
+                conv_down(self.scratch, i32(dim.astride),
+                          i32(as_eff), i32(ah_eff), i32(1), f32(xon), f32(yon),
+                          block=bl, grid=gr(i, i+1),
+                          texrefs=[conv_down_src], stream=stream)
+                #cuda.memcpy_dtod_async(self.scratch, dsrc, bs, stream)
+                conv_down_src.set_address_2d(self.scratch, dsc, sb)
+                conv_down(dsrc, i32(dim.astride),
+                          i32(as_eff), i32(ah_eff), i32(0), f32(xon), f32(yon),
+                          block=bl, grid=gr(i+1, i),
+                          texrefs=[conv_down_src], stream=stream)
+                #cuda.memcpy_dtod_async(dsrc, self.scratch, bs, stream)
+                #th(cuda.from_device_like(self.scratch, q).T[128])
+            cuda.memcpy_dtod_async(ddst, dsrc, bs, stream)
+
+            thresh = self.mod.get_function('simple_thresh')
+            thresh(dsrc, i32(dim.astride), f32(1),
+                   i32(dim.astride >> STEPS), i32(dim.ah >> STEPS),
+                   block=bl, grid=gr(0, 0), stream=stream)
+
+            for i in list(reversed(range(STEPS))):
+                xon, yon = (xo, yo) if i == 0 else (0, 0)
+                dsc.width, dsc.height = dim.astride >> i, dim.ah >> (i+1)
+                conv_up_src_lo.set_address_2d(dsrc, dsc, sb)
+                hi_addr = int(dsrc) + sb * (dim.ah >> (i+1))
+                conv_up_src_hi.set_address_2d(hi_addr, dsc, sb)
+                conv_up(self.scratch, i32(dim.astride), i32(dim.astride >> i),
+                        i32(1), i32(xon), i32(yon),
+                        block=bl, grid=gr(i, i), stream=stream,
+                        texrefs=[conv_up_src_lo, conv_up_src_hi])
+                sb_2 = sb >> (i+1)
+                memcpy.dst_pitch = sb_2
+                memcpy.width_in_bytes = sb_2
+                memcpy.src_x_in_bytes = sb_2
+                memcpy(stream)
+                dsc.width, dsc.height = dim.astride >> (i+1), dim.ah >> i
+                conv_up_src_lo.set_address_2d(self.scratch, dsc, sb)
+                conv_up_src_hi.set_address_2d(self.hi, dsc, sb>>(i+1))
+                conv_up(dsrc, i32(dim.astride), i32(dim.astride >> i),
+                        i32(0), i32(xon), i32(yon),
+                        block=bl, grid=gr(i, i), stream=stream,
+                        texrefs=[conv_up_src_lo, conv_up_src_hi])
+                #cuda.memcpy_dtod_async(dsrc, self.scratch, bs, stream)
+
+            #th(cuda.from_device_like(self.scratch, q).T[128])
+        cuda.memcpy_dtod_async(ddst, dsrc, bs, stream)
+
+        #y = cuda.from_device_like(self.scratch, q)
+        #print y[93:110,128].T
+
+        #print x[93:110,128].T + y[93:110,128].T
+
+        #fun = self.mod.get_function('fma_buf')
+        #fun(self.scratch, self.lo, i32(dim.astride), f32(1),
+            #block=bl, grid=gr, stream=stream)
+        #cuda.memcpy_dtod_async(ddst, self.scratch, bs, stream=stream)
+        #return
+
+        if gnm.de.radius(tc) == 0 or True:
             nbins = dim.ah * dim.astride
             fun = self.mod.get_function("logscale")
             t = fun(dsrc, ddst, k1, k2,
