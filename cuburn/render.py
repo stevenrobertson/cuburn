@@ -276,7 +276,6 @@ class Renderer(object):
 
             tref = self.mod.get_texref('palTex')
             tref.set_address_2d(d_palmem, dsc, 1024)
-            tref.set_format(cuda.array_format.UNSIGNED_INT8, 4)
             tref.set_flags(cuda.TRSF_NORMALIZED_COORDINATES)
             tref.set_filter_mode(cuda.filter_mode.LINEAR)
 
