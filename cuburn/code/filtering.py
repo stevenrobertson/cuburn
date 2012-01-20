@@ -147,78 +147,98 @@ void blur_density_v(float4 *pixbuf, const float *scratch,
     *ddst = min(*ddst, den);
 }
 
-#define W 15        // Filter width (regardless of standard deviation chosen)
-#define W2 7        // Half of filter width, rounded down
-#define FW 46       // Width of local result storage (NW+W2+W2)
+#define W 21        // Filter width (regardless of standard deviation chosen)
+#define W2 10       // Half of filter width, rounded down
+#define FW 53       // Width of local result storage (NW+W2+W2)
 #define FW2 (FW*FW)
 
 __global__
 void density_est(float4 *outbuf, const float4 *pixbuf,
                  float scale_coeff, float est_curve, float edge_clamp,
-                 float k1, float k2, int height, int stride, int ss) {
+                 float k1, float k2, int height, int stride) {
     __shared__ float de_r[FW2], de_g[FW2], de_b[FW2], de_a[FW2];
+
+    // The max supported radius is really 7, but the extra units simplify the
+    // logic in the bottlenecked section below.
+    __shared__ int minradius[32];
 
     for (int i = threadIdx.x + 32*threadIdx.y; i < FW2; i += 1024)
         de_r[i] = de_g[i] = de_b[i] = de_a[i] = 0.0f;
     __syncthreads();
 
     for (int imrow = threadIdx.y; imrow < height; imrow += 32) {
-        for (int ssx = 0; ssx < ss; ssx++) {
-            float ssxo = (0.5f + ssx) / ss;
-            for (int ssy = 0; ssy < ss; ssy++) {
-                float ssyo = (0.5f + ssy) / ss;
+        // Prepare the shared voting buffer. Syncing afterward is
+        // almost unnecessary but we do it to be safe
+        if (threadIdx.y == 0)
+            minradius[threadIdx.x] = 0.0f;
+        __syncthreads();
 
-                int col = blockIdx.x * 32 + threadIdx.x;
-                int in_idx = ss * (stride * (imrow * ss + ssy) + col) + ssx;
-                float4 in = pixbuf[in_idx];
-                // TODO: compute maximum filter radius needed across all warps
-                // to limit rounds in advance
-                float den = in.w;
+        int col = blockIdx.x * 32 + threadIdx.x;
+        int in_idx = stride * imrow + col;
+        float4 in = pixbuf[in_idx];
+        float den = in.w;
 
-                float ls = k1 * logf(1.0f + in.w * k2) / in.w;
+        float ls = k1 * logf(1.0f + in.w * k2) / in.w;
 
-                // The synchronization model used now prevents us from
-                // cutting early in the case of a zero point, so we just carry
-                // it along with us here
-                if (den <= 0) ls = 0.0f;
+        // The synchronization model used now prevents us from
+        // cutting early in the case of a zero point, so we just carry
+        // it along with us here
+        if (den <= 0) ls = 0.0f;
 
-                in.x *= ls;
-                in.y *= ls;
-                in.z *= ls;
-                in.w *= ls;
+        in.x *= ls;
+        in.y *= ls;
+        in.z *= ls;
+        in.w *= ls;
 
-                // Base index of destination for writes
-                int si = (threadIdx.y + W2) * FW + threadIdx.x + W2;
+        // Base index of destination for writes
+        int si = (threadIdx.y + W2) * FW + threadIdx.x + W2;
 
-                // Calculate scaling coefficient for the Gaussian kernel. This
-                // does not match with a normal Gaussian; it just fits with
-                // flam3's implementation.
-                float scale = powf(den * ss, est_curve) * scale_coeff;
-                scale = min(scale, 2.0f);
+        // Calculate scaling coefficient for the Gaussian kernel. This
+        // does not match with a normal Gaussian; it just fits with
+        // flam3's implementation.
+        float scale = powf(den, est_curve) * scale_coeff;
 
-                for (int jj = -W2; jj < W2; jj++) {
-                    float jjf = (jj - ssxo) * scale;
-                    float jdiff = erff(jjf + scale) - erff(jjf);
+        // Force a minimum blur radius. This works out to be a
+        // standard deviation of about 0.35px. Also force a maximum,
+        // which limits spherical error to about 2 quanta at 10 bit
+        // precision.
+        scale = max(0.30f, min(scale, 2.0f));
 
-                    for (int ii = -W2; ii < W2; ii++) {
-                        float iif = (ii - ssyo) * scale;
-                        float coeff = 0.25f * jdiff * (erff(iif + scale) - erff(iif));
+        // Determine a minimum radius for this image section.
+        int radius = (int) min(ceilf(2.12132f / scale), 10.0f);
+        if (den <= 0) radius = 0;
+        minradius[radius] = radius;
 
-                        int idx = si + FW * ii + jj;
-                        de_r[idx] += in.x * coeff;
-                        de_g[idx] += in.y * coeff;
-                        de_b[idx] += in.z * coeff;
-                        de_a[idx] += in.w * coeff;
-                        __syncthreads();
-                    }
-                }
+        // Go bottlenecked to compute the maximum radius in this block
+        __syncthreads();
+        if (threadIdx.y == 0) {
+            int blt = __ballot(minradius[threadIdx.x]);
+            minradius[0] = 31 - __clz(blt);
+        }
+        __syncthreads();
+
+        radius = minradius[0];
+
+        for (int jj = -radius; jj <= radius; jj++) {
+            float jjf = (jj - 0.5f) * scale;
+            float jdiff = erff(jjf + scale) - erff(jjf);
+
+            for (int ii = -radius; ii <= radius; ii++) {
+                float iif = (ii - 0.5f) * scale;
+                float coeff = 0.25f * jdiff * (erff(iif + scale) - erff(iif));
+
+                int idx = si + FW * ii + jj;
+                de_r[idx] += in.x * coeff;
+                de_g[idx] += in.y * coeff;
+                de_b[idx] += in.z * coeff;
+                de_a[idx] += in.w * coeff;
+                __syncthreads();
             }
         }
-
         __syncthreads();
         // TODO: could coalesce this, but what a pain
         for (int i = threadIdx.x; i < FW; i += 32) {
-            int out_idx = stride * imrow + blockIdx.x * 32 + i + W2;
+            int out_idx = stride * imrow + blockIdx.x * 32 + i;
             int si = threadIdx.y * FW + i;
             float *out = reinterpret_cast<float*>(&outbuf[out_idx]);
             atomicAdd(out,   de_r[si]);
@@ -288,11 +308,11 @@ class Filtering(object):
             edge_clamp = f32(1.2)
             fun = self.mod.get_function("density_est")
             fun(ddst, dsrc, scale_coeff, est_curve, edge_clamp, k1, k2,
-                i32(dim.ah / dim.ss), i32(dim.astride / dim.ss), i32(dim.ss),
-                block=(32, 32, 1), grid=(dim.aw/(32*dim.ss), 1), stream=stream)
+                i32(dim.ah), i32(dim.astride),
+                block=(32, 32, 1), grid=(dim.aw/32, 1), stream=stream)
 
     def colorclip(self, dbuf, gnm, dim, tc, blend, stream=None):
-        nbins = dim.ah * dim.astride / dim.ss ** 2
+        nbins = dim.ah * dim.astride
 
         # TODO: implement integration over cubic splines?
         gam = f32(1 / gnm.color.gamma(tc))
