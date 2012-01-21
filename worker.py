@@ -113,7 +113,7 @@ def work(server):
 
         push_frame(r, riter.send(((sid, sidx, ftag), float(ftime))))
 
-def iter_genomes(prof, gpaths):
+def iter_genomes(prof, gpaths, pname='540p'):
     """
     Walk a list of genome paths, yielding them in an order suitable for
     the `genomes` argument of `create_jobs()`.
@@ -125,7 +125,7 @@ def iter_genomes(prof, gpaths):
             gsrc = fp.read()
         gnm = genome.Genome(json.loads(gsrc))
         err, times = gnm.set_profile(prof)
-        odir = 'out/540p/%s/untracked' % gname
+        odir = 'out/%s/%s/untracked' % (pname, gname)
         gtimes = []
         for i, t in enumerate(times):
             opath = os.path.join(odir, '%05d.jpg' % (i+1))
@@ -230,8 +230,9 @@ def client(ppath, gpaths):
     with open(ppath) as fp:
         psrc = fp.read()
     prof = json.loads(psrc)
+    pname = os.path.basename(ppath).rsplit('.', 1)[0]
 
-    jobiter = create_jobs(r, psrc, iter_genomes(prof, gpaths))
+    jobiter = create_jobs(r, psrc, iter_genomes(prof, gpaths, pname))
     for sidx, gpu_time, ftag, jpg in run_jobs(r, rev, jobiter):
         with open(ftag, 'w') as fp:
             fp.write(jpg)
