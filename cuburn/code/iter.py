@@ -240,6 +240,7 @@ void iter(
     if (threadIdx.y == 0 && threadIdx.x < {{NWARPS*2}})
         cosel[threadIdx.x] = mwc_next_01(rctx);
     __syncthreads();
+    int last_xf_used = 0;
 {{endif}}
 
     bool fuse = false;
@@ -285,12 +286,16 @@ void iter(
         {{precalc_densities(pcp, std_xforms)}}
         float xfsel = cosel[threadIdx.y];
 
-        {{for xform_name in std_xforms[:-1]}}
+        {{for xform_idx, xform_name in enumerate(std_xforms[:-1])}}
         if (xfsel <= {{pcp['den_'+xform_name]}}) {
             apply_xf_{{xform_name}}(x, y, color, rctx);
+            last_xf_used = {{xform_idx}};
         } else
         {{endfor}}
+        {
             apply_xf_{{std_xforms[-1]}}(x, y, color, rctx);
+            last_xf_used = {{len(std_xforms)-1}};
+        }
 
         // Rotate points between threads.
         int swr = threadIdx.y + threadIdx.x
@@ -298,7 +303,7 @@ void iter(
         int sw = (swr * 32 + threadIdx.x) & {{NTHREADS-1}};
         int sr = threadIdx.y * 32 + threadIdx.x;
 
-        swap[sw] = fuse ? 1.0f : 0.0f;
+        swap[sw] = fuse ? -1.0f : last_xf_used;
         swap[sw+{{NTHREADS}}] = x;
         swap[sw+{{2*NTHREADS}}] = y;
         swap[sw+{{3*NTHREADS}}] = color;
@@ -308,7 +313,8 @@ void iter(
         if (threadIdx.y == 0 && threadIdx.x < {{NWARPS*2}})
             cosel[threadIdx.x] = mwc_next_01(rctx);
 
-        fuse = swap[sr];
+        last_xf_used = swap[sr];
+        fuse = (last_xf_used < 0);
         x = swap[sr+{{NTHREADS}}];
         y = swap[sr+{{2*NTHREADS}}];
         color = swap[sr+{{3*NTHREADS}}];
@@ -352,7 +358,8 @@ void iter(
             continue;
         }
 
-        uint32_t i = iy * acc_size.astride + ix;
+        uint32_t i = (last_xf_used * acc_size.aheight + iy)
+                   * acc_size.astride + ix;
 {{if info.acc_mode == 'atomic'}}
         asm volatile ({{crep("""
 {

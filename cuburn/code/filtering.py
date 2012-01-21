@@ -2,6 +2,7 @@
 import numpy as np
 from numpy import float32 as f32, int32 as i32
 
+import pycuda.driver as cuda
 import pycuda.compiler
 from pycuda.gpuarray import vec
 
@@ -266,6 +267,57 @@ void density_est(float4 *outbuf, const float4 *pixbuf,
         __syncthreads();
     }
 }
+
+__global__
+void fma_buf(float4 *dst, const float4 *sub, int astride, float scale) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int i = y * astride + x;
+    float4 d = dst[i], s = sub[i];
+    d.x += s.x * scale;
+    d.y += s.y * scale;
+    d.z += s.z * scale;
+    d.w += s.w * scale;
+    dst[i] = d;
+}
+
+texture<float4, cudaTextureType2D> bilateral_src;
+
+__global__
+void bilateral(float4 *dst, int astride, float dstd, float rstd) {
+    int xi = blockIdx.x * blockDim.x + threadIdx.x;
+    int yi = blockIdx.y * blockDim.y + threadIdx.y;
+    float x = xi, y = yi;
+
+    const float r = 9.0f;
+
+    float cen_den = tex2D(bilateral_src, x, y).w;
+    float4 out = make_float4(0, 0, 0, 0);
+    float weightsum = 0.0f;
+
+    for (float i = -r; i <= r; i++) {
+        for (float j = -r; j <= r; j++) {
+            float4 pix = tex2D(bilateral_src, x + i, y + j);
+            float den_diff = log2f(fabsf(pix.w - cen_den) + 1.0f);
+            float factor = expf(i * i * dstd)
+                         * expf(j * j * dstd)
+                         * expf(den_diff * den_diff * rstd);
+            out.x += factor * pix.x;
+            out.y += factor * pix.y;
+            out.z += factor * pix.z;
+            out.w += factor * pix.w;
+            weightsum += factor;
+        }
+    }
+    float weightrcp = 1.0f / weightsum;
+    out.x *= weightrcp;
+    out.y *= weightrcp;
+    out.z *= weightrcp;
+    out.w *= weightrcp;
+
+    dst[yi * astride + xi] = out;
+}
+
 '''
 
 class Filtering(object):
@@ -289,17 +341,56 @@ class Filtering(object):
         blur_v(ddst, dscratch, i32(dim.astride), i32(dim.ah), block=(192, 1, 1),
                grid=(dim.astride / 192, dim.ah), stream=stream)
 
-    def de(self, ddst, dsrc, gnm, dim, tc, stream=None):
+    def de(self, ddst, dsrc, gnm, dim, tc, nxf, stream=None):
         k1 = f32(gnm.color.brightness(tc) * 268 / 256)
         # Old definition of area is (w*h/(s*s)). Since new scale 'ns' is now
         # s/w, new definition is (w*h/(s*s*w*w)) = (h/(s*s*w))
         area = dim.h / (gnm.camera.scale(tc) ** 2 * dim.w)
         k2 = f32(1.0 / (area * gnm.spp(tc)))
 
-        if gnm.de.radius == 0:
+        if gnm.de.radius(tc) == 0 or True:
+            # Stride in bytes, and buffer size
+            sb = 16 * dim.astride
+            bs = sb * dim.ah
+
+
+            dsc = argset(cuda.ArrayDescriptor(), height=dim.ah,
+                    width=dim.astride, format=cuda.array_format.FLOAT,
+                    num_channels=4)
+            tref = self.mod.get_texref('bilateral_src')
+            tref.set_filter_mode(cuda.filter_mode.POINT)
+            tref.set_address_mode(0, cuda.address_mode.WRAP)
+            tref.set_address_mode(1, cuda.address_mode.WRAP)
+
+            bilateral = self.mod.get_function('bilateral')
+            fma_buf = self.mod.get_function('fma_buf')
+            for i in range(nxf):
+                tref.set_address_2d(int(dsrc) + bs * i, dsc, sb)
+                bilateral(ddst, i32(dim.astride), f32(-0.1), f32(-0.1),
+                        block=(32, 8, 1), grid=(dim.astride / 32, dim.ah / 8),
+                        texrefs=[tref], stream=stream)
+                if i == 0:
+                    cuda.memcpy_dtod_async(dsrc, ddst, bs, stream)
+                else:
+                    fma_buf(dsrc, ddst, i32(dim.astride), f32(1.0),
+                        block=(32, 8, 1), grid=(dim.astride / 32, dim.ah / 8),
+                        stream=stream)
+
+            tref.set_address_2d(dsrc, dsc, sb)
+            ROUNDS = 3
+
+            a, b = dsrc, ddst
+            for i in range(ROUNDS):
+                bilateral(b, i32(dim.astride), f32(-0.1), f32(-0.2),
+                          block=(32, 8, 1), grid=(dim.astride / 32, dim.ah / 8),
+                          texrefs=[tref], stream=stream)
+                a, b = b, a
+
             nbins = dim.ah * dim.astride
             fun = self.mod.get_function("logscale")
-            t = fun(dsrc, ddst, k1, k2,
+            # This function only looks at one pixel, so using the same
+            # parameter for input and output is OK (if e.g. ROUNDS is odd)
+            t = fun(a, ddst, k1, k2,
                     block=(512, 1, 1), grid=(nbins/512, 1), stream=stream)
         else:
             scale_coeff = f32(1.0 / gnm.de.radius(tc))

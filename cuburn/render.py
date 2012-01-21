@@ -185,11 +185,11 @@ class Renderer(object):
         cuda.memcpy_htod_async(d_acc_size, u32(list(dim)), write_stream)
 
         nbins = astride * aheight
-        # Extra padding in accum helps with write_shmem overruns
-        d_accum = cuda.mem_alloc(16 * nbins + (1<<16))
-        d_out = cuda.mem_alloc(16 * aheight * astride)
+        nxf = len(filter(lambda g: g != 'final', genome.xforms))
+        d_accum = cuda.mem_alloc(16 * nbins * nxf)
+        d_out = cuda.mem_alloc(16 * nbins)
         if self.acc_mode == 'atomic':
-            d_atom = cuda.mem_alloc(8 * nbins)
+            d_atom = cuda.mem_alloc(8 * nbins * nxf)
             flush_fun = self.mod.get_function("flush_atom")
 
         obuf_copy = util.argset(cuda.Memcpy2D(),
@@ -310,9 +310,11 @@ class Renderer(object):
             #for i, n in zip(d_temp[5], self._iter.packer.packed):
                 #print '%60s %g' % ('_'.join(n), i)
 
-            util.BaseCode.fill_dptr(self.mod, d_accum, 4 * nbins, write_stream)
+            util.BaseCode.fill_dptr(self.mod, d_accum, 4 * nbins * nxf,
+                                    write_stream)
             if self.acc_mode == 'atomic':
-                util.BaseCode.fill_dptr(self.mod, d_atom, 2 * nbins, write_stream)
+                util.BaseCode.fill_dptr(self.mod, d_atom, 2 * nbins * nxf,
+                                        write_stream)
             nrounds = int( (genome.spp(tc) * width * height)
                          / (ntemporal_samples * 256 * 256) ) + 1
             if self.acc_mode == 'deferred':
@@ -334,14 +336,14 @@ class Renderer(object):
                 iter_fun(*args, block=(32, self._iter.NTHREADS/32, 1),
                          grid=(ntemporal_samples, nrounds), stream=iter_stream)
                 if self.acc_mode == 'atomic':
-                    nblocks = int(np.ceil(np.sqrt(nbins/float(512))))
-                    flush_fun(u64(d_accum), u64(d_atom), i32(nbins),
+                    nblocks = int(np.ceil(np.sqrt(nbins*nxf/float(512))))
+                    flush_fun(u64(d_accum), u64(d_atom), i32(nbins*nxf),
                               block=(512, 1, 1), grid=(nblocks, nblocks),
                               stream=iter_stream)
 
             util.BaseCode.fill_dptr(self.mod, d_out, 4 * nbins, filt_stream)
             _sync_stream(filt_stream, write_stream)
-            filt.de(d_out, d_accum, genome, dim, tc, stream=filt_stream)
+            filt.de(d_out, d_accum, genome, dim, tc, nxf, stream=filt_stream)
             _sync_stream(write_stream, filt_stream)
             filt.colorclip(d_out, genome, dim, tc, blend, stream=filt_stream)
             obuf_copy.set_dst_host(h_out_a)
