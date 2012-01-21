@@ -11,6 +11,11 @@ def crep(s):
         s = s.encode('utf-8')
     return '"%s"' % s.encode("string_escape")
 
+def argset(obj, **kwargs):
+    for k, v in kwargs.items():
+        setattr(obj, k, v)
+    return obj
+
 class Template(tempita.Template):
     default_namespace = tempita.Template.default_namespace.copy()
 Template.default_namespace.update({'np': np, 'crep': crep})

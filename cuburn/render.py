@@ -25,11 +25,6 @@ Dimensions = namedtuple('Dimensions', 'w h aw ah astride')
 def _sync_stream(dst, src):
     dst.wait_for_event(cuda.Event(cuda.event_flags.DISABLE_TIMING).record(src))
 
-def argset(obj, **kwargs):
-    for k, v in kwargs.items():
-        setattr(obj, k, v)
-    return obj
-
 class Renderer(object):
     """
     Control structure for rendering a series of frames.
@@ -197,7 +192,7 @@ class Renderer(object):
             d_atom = cuda.mem_alloc(8 * nbins)
             flush_fun = self.mod.get_function("flush_atom")
 
-        obuf_copy = argset(cuda.Memcpy2D(),
+        obuf_copy = util.argset(cuda.Memcpy2D(),
             src_y=self.gutter, src_x_in_bytes=16*self.gutter,
             src_pitch=16*astride, dst_pitch=16*width,
             width_in_bytes=16*width, height=height)
@@ -260,8 +255,9 @@ class Renderer(object):
 
         if self.acc_mode in ('deferred', 'atomic'):
             palette_fun = self.mod.get_function("interp_palette_flat")
-            dsc = argset(cuda.ArrayDescriptor3D(), height=self.palette_height,
-                    width=256, depth=0, format=cuda.array_format.SIGNED_INT32,
+            dsc = util.argset(cuda.ArrayDescriptor3D(),
+                    height=self.palette_height, width=256, depth=0,
+                    format=cuda.array_format.SIGNED_INT32,
                     num_channels=2, flags=cuda.array3d_flags.SURFACE_LDST)
             palarray = cuda.Array(dsc)
 
@@ -269,8 +265,9 @@ class Renderer(object):
             tref.set_array(palarray, 0)
         else:
             palette_fun = self.mod.get_function("interp_palette")
-            dsc = argset(cuda.ArrayDescriptor(), height=self.palette_height,
-                    width=256, format=cuda.array_format.UNSIGNED_INT8,
+            dsc = util.argset(cuda.ArrayDescriptor(),
+                    height=self.palette_height, width=256,
+                    format=cuda.array_format.UNSIGNED_INT8,
                     num_channels=4)
             d_palmem = cuda.mem_alloc(256 * self.palette_height * 4)
 
