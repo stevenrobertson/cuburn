@@ -198,6 +198,10 @@ class Renderer(object):
         if self.acc_mode == 'atomic':
             d_atom = cuda.mem_alloc(8 * nbins * nxf)
             flush_fun = self.mod.get_function("flush_atom")
+        else:
+            # d_atom is also used as a scratch buffer during filtering, so we
+            # need it at least this size
+            d_atom = cuda.mem_alloc(4 * nbins)
 
         obuf_copy = util.argset(cuda.Memcpy2D(),
             src_y=self.gutter, src_x_in_bytes=16*self.gutter,
@@ -350,7 +354,8 @@ class Renderer(object):
 
             util.BaseCode.fill_dptr(self.mod, d_out, 4 * nbins, filt_stream)
             _sync_stream(filt_stream, write_stream)
-            filt.de(d_out, d_accum, genome, dim, tc, nxf, stream=filt_stream)
+            filt.de(d_out, d_accum, d_atom, genome, dim, tc, nxf,
+                    stream=filt_stream)
             _sync_stream(write_stream, filt_stream)
             filt.colorclip(d_out, genome, dim, tc, blend, stream=filt_stream)
             obuf_copy.set_dst_host(h_out_a)
