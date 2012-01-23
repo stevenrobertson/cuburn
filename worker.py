@@ -58,7 +58,7 @@ def push_frame(r, out):
     noalpha = out.buf[:,:,:3]
     img = scipy.misc.toimage(noalpha, cmin=0, cmax=1)
     buf = StringIO()
-    img.save(buf, 'jpeg', quality=95)
+    img.save(buf, 'jpeg', quality=98)
     buf.seek(0)
     head = ' '.join([sidx, str(out.gpu_time), ftag])
     r.rpush(sid + ':queue', head + '\0' + buf.read())

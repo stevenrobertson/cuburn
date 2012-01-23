@@ -36,7 +36,7 @@ profiles = {
 def save(rframe):
     noalpha = rframe.buf[:,:,:3]
     img = scipy.misc.toimage(noalpha, cmin=0, cmax=1)
-    img.save(rframe.idx, quality=95)
+    img.save(rframe.idx, quality=98)
     print rframe.idx, rframe.gpu_time
 
 def main(args, prof):
