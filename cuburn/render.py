@@ -54,6 +54,12 @@ class Renderer(object):
     # Accumulation mode. Leave it at 'atomic' for now.
     acc_mode = 'atomic'
 
+    # At most this many separate buffers for xforms will be allocated, after
+    # which further xforms will wrap to the first when writing. Currently it
+    # is compiled in, so power-of-two and no runtime maximization. Current
+    # value of 16 fits into a 1GB card at 1080p.
+    max_nxf = 16
+
     # TODO
     chaos_used = False
 
@@ -186,6 +192,7 @@ class Renderer(object):
 
         nbins = astride * aheight
         nxf = len(filter(lambda g: g != 'final', genome.xforms))
+        nxf = min(nxf, self.max_nxf)
         d_accum = cuda.mem_alloc(16 * nbins * nxf)
         d_out = cuda.mem_alloc(16 * nbins)
         if self.acc_mode == 'atomic':

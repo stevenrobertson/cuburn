@@ -228,9 +228,7 @@ void iter(
     float4 old_point = points[this_rb_idx];
     float x = old_point.x, y = old_point.y, color = old_point.z;
 
-{{if info.chaos_used}}
-    int last_xf_used = 0;
-{{else}}
+{{if not info.chaos_used}}
     // Shared memory size can be reduced by a factor of four using a slower
     // 4-stage reduce, but on Fermi hardware shmem use isn't a bottleneck
     __shared__ float swap[{{4*NTHREADS}}];
@@ -240,10 +238,10 @@ void iter(
     if (threadIdx.y == 0 && threadIdx.x < {{NWARPS*2}})
         cosel[threadIdx.x] = mwc_next_01(rctx);
     __syncthreads();
-    int last_xf_used = 0;
 {{endif}}
 
     bool fuse = false;
+    int last_xf_used = 0;
 
     // This condition checks for large numbers, Infs, and NaNs.
     if (!(-(fabsf(x) + fabsf(y)) > -1.0e6f)) {
@@ -358,8 +356,8 @@ void iter(
             continue;
         }
 
-        uint32_t i = (last_xf_used * acc_size.aheight + iy)
-                   * acc_size.astride + ix;
+        uint32_t ibase = (last_xf_used % {{info.max_nxf}}) * acc_size.aheight;
+        uint32_t i = (ibase + iy) * acc_size.astride + ix;
 {{if info.acc_mode == 'atomic'}}
         asm volatile ({{crep("""
 {
