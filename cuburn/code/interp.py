@@ -370,7 +370,7 @@ float4 interp_color(const float *times, const float4 *sources, float time) {
 
     float4 left  = sources[blockDim.x * (idx - 1) + threadIdx.x];
     float4 right = sources[blockDim.x * (idx)     + threadIdx.x];
-    float3 rgb;
+    float3 yuv;
 
     float3 l3 = make_float3(left.x, left.y, left.z);
     float3 r3 = make_float3(right.x, right.y, right.z);
@@ -395,10 +395,8 @@ float4 interp_color(const float *times, const float4 *sources, float time) {
     if (hsv.x < 0.0f)
         hsv.x += 6.0f;
 
-    rgb = hsv2rgb(hsv);
+    yuv = rgb2yuv(hsv2rgb(hsv));
 {{elif mode.startswith('yuv')}}
-    float3 yuv;
-
     {{if mode == 'yuv'}}
     float3 lyuv = rgb2yuv(l3);
     float3 ryuv = rgb2yuv(r3);
@@ -412,11 +410,12 @@ float4 interp_color(const float *times, const float4 *sources, float time) {
     yuv.y = radius * cosf(angle);
     yuv.z = radius * sinf(angle);
     {{endif}}
-
-    rgb = yuv2rgb(yuv);
 {{endif}}
 
-    return make_float4(rgb.x, rgb.y, rgb.z, left.w * lf + right.w * rf);
+    yuv.y += 0.5f;
+    yuv.z += 0.5f;
+
+    return make_float4(yuv.x, yuv.y, yuv.z, left.w * lf + right.w * rf);
 }
 
 __global__
@@ -424,13 +423,13 @@ void interp_palette(uchar4 *outs,
         const float *times, const float4 *sources,
         float tstart, float tstep) {
     float time = tstart + blockIdx.x * tstep;
-    float4 rgba = interp_color(times, sources, time);
+    float4 yuva = interp_color(times, sources, time);
 
     uchar4 out;
-    out.x = rgba.x * 255.0f;
-    out.y = rgba.y * 255.0f;
-    out.z = rgba.z * 255.0f;
-    out.w = rgba.w * 255.0f;
+    out.x = yuva.x * 255.0f;
+    out.y = yuva.y * 255.0f;
+    out.z = yuva.z * 255.0f;
+    out.w = yuva.w * 255.0f;
     outs[blockDim.x * blockIdx.x + threadIdx.x] = out;
 }
 
@@ -443,16 +442,16 @@ void interp_palette_flat(mwc_st *rctxs,
     mwc_st rctx = rctxs[gid];
 
     float time = tstart + blockIdx.x * tstep;
-    float4 rgba = interp_color(times, sources, time);
+    float4 yuva = interp_color(times, sources, time);
 
-    // TODO: use YUV; pack Y at full precision, UV at quarter
+    // TODO: pack Y at full precision, UV at quarter
     uint2 out;
 
-    uint32_t r = min(255, (uint32_t) (rgba.x * 255.0f + 0.49f * mwc_next_11(rctx)));
-    uint32_t g = min(255, (uint32_t) (rgba.y * 255.0f + 0.49f * mwc_next_11(rctx)));
-    uint32_t b = min(255, (uint32_t) (rgba.z * 255.0f + 0.49f * mwc_next_11(rctx)));
-    out.y = (1 << 22) | (r << 4);
-    out.x = (g << 18) | b;
+    uint32_t y = min(255, (uint32_t) (yuva.x * 255.0f + 0.49f * mwc_next_11(rctx)));
+    uint32_t u = min(255, (uint32_t) (yuva.y * 255.0f + 0.49f * mwc_next_11(rctx)));
+    uint32_t v = min(255, (uint32_t) (yuva.z * 255.0f + 0.49f * mwc_next_11(rctx)));
+    out.y = (1 << 22) | (y << 4);
+    out.x = (u << 18) | v;
     surf2Dwrite(out, flatpal, 8 * threadIdx.x, blockIdx.x);
     rctxs[gid] = rctx;
 }

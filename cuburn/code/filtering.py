@@ -25,6 +25,12 @@ void colorclip(float4 *pixbuf, float gamma, float vibrance, float highpow,
         pixbuf[i] = make_float4(bkgd.x, bkgd.y, bkgd.z, 0.0f);
         return;
     }
+    pix.y -= 0.5f * pix.w;
+    pix.z -= 0.5f * pix.w;
+    float3 tmp = yuv2rgb(make_float3(pix.x, pix.y, pix.z));
+    pix.x = tmp.x;
+    pix.y = tmp.y;
+    pix.z = tmp.z;
 
     pix.x = fmaxf(0.0f, pix.x);
     pix.y = fmaxf(0.0f, pix.y);

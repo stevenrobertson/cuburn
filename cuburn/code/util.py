@@ -154,8 +154,8 @@ void write_half(float &xy, float x, float y, float den) {
 }
 
 
-/* This conversion uses the JPEG full-range standard, though it does *not* add
- * an offset to UV to bias them into the positive regime. */
+/* This conversion uses the JPEG full-range standard. Note that UV have range
+ * [-0.5, 0.5], so consider biasing the results. */
 __device__
 float3 rgb2yuv(float3 rgb) {
     return make_float3(

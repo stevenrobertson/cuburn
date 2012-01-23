@@ -361,9 +361,15 @@ void iter(
 {{if info.acc_mode == 'atomic'}}
         asm volatile ({{crep("""
 {
+    // To prevent overflow, we need to flush each pixel before the density
+    // wraps at 1024 points. This atomic segment performs writes to the
+    // integer buffer, occasionally checking the results. If they exceed a
+    // threshold, it zeros that cell in the integer buffer, converts the
+    // former contents to floats, and adds them to the float4 buffer.
+
     .reg .pred  p;
-    .reg .u32   off, color, hi, lo, d, r, g, b;
-    .reg .f32   colorf, rf, gf, bf, df;
+    .reg .u32   off, color, hi, lo, d, y, u, v;
+    .reg .f32   colorf, yf, uf, vf, df;
     .reg .u64   ptr, val;
 
     // TODO: coord dithering better, or pre-supersampled palette?
@@ -371,38 +377,59 @@ void iter(
     cvt.rni.u32.f32     color,  colorf;
     shl.b32             color,  color,  3;
 
+    // Load the pre-packed 64-bit uint from the palette surf
     suld.b.2d.v2.b32.clamp      {lo, hi},   [flatpal, {color, %2}];
     mov.b64             val,    {lo, hi};
+
+    // Calculate the output address in the atomic integer accumulator
     shl.b32             off,    %3,     3;
     cvt.u64.u32         ptr,    off;
     add.u64             ptr,    ptr,    %4;
+
+    // 97% of the time, do an atomic add, then jump to the end without
+    // stalling the thread waiting for the data value
     setp.le.f32         p,      %5,     0.97;
 @p  red.global.add.u64  [ptr],  val;
 @p  bra                 oflow_end;
+
+    // 3% of the time, do the atomic add, and wait for the results
     atom.global.add.u64 val,    [ptr],  val;
     mov.b64             {lo, hi},       val;
+
+    // If the density is less than 256, jump to the end
     setp.lo.u32         p,      hi,     (256 << 22);
 @p  bra                 oflow_end;
+
+    // Atomically swap the integer cell with 0 and read its current value
     atom.global.exch.b64 val,   [ptr],  0;
     mov.b64             {lo, hi},       val;
+
+    // If the integer cell is zero, another thread has captured the full value
+    // in between the first atomic read and the second, so we can skip to the
+    // end again.
+    setp.eq.u32         p,      hi,     0;
+@p  bra                 oflow_end;
+
+    // Extract the values from the packed integer, convert to floats, and add
+    // them to the floating-point buffer.
     shr.u32             d,      hi,     22;
-    bfe.u32             r,      hi,     4,      18;
-    bfe.u32             g,      lo,     18,     14;
-    bfi.b32             g,      hi,     g,      14,     4;
-    and.b32             b,      lo,     ((1<<18)-1);
-    cvt.rn.f32.u32      rf,     r;
-    cvt.rn.f32.u32      gf,     g;
-    cvt.rn.f32.u32      bf,     b;
+    bfe.u32             y,      hi,     4,      18;
+    bfe.u32             u,      lo,     18,     14;
+    bfi.b32             u,      hi,     u,      14,     4;
+    and.b32             v,      lo,     ((1<<18)-1);
+    cvt.rn.f32.u32      yf,     y;
+    cvt.rn.f32.u32      uf,     u;
+    cvt.rn.f32.u32      vf,     v;
     cvt.rn.f32.u32      df,     d;
-    mul.rn.ftz.f32      rf,     rf,     (1.0/255.0);
-    mul.rn.ftz.f32      gf,     gf,     (1.0/255.0);
-    mul.rn.ftz.f32      bf,     bf,     (1.0/255.0);
+    mul.rn.ftz.f32      yf,     yf,     (1.0/255.0);
+    mul.rn.ftz.f32      uf,     uf,     (1.0/255.0);
+    mul.rn.ftz.f32      vf,     vf,     (1.0/255.0);
     shl.b32             off,    %3,     4;
     cvt.u64.u32         ptr,    off;
     add.u64             ptr,    ptr,    %6;
-    red.global.add.f32  [ptr],          rf;
-    red.global.add.f32  [ptr+4],        gf;
-    red.global.add.f32  [ptr+8],        bf;
+    red.global.add.f32  [ptr],          yf;
+    red.global.add.f32  [ptr+4],        uf;
+    red.global.add.f32  [ptr+8],        vf;
     red.global.add.f32  [ptr+12],       df;
 oflow_end:
 }
@@ -445,9 +472,9 @@ void flush_atom(uint64_t out_ptr, uint64_t atom_ptr, int nbins) {
     if (i >= nbins) return;
     asm volatile ({{crep("""
 {
-    .reg .u32   off, hi, lo, d, r, g, b;
+    .reg .u32   off, hi, lo, d, y, u, v;
     .reg .u64   val, ptr;
-    .reg .f32   rf, gf, bf, df, rg, gg, bg, dg;
+    .reg .f32   yf, uf, vf, df, yg, ug, vg, dg;
 
     // TODO: use explicit movs to handle this
     shl.b32             off,    %0,     3;
@@ -457,21 +484,22 @@ void flush_atom(uint64_t out_ptr, uint64_t atom_ptr, int nbins) {
     shl.b32             off,    %0,     4;
     cvt.u64.u32         ptr,    off;
     add.u64             ptr,    ptr,    %2;
-    ld.global.v4.f32    {rg,gg,bg,dg},  [ptr];
+    ld.global.v4.f32    {yg,ug,vg,dg},  [ptr];
     shr.u32             d,      hi,     22;
-    bfe.u32             r,      hi,     4,      18;
-    bfe.u32             g,      lo,     18,     14;
-    bfi.b32             g,      hi,     g,      14,     4;
-    and.b32             b,      lo,     ((1<<18)-1);
-    cvt.rn.f32.u32      rf,     r;
-    cvt.rn.f32.u32      gf,     g;
-    cvt.rn.f32.u32      bf,     b;
+    bfe.u32             y,      hi,     4,      18;
+    bfe.u32             u,      lo,     18,     14;
+    bfi.b32             u,      hi,     u,      14,     4;
+    and.b32             v,      lo,     ((1<<18)-1);
+    cvt.rn.f32.u32      yf,     y;
+    cvt.rn.f32.u32      uf,     u;
+    cvt.rn.f32.u32      vf,     v;
     cvt.rn.f32.u32      df,     d;
-    fma.rn.ftz.f32      rg,     rf,     (1.0/255.0),    rg;
-    fma.rn.ftz.f32      gg,     gf,     (1.0/255.0),    gg;
-    fma.rn.ftz.f32      bg,     bf,     (1.0/255.0),    bg;
+    fma.rn.ftz.f32      yg,     yf,     (1.0/255.0),    yg;
+    fma.rn.ftz.f32      ug,     uf,     (1.0/255.0),    ug;
+    fma.rn.ftz.f32      vg,     vf,     (1.0/255.0),    vg;
+
     add.rn.ftz.f32      dg,     df,     dg;
-    st.global.v4.f32    [ptr],  {rg,gg,bg,dg};
+    st.global.v4.f32    [ptr],  {yg,ug,vg,dg};
 }
     """)}}  ::  "r"(i), "l"(atom_ptr), "l"(out_ptr));
 }
@@ -640,4 +668,3 @@ oflow_write_end:
                 NWARPS = self.NTHREADS / 32,
                 std_xforms = [n for n in sorted(genome.xforms) if n != 'final'],
                 **globals())
-
