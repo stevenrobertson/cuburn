@@ -260,7 +260,7 @@ void bilateral(float4 *dst, float sstd, float cstd,
             // Oh, this is ridiculous. But it works!
             float factor = spa_coefs[abs(i)]  * spa_coefs[abs(j)]
                          * expf(cscale * cdiff) * dfact
-                         * exp2f(2.0f * (angfact - 1.0f));
+                         * exp2f(2.0f * (-angfact - 1.0f));
 
             weightsum += factor;
             out.x += factor * pix.x;
