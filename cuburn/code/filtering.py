@@ -1,4 +1,3 @@
-
 import numpy as np
 from numpy import float32 as f32, int32 as i32
 
@@ -172,9 +171,12 @@ __global__ void blur_v(float *dst) {
     dst[y * (blockDim.x * gridDim.x) + x] = den;
 }
 
-/* sstd: spatial standard deviation (Gaussian filter)
- * cstd: color standard deviation (Gaussian on the range [0, 1], where 1
- *       represents an "opposite" color).
+/* sstd:    spatial standard deviation (Gaussian filter)
+ * cstd:    color standard deviation (Gaussian on the range [0, 1], where 1
+ *          represents an "opposite" color).
+ * angstd:  inverse standard deviation of negative of cosine of angle
+ *          between current filter direction and density gradient direction
+ *          (yes, this is absurd; no, I'm not joking)
  *
  * Density is controlled by a power-of-two Gompertz distribution:
  *  v = 1 - 2^(-sum^dpow * 2^((dhalfpt - x) * dspeed))
@@ -192,12 +194,10 @@ __global__ void blur_v(float *dst) {
  *          cell.
  */
 __global__
-void bilateral(float4 *dst, float sstd, float cstd,
+void bilateral(float4 *dst, int r, float sstd, float cstd, float angscale,
                float dhalfpt, float dspeed, float dpow) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-
-    const int r = 7;
 
     // Precalculate the spatial coeffecients.
     __shared__ float spa_coefs[32];
@@ -260,8 +260,7 @@ void bilateral(float4 *dst, float sstd, float cstd,
             // Oh, this is ridiculous. But it works!
             float factor = spa_coefs[abs(i)]  * spa_coefs[abs(j)]
                          * expf(cscale * cdiff) * dfact
-                         * exp2f(2.0f * (-angfact - 1.0f));
-
+                         * exp2f(angscale * (-angfact - 1.0f));
             weightsum += factor;
             out.x += factor * pix.x;
             out.y += factor * pix.y;
@@ -328,7 +327,7 @@ class Filtering(HunkOCode):
         bilateral, blur_h, blur_h_1cp, blur_v, fma_buf = map(
                 self.mod.get_function,
                 'bilateral blur_h blur_h_1cp blur_v fma_buf'.split())
-        ROUNDS = 2 # TODO: user customizable?
+        ROUNDS = 1 # TODO: user customizable?
 
         def do_bilateral(bsrc, bdst):
             tref.set_address_2d(bsrc, dsc, sb)
