@@ -204,13 +204,9 @@ void iter(
 
     {{precalc_camera(pcp.camera)}}
     if (threadIdx.y == 5 && threadIdx.x == 4) {
-        float ditherwidth = {{pcp.camera.dither_width}} * 0.33f;
-        float u0 = mwc_next_01(rctx);
-        float r = ditherwidth * sqrtf(-2.0f * log2f(u0) / M_LOG2E);
-
-        float u1 = 2.0f * M_PI * mwc_next_01(rctx);
-        {{pcp.camera.xo}} += r * cos(u1);
-        {{pcp.camera.yo}} += r * sin(u1);
+        float ditherwidth = {{pcp.camera.dither_width}} * 0.5f;
+        {{pcp.camera.xo}} += ditherwidth * mwc_next_11(rctx);
+        {{pcp.camera.yo}} += ditherwidth * mwc_next_11(rctx);
     }
 
 {{if info.acc_mode == 'global'}}
