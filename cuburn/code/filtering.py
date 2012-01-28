@@ -8,6 +8,38 @@ from pycuda.gpuarray import vec
 from cuburn.code.util import *
 
 _CODE = r'''
+// Filter directions specified in degrees, using image/texture addressing
+// [(0,0) is upper left corner, 90 degrees is down].
+
+__constant__ float2 addressing_patterns[16] = {
+    { 1.0f,  0.0f},        { 0.0f,       1.0f}, //  0,  1:   0,    90
+    { 1.0f,  1.0f},        {-1.0f,       1.0f}, //  2,  3:  45,   135
+    { 1.0f,  0.5f},        {-0.5f,       1.0f}, //  4,  5:  22.5, 112.5
+    { 1.0f, -0.5f},        { 0.5f,       1.0f}, //  6,  7: -22.5,  67.5
+    { 1.0f,  0.666667f},   {-0.666667f,  1.0f}, //  8,  9:  30,   120
+    { 1.0f, -0.666667f},   { 0.666667f,  1.0f}, // 10, 11: -30,    60
+    { 1.0f,  0.333333f},   {-0.333333f,  1.0f}, // 12, 13:  15,   105
+    { 1.0f, -0.333333f},   { 0.333333f,  1.0f}, // 14, 15: -15,    75
+};
+
+// Mon dieu! A C++ feature?
+template <typename T> __device__ T
+tex_shear(texture<T, cudaTextureType2D> ref, int pattern,
+          float x, float y, float radius) {
+    float2 scale = addressing_patterns[pattern];
+    float i = scale.x * radius, j = scale.y * radius;
+    // Round i and j to the nearest integer, choosing the nearest even when
+    // equidistant. It's critical that this be done before adding 'x' and 'y',
+    // so that addressing patterns remain consistent across the grid.
+    asm("{\n\t"
+        "cvt.rni.ftz.f32.f32    %0, %0;\n\t"
+        "cvt.rni.ftz.f32.f32    %1, %1;\n\t"
+        "}\n" : "+f"(i), "+f"(j));
+    return tex2D(ref, x + i, y + j);
+}
+
+extern "C" {
+
 __global__
 void colorclip(float4 *pixbuf, float gamma, float vibrance, float highpow,
                float linrange, float lingam, float3 bkgd,
@@ -127,48 +159,49 @@ void fma_buf(float4 *dst, const float4 *src, int astride, float scale) {
 texture<float4, cudaTextureType2D> bilateral_src;
 texture<float,  cudaTextureType2D> blur_src;
 
+__global__ void logscale_den(float *dst, float k2) {
+    int xi = blockIdx.x * blockDim.x + threadIdx.x;
+    int yi = blockIdx.y * blockDim.y + threadIdx.y;
+    float4 pix = tex2D(bilateral_src, xi, yi);
+    float out = logf(1.0f + pix.w * k2);
+    dst[yi * (blockDim.x * gridDim.x) + xi] = out;
+}
+
+__constant__ float gauss_coefs[9] = {
+    0.00443305f,  0.05400558f,  0.24203623f,  0.39905028f,
+    0.24203623f,  0.05400558f,  0.00443305f
+};
+
 // Apply a Gaussian-esque blur to the density channel of the texture in
 // ``bilateral_src`` in the horizontal direction, and write it to ``dst``, a
-// one-channel buffer
-__global__ void blur_h(float *dst) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
+// one-channel buffer.
+__global__ void den_blur(float *dst, int pattern, int upsample) {
+    int xi = blockIdx.x * blockDim.x + threadIdx.x;
+    int yi = blockIdx.y * blockDim.y + threadIdx.y;
+    float x = xi, y = yi;
 
     float den = 0.0f;
-    den += tex2D(bilateral_src, x - 2, y).w * 0.00135f;
-    den += tex2D(bilateral_src, x - 1, y).w * 0.1573f;
-    den += tex2D(bilateral_src, x,     y).w * 0.6827f;
-    den += tex2D(bilateral_src, x + 1, y).w * 0.1573f;
-    den += tex2D(bilateral_src, x + 2, y).w * 0.00135f;
-    dst[y * (blockDim.x * gridDim.x) + x] = den;
+
+    #pragma unroll
+    for (int i = 0; i < 9; i++)
+        den += tex_shear(bilateral_src, pattern, x, y, (i - 4) << upsample).w
+             * gauss_coefs[i];
+    dst[yi * (blockDim.x * gridDim.x) + xi] = den;
 }
 
-// As above, but with a one-channel texture as source
-__global__ void blur_h_1cp(float *dst) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
+// As above, but with the one-channel texture as source
+__global__ void den_blur_1c(float *dst, int pattern, int upsample) {
+    int xi = blockIdx.x * blockDim.x + threadIdx.x;
+    int yi = blockIdx.y * blockDim.y + threadIdx.y;
+    float x = xi, y = yi;
 
     float den = 0.0f;
-    den += tex2D(blur_src, x - 2, y) * 0.00135f;
-    den += tex2D(blur_src, x - 1, y) * 0.1573f;
-    den += tex2D(blur_src, x,     y) * 0.6827f;
-    den += tex2D(blur_src, x + 1, y) * 0.1573f;
-    den += tex2D(blur_src, x + 2, y) * 0.00135f;
-    dst[y * (blockDim.x * gridDim.x) + x] = den;
-}
 
-// As above, but in the vertical direction
-__global__ void blur_v(float *dst) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-
-    float den = 0.0f;
-    den += tex2D(blur_src, x, y - 2) * 0.00135f;
-    den += tex2D(blur_src, x, y - 1) * 0.1573f;
-    den += tex2D(blur_src, x, y    ) * 0.6827f;
-    den += tex2D(blur_src, x, y + 1) * 0.1573f;
-    den += tex2D(blur_src, x, y + 2) * 0.00135f;
-    dst[y * (blockDim.x * gridDim.x) + x] = den;
+    #pragma unroll
+    for (int i = 0; i < 9; i++)
+        den += tex_shear(blur_src, pattern, x, y, (i - 4) << upsample)
+             * gauss_coefs[i];
+    dst[yi * (blockDim.x * gridDim.x) + xi] = den;
 }
 
 /* sstd:    spatial standard deviation (Gaussian filter)
@@ -194,13 +227,17 @@ __global__ void blur_v(float *dst) {
  *          cell.
  */
 __global__
-void bilateral(float4 *dst, int r, float sstd, float cstd, float angscale,
-               float dhalfpt, float dspeed, float dpow) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
+void bilateral(float4 *dst, int pattern, int radius,
+               float sstd, float cstd, float angscale,
+               float dhalfpt, float dspeed, float dpow, float k2
+) {
+    int xi = blockIdx.x * blockDim.x + threadIdx.x;
+    int yi = blockIdx.y * blockDim.y + threadIdx.y;
+    float x = xi, y = yi;
 
     // Precalculate the spatial coeffecients.
     __shared__ float spa_coefs[32];
+
     if (threadIdx.y == 0) {
         float df = threadIdx.x;
         spa_coefs[threadIdx.x] = expf(df * df / (-M_SQRT2 * sstd));
@@ -212,27 +249,24 @@ void bilateral(float4 *dst, int r, float sstd, float cstd, float angscale,
     // Gather the center point, and pre-average the color values for easier
     // comparison.
     float4 cen = tex2D(bilateral_src, x, y);
-    if (cen.w > 0.0f) {
-        float cdrcp = 1.0f / cen.w;
-        cen.x *= cdrcp;
-        cen.y *= cdrcp;
-        cen.z *= cdrcp;
-    }
+    float cdrcp = 1.0f / (cen.w + 1.0e-6f);
+    cen.x *= cdrcp;
+    cen.y *= cdrcp;
+    cen.z *= cdrcp;
 
-    // Compute the Sobel directional derivative of a pre-blurred version of
-    // the density channel at the center point.
-    float nw = tex2D(blur_src, x - 1, y - 1);
-    float ne = tex2D(blur_src, x + 1, y - 1);
-    float sw = tex2D(blur_src, x - 1, y + 1);
-    float se = tex2D(blur_src, x + 1, y + 1);
-    float h = ne + se + 2 * tex2D(blur_src, x + 1, y)
-            -(nw + sw + 2 * tex2D(blur_src, x - 1, y));
-    float v = se + sw + 2 * tex2D(blur_src, x, y + 1)
-            -(ne + nw + 2 * tex2D(blur_src, x, y - 1));
+    float clogden = powf(cen.w, 0.8);
+    //logf(1.0f + cen.w * k2);
 
-    // TODO: figure out how to work `mag` in to scaling the degree to which
-    // the directionality filter clamps
-    float mag = sqrtf(h * h + v * v);
+    /*
+    // Calculate the gradient from the pre-blurred density texture in the
+    // "forward" and "crosswise" directions (separated by 90 degrees)
+    float cgrad_f = tex_shear(blur_src, pattern,     x, y,  1)
+                  - tex_shear(blur_src, pattern,     x, y, -1);
+    float cgrad_c = tex_shear(blur_src, pattern ^ 1, x, y,  1)
+                  - tex_shear(blur_src, pattern ^ 1, x, y, -1);
+    float gradrcp = 1.0f / sqrtf(cgrad_f * cgrad_f + cgrad_c * cgrad_c + 1.0e-6f);
+    float gradfact = cgrad_f * gradrcp;
+    */
 
     float4 out = make_float4(0, 0, 0, 0);
     float weightsum = 0.0f;
@@ -240,33 +274,41 @@ void bilateral(float4 *dst, int r, float sstd, float cstd, float angscale,
     // Be extra-sure spatial coeffecients have been written
     __syncthreads();
 
-    for (int i = -r; i <= r; i++) {
-        for (int j = -r; j <= r; j++) {
-            float4 pix = tex2D(bilateral_src, x + i, y + j);
-            float cdiff = 0.5f;
+    float4 pix = tex_shear(bilateral_src, pattern, x, y, -radius - 1.0f);
+    float4 next = tex_shear(bilateral_src, pattern, x, y, -radius);
 
-            if (pix.w > 0.0f && cen.w > 0.0f) {
-                float pdrcp = 1.0f / pix.w;
-                float yd = pix.x * pdrcp - cen.x;
-                float ud = pix.y * pdrcp - cen.y;
-                float vd = pix.z * pdrcp - cen.z;
-                cdiff = yd * yd + ud * ud + vd * vd;
-            }
-            float ddiff = dspeed * (dhalfpt - fabsf(pix.w - cen.w) - 1.0f);
-            float dsum = -powf(0.5f * (pix.w + cen.w + 1.0f), dpow);
-            float dfact = 1.0f - exp2f(dsum * exp2f(ddiff));
-            float angfact = (h * i + v * j) / (sqrtf(i*i + j*j) * mag + 1.0e-10f);
+    for (float r = -radius; r <= radius; r++) {
+        float prev = pix.w;
+        pix = next;
+        next = tex_shear(bilateral_src, pattern, x, y, r + 1.0f);
 
-            // Oh, this is ridiculous. But it works!
-            float factor = spa_coefs[abs(i)]  * spa_coefs[abs(j)]
-                         * expf(cscale * cdiff) * dfact
-                         * exp2f(angscale * (-angfact - 1.0f));
-            weightsum += factor;
-            out.x += factor * pix.x;
-            out.y += factor * pix.y;
-            out.z += factor * pix.z;
-            out.w += factor * pix.w;
+        float cdiff = 0.5f;
+
+        if (pix.w > 0.0f && cen.w > 0.0f) {
+            float pdrcp = 1.0f / pix.w;
+            float yd = pix.x * pdrcp - cen.x;
+            float ud = pix.y * pdrcp - cen.y;
+            float vd = pix.z * pdrcp - cen.z;
+            cdiff = yd * yd + ud * ud + vd * vd;
         }
+
+        //float logden = logf(1.0f + pix.w * k2);
+        float logden = powf(pix.w, 0.8);
+        float dfact = exp2f(-0.5f * fabsf(clogden - logden) * dhalfpt);
+
+        float avg = tex_shear(blur_src, pattern, x, y, r);
+        float yayfact = (prev - next.w) / (avg + 1.0e-6f);
+        yayfact = expf(-expf(0.5f * yayfact));
+
+        // Oh, this is ridiculous.
+        float factor = spa_coefs[(int) fabsf(r)];
+        if (r != 0) factor *= expf(cscale * cdiff) * dfact * yayfact;
+                     // * expf(-cdrcp * expf((gradfact - 1.0f) * r));
+        weightsum += factor;
+        out.x += factor * pix.x;
+        out.y += factor * pix.y;
+        out.z += factor * pix.z;
+        out.w += factor * pix.w;
     }
 
     float weightrcp = 1.0f / (weightsum + 1e-10f);
@@ -275,17 +317,16 @@ void bilateral(float4 *dst, int r, float sstd, float cstd, float angscale,
     out.z *= weightrcp;
     out.w *= weightrcp;
 
-    // Uncomment to write directional gradient using YUV colors
-    /*
-    out.x = mag;
-    out.y = h;
-    out.z = v;
-    out.w = mag;
-    */
+    //out.x = out.w = tex_shear(blur_src, pattern, x, y, 0);
+    //out.y = cgrad_f;
+    //out.z = cgrad_c;
+    //out.y = gradfact * out.w;
 
     const int astride = blockDim.x * gridDim.x;
-    dst[y * astride + x] = out;
+    dst[yi * astride + xi] = out;
 }
+
+} // end extern "C"
 '''
 
 class Filtering(HunkOCode):
@@ -296,12 +337,20 @@ class Filtering(HunkOCode):
     def init_mod(cls):
         if cls.mod is None:
             cls.mod = pycuda.compiler.SourceModule(assemble_code(BaseCode, cls),
-                    options=['-use_fast_math', '-maxrregcount', '32'])
+                    options=['-use_fast_math', '-maxrregcount', '32'],
+                    no_extern_c=True)
 
     def __init__(self):
         self.init_mod()
 
     def de(self, ddst, dsrc, dscratch, gnm, dim, tc, nxf, stream=None):
+        # Log-scale the accumulated buffer in `dsrc`.
+        k1 = f32(gnm.color.brightness(tc) * 268 / 256)
+        # Old definition of area is (w*h/(s*s)). Since new scale 'ns' is now
+        # s/w, new definition is (w*h/(s*s*w*w)) = (h/(s*s*w))
+        area = dim.h / (gnm.camera.scale(tc) ** 2 * dim.w)
+        k2 = f32(1.0 / (area * gnm.spp(tc)))
+
         # Helper variables and functions to keep it clean
         sb = 16 * dim.astride
         bs = sb * dim.ah
@@ -324,47 +373,53 @@ class Filtering(HunkOCode):
         grad_dsc = mkdsc(1)
         grad_tref = mktref('blur_src')
 
-        bilateral, blur_h, blur_h_1cp, blur_v, fma_buf = map(
+        bilateral, logscale_den, den_blur, den_blur_1c, fma_buf = map(
                 self.mod.get_function,
-                'bilateral blur_h blur_h_1cp blur_v fma_buf'.split())
-        ROUNDS = 1 # TODO: user customizable?
+                'bilateral logscale_den den_blur den_blur_1c fma_buf'.split())
 
-        def do_bilateral(bsrc, bdst):
+        # Number of different shear patterns to use when filtering. Must be
+        # even, since we depend on buffer bouncing (but I don't think that it's
+        # a requirement for the filter itself to get decent results).
+        DIRECTIONS = 8
+
+        def do_bilateral(bsrc, bdst, pattern, r=15, sstd=3, cstd=0.1,
+                         angscale=2.5, dhalfpt=1, dspeed=2000000, dpow=0.6):
+            # Scale spatial parameters so that a "pixel" is equivalent to an
+            # actual pixel at 1080p
+            sstd *= 1920. / dim.w
+
             tref.set_address_2d(bsrc, dsc, sb)
-            launch(blur_h, np.intp(bdst), texrefs=[tref])
+            launch(den_blur, np.intp(bdst), i32(pattern), i32(0),
+                   texrefs=[tref])
             grad_tref.set_address_2d(bdst, grad_dsc, sb / 4)
-            launch(blur_v, dscratch, texrefs=[grad_tref])
+            launch(den_blur_1c, dscratch, i32(pattern), i32(1),
+                   texrefs=[grad_tref])
             grad_tref.set_address_2d(dscratch, grad_dsc, sb / 4)
-            launch(blur_h_1cp, np.intp(bdst), texrefs=[tref])
-            grad_tref.set_address_2d(bdst, grad_dsc, sb / 4)
-            launch(blur_v, dscratch, texrefs=[grad_tref])
-            grad_tref.set_address_2d(dscratch, grad_dsc, sb / 4)
-            launch(bilateral, np.intp(bdst), f32(4), f32(0.1),
-                   f32(5), f32(0.4), f32(0.6), texrefs=[tref, grad_tref])
-            return bdst, bsrc
+            launch(bilateral, np.intp(bdst), i32(pattern), i32(r),
+                   f32(sstd), f32(cstd), f32(angscale),
+                   f32(dhalfpt), f32(dspeed), f32(dpow), k2,
+                   texrefs=[tref, grad_tref])
+
+        def do_bilateral_range(bsrc, bdst, npats, *args, **kwargs):
+
+
+            for i in range(npats):
+                do_bilateral(bsrc, bdst, i, *args, **kwargs)
+                bdst, bsrc = bsrc, bdst
+            if npats % 2:
+                cuda.memcpy_dtod_async(bdst, bsrc, bs, stream)
 
         # Filter the first xform, using `ddst` as an intermediate buffer.
         # End result is the filtered copy in `dsrc`.
-        a, b = dsrc, ddst
-        for i in range(ROUNDS):
-            a, b = do_bilateral(a, b)
-        if ROUNDS % 2:
-            cuda.memcpy_dtod_async(b, a, bs, stream)
+        do_bilateral_range(dsrc, ddst, DIRECTIONS)
 
         # Filter the remaining xforms, using `ddst` as an intermediate
         # buffer, then add the result to `dsrc` (at the zero'th xform).
         for x in range(1, nxf):
-            a, b = int(dsrc) + x * bs, ddst
-            for i in range(ROUNDS):
-                a, b = do_bilateral(a, b)
-            launch(fma_buf, dsrc, np.intp(a), i32(dim.astride), f32(1))
+            src = int(dsrc) + x * bs
+            do_bilateral_range(src, ddst, DIRECTIONS)
+            launch(fma_buf, dsrc, np.intp(src), i32(dim.astride), f32(1))
 
-        # Log-scale the accumulated buffer in `dsrc`.
-        k1 = f32(gnm.color.brightness(tc) * 268 / 256)
-        # Old definition of area is (w*h/(s*s)). Since new scale 'ns' is now
-        # s/w, new definition is (w*h/(s*s*w*w)) = (h/(s*s*w))
-        area = dim.h / (gnm.camera.scale(tc) ** 2 * dim.w)
-        k2 = f32(1.0 / (area * gnm.spp(tc)))
         nbins = dim.ah * dim.astride
         logscale = self.mod.get_function("logscale")
         t = logscale(ddst, dsrc, k1, k2,
