@@ -207,30 +207,19 @@ __global__ void den_blur_1c(float *dst, int pattern, int upsample) {
 /* sstd:    spatial standard deviation (Gaussian filter)
  * cstd:    color standard deviation (Gaussian on the range [0, 1], where 1
  *          represents an "opposite" color).
- * angstd:  inverse standard deviation of negative of cosine of angle
- *          between current filter direction and density gradient direction
- *          (yes, this is absurd; no, I'm not joking)
- *
- * Density is controlled by a power-of-two Gompertz distribution:
- *  v = 1 - 2^(-sum^dpow * 2^((dhalfpt - x) * dspeed))
- *
- * dhalfpt: The difference in density values between two points at which the
- *          filter admits 50% of the spatial and color kernels, when dpow
- *          is 0. `3` seems to be a good fit for most images at decent
- *          sampling levels.
- * dspeed:  The sharpness of the filter's cutoff around dhalfpt. At `1`, the
- *          filter admits 75% of a point that differs by one fewer than
- *          `dhalfpt` density steps from the current point (when dpow is 0);
- *          at `2`, it admits 93.75% of the same. `0.5` works pretty well.
- * dpow:    The change of filter intensity as density scales. This should be
- *          set automatically in response to changes in expected density per
- *          cell.
+ * dstd:    Standard deviation (exp2f) of density filter at density = 1.0.
+ * dpow:    Exponent applied to density values before taking difference.
+ *          At dpow=0.8, difference between 1000 and 1001 is about 0.2.
+ *          Use bigger dstd and bigger dpow to blur low-density areas more
+ *          without clobbering high-density areas.
+ * gspeed:  Speed of (exp2f) Gompertz distribution governing how much to
+ *          tighten gradients. Zero and negative values OK.
  */
+
 __global__
 void bilateral(float4 *dst, int pattern, int radius,
-               float sstd, float cstd, float angscale,
-               float dhalfpt, float dspeed, float dpow, float k2
-) {
+               float sstd, float cstd, float dstd, float dpow, float gspeed)
+{
     int xi = blockIdx.x * blockDim.x + threadIdx.x;
     int yi = blockIdx.y * blockDim.y + threadIdx.y;
     float x = xi, y = yi;
@@ -245,8 +234,9 @@ void bilateral(float4 *dst, int pattern, int radius,
 
     // 3.0f compensates for [0,3] range of `cdiff`
     float cscale = 1.0f / (-M_SQRT2 * 3.0f * cstd);
+    float dscale = -0.5f / dstd;
 
-    // Gather the center point, and pre-average the color values for easier
+    // Gather the center point, and pre-average the color values for faster
     // comparison.
     float4 cen = tex2D(bilateral_src, x, y);
     float cdrcp = 1.0f / (cen.w + 1.0e-6f);
@@ -254,19 +244,7 @@ void bilateral(float4 *dst, int pattern, int radius,
     cen.y *= cdrcp;
     cen.z *= cdrcp;
 
-    float clogden = powf(cen.w, 0.8);
-    //logf(1.0f + cen.w * k2);
-
-    /*
-    // Calculate the gradient from the pre-blurred density texture in the
-    // "forward" and "crosswise" directions (separated by 90 degrees)
-    float cgrad_f = tex_shear(blur_src, pattern,     x, y,  1)
-                  - tex_shear(blur_src, pattern,     x, y, -1);
-    float cgrad_c = tex_shear(blur_src, pattern ^ 1, x, y,  1)
-                  - tex_shear(blur_src, pattern ^ 1, x, y, -1);
-    float gradrcp = 1.0f / sqrtf(cgrad_f * cgrad_f + cgrad_c * cgrad_c + 1.0e-6f);
-    float gradfact = cgrad_f * gradrcp;
-    */
+    float cpowden = powf(cen.w, dpow);
 
     float4 out = make_float4(0, 0, 0, 0);
     float weightsum = 0.0f;
@@ -282,9 +260,17 @@ void bilateral(float4 *dst, int pattern, int radius,
         pix = next;
         next = tex_shear(bilateral_src, pattern, x, y, r + 1.0f);
 
+        // This initial factor is arbitrary, but seems to do a decent job at
+        // preventing excessive bleed-out from points inside an empty region.
+        // (It's used when either the center or the current point has no
+        // sample energy at all.)
         float cdiff = 0.5f;
 
         if (pix.w > 0.0f && cen.w > 0.0f) {
+            // Compute the color difference as the simple magnitude difference
+            // between the YUV colors at the sampling location, unweighted by
+            // density. Essentially, this just identifies regions whose average
+            // color coordinates are similar.
             float pdrcp = 1.0f / pix.w;
             float yd = pix.x * pdrcp - cen.x;
             float ud = pix.y * pdrcp - cen.y;
@@ -292,18 +278,29 @@ void bilateral(float4 *dst, int pattern, int radius,
             cdiff = yd * yd + ud * ud + vd * vd;
         }
 
-        //float logden = logf(1.0f + pix.w * k2);
-        float logden = powf(pix.w, 0.8);
-        float dfact = exp2f(-0.5f * fabsf(clogden - logden) * dhalfpt);
+        // Density factor
+        float powden = powf(pix.w, dpow);
+        float dfact = exp2f(dscale * fabsf(cpowden - powden));
 
+        // Gradient energy factor. This favors points whose local energy
+        // gradient points towards the current point - in essence, it draws
+        // sampling energy "uphill" into denser regions rather than allowing
+        // it to be smeared in all directions. The effect is modulated by the
+        // average energy in the region (as determined from a blurred copy of
+        // the density map); weak gradients in dense image regions aren't
+        // affected as strongly. This is all very experimental, with little
+        // theoretical justification, but it seems to work very well.
+        //
+        // Note that both the gradient and the blurred weight are calculated
+        // in one dimension, along the current sampling vector.
         float avg = tex_shear(blur_src, pattern, x, y, r);
-        float yayfact = (prev - next.w) / (avg + 1.0e-6f);
-        yayfact = expf(-expf(0.5f * yayfact));
+        float gradfact = (next.w - prev) / (avg + 1.0e-6f);
+        if (r < 0) gradfact = -gradfact;
+        gradfact = exp2f(-exp2f(gspeed * gradfact));
 
-        // Oh, this is ridiculous.
-        float factor = spa_coefs[(int) fabsf(r)];
-        if (r != 0) factor *= expf(cscale * cdiff) * dfact * yayfact;
-                     // * expf(-cdrcp * expf((gradfact - 1.0f) * r));
+        float factor = spa_coefs[(int) fabsf(r)] * expf(cscale * cdiff) * dfact;
+        if (r != 0) factor *= gradfact;
+
         weightsum += factor;
         out.x += factor * pix.x;
         out.y += factor * pix.y;
@@ -316,11 +313,6 @@ void bilateral(float4 *dst, int pattern, int radius,
     out.y *= weightrcp;
     out.z *= weightrcp;
     out.w *= weightrcp;
-
-    //out.x = out.w = tex_shear(blur_src, pattern, x, y, 0);
-    //out.y = cgrad_f;
-    //out.z = cgrad_c;
-    //out.y = gradfact * out.w;
 
     const int astride = blockDim.x * gridDim.x;
     dst[yi * astride + xi] = out;
@@ -344,12 +336,6 @@ class Filtering(HunkOCode):
         self.init_mod()
 
     def de(self, ddst, dsrc, dscratch, gnm, dim, tc, nxf, stream=None):
-        # Log-scale the accumulated buffer in `dsrc`.
-        k1 = f32(gnm.color.brightness(tc) * 268 / 256)
-        # Old definition of area is (w*h/(s*s)). Since new scale 'ns' is now
-        # s/w, new definition is (w*h/(s*s*w*w)) = (h/(s*s*w))
-        area = dim.h / (gnm.camera.scale(tc) ** 2 * dim.w)
-        k2 = f32(1.0 / (area * gnm.spp(tc)))
 
         # Helper variables and functions to keep it clean
         sb = 16 * dim.astride
@@ -382,27 +368,28 @@ class Filtering(HunkOCode):
         # a requirement for the filter itself to get decent results).
         DIRECTIONS = 8
 
-        def do_bilateral(bsrc, bdst, pattern, r=15, sstd=3, cstd=0.1,
-                         angscale=2.5, dhalfpt=1, dspeed=2000000, dpow=0.6):
-            # Scale spatial parameters so that a "pixel" is equivalent to an
+        def do_bilateral(bsrc, bdst, pattern, r=15, sstd=6, cstd=0.05,
+                         dstd=1.5, dpow=0.8, gspeed=4.0):
+            # Scale spatial parameter so that a "pixel" is equivalent to an
             # actual pixel at 1080p
             sstd *= 1920. / dim.w
 
             tref.set_address_2d(bsrc, dsc, sb)
+
+            # Blur density two octaves along sampling vector, ultimately
+            # storing in `dscratch`
             launch(den_blur, np.intp(bdst), i32(pattern), i32(0),
                    texrefs=[tref])
             grad_tref.set_address_2d(bdst, grad_dsc, sb / 4)
             launch(den_blur_1c, dscratch, i32(pattern), i32(1),
                    texrefs=[grad_tref])
             grad_tref.set_address_2d(dscratch, grad_dsc, sb / 4)
+
             launch(bilateral, np.intp(bdst), i32(pattern), i32(r),
-                   f32(sstd), f32(cstd), f32(angscale),
-                   f32(dhalfpt), f32(dspeed), f32(dpow), k2,
+                   f32(sstd), f32(cstd), f32(dstd), f32(dpow), f32(gspeed),
                    texrefs=[tref, grad_tref])
 
         def do_bilateral_range(bsrc, bdst, npats, *args, **kwargs):
-
-
             for i in range(npats):
                 do_bilateral(bsrc, bdst, i, *args, **kwargs)
                 bdst, bsrc = bsrc, bdst
@@ -419,6 +406,13 @@ class Filtering(HunkOCode):
             src = int(dsrc) + x * bs
             do_bilateral_range(src, ddst, DIRECTIONS)
             launch(fma_buf, dsrc, np.intp(src), i32(dim.astride), f32(1))
+
+        # Log-scale the accumulated buffer in `dsrc`.
+        k1 = f32(gnm.color.brightness(tc) * 268 / 256)
+        # Old definition of area is (w*h/(s*s)). Since new scale 'ns' is now
+        # s/w, new definition is (w*h/(s*s*w*w)) = (h/(s*s*w))
+        area = dim.h / (gnm.camera.scale(tc) ** 2 * dim.w)
+        k2 = f32(1.0 / (area * gnm.spp(tc)))
 
         nbins = dim.ah * dim.astride
         logscale = self.mod.get_function("logscale")

@@ -58,7 +58,7 @@ class Renderer(object):
     # which further xforms will wrap to the first when writing. Currently it
     # is compiled in, so power-of-two and no runtime maximization. Current
     # value of 16 fits into a 1GB card at 1080p.
-    max_nxf = 16
+    max_nxf = 1
 
     # TODO
     chaos_used = False
