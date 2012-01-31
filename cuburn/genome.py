@@ -94,9 +94,32 @@ class SplEval(object):
             return list(self.knots.T.flat)[2:-2]
         return list(self.knots.T.flat)
 
-    def insert_knot(self, t, v):
-        knots = list(sum(sorted(zip(*self.knots) + [(t,v)]), ()))
+    def update(self, knots, overwrite=True):
+        """
+        Update this spline's knotlist with ``knots``, a list of two-tuples
+        (time, value) or a dictionary of the same, while preserving the zeroth
+        and first derivatives at t=0 and t=1.
+
+        If `overwrite` is True (the default), any knot values with precisely
+        the same float32 representation will be overwritten by the incoming
+        values. If not, a KeyError will be raised. Counting on this is not
+        recommended, due to the vagaries of floating-point representations,
+        but it works fine in a pinch.
+
+        Endpoint-preservation is not guaranteed (or conversely, is guaranteed
+        not to work) if any time is passed outside of the exclusive range
+        (0,1).
+        """
+        old = dict(self.knots.T[1:-1])
+        new = dict(knots)
+        if not overwrite and set(old).intersection(set(new)):
+            raise KeyError("Conflicting spline times")
+        old.update(new)
+        knots = list(sum(sorted(old.items()), ()))
         self.knots = self.normalize(knots, self(0, 1), self(1, 1))
+
+    def insert_knot(self, t, v):
+        self.update([(t, v)], True)
 
 def palette_decode(datastrs):
     """
