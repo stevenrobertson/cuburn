@@ -63,7 +63,8 @@ def main(args, prof):
     if args.name is not None:
         basename = args.name
     prefix = os.path.join(args.dir, basename)
-    frames = [(prefix + '%05d.jpg' % (i+1), t) for i, t in enumerate(times)]
+    frames = [('%s%05d%s.jpg' % (prefix, (i+1), args.suffix), t)
+              for i, t in enumerate(times)]
     if args.end:
         frames = frames[:args.end]
     frames = frames[args.start::prof['skip']+1]
@@ -140,6 +141,8 @@ if __name__ == "__main__":
         help="Show output in OpenGL window")
     parser.add_argument('-n', metavar='NAME', type=str, dest='name',
         help="Prefix to use when saving files (default is basename of input)")
+    parser.add_argument('--suffix', metavar='NAME', type=str, dest='suffix',
+        help="Suffix to use when saving files (default '')", default='')
     parser.add_argument('-o', metavar='DIR', type=str, dest='dir',
         help="Output directory", default='.')
     parser.add_argument('--resume', action='store_true', dest='resume',
