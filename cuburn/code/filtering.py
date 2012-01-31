@@ -372,7 +372,7 @@ class Filtering(HunkOCode):
                          dstd=1.5, dpow=0.8, gspeed=4.0):
             # Scale spatial parameter so that a "pixel" is equivalent to an
             # actual pixel at 1080p
-            sstd *= 1920. / dim.w
+            sstd *= dim.w / 1920.
 
             tref.set_address_2d(bsrc, dsc, sb)
 
