@@ -93,7 +93,7 @@ def work(server):
 
             sid, sidx, ftag = last_idx
             obuf = StringIO()
-            rdr.out.save(buf, obuf, 'jpeg')
+            rdr.out.save(last_buf, obuf, 'jpeg')
             obuf.seek(0)
             gpu_time = last_evt.time_since(two_evts_ago)
             head = ' '.join([sidx, str(gpu_time), ftag])
