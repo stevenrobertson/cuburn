@@ -256,6 +256,6 @@ def client(ppath, gpaths):
 
 if __name__ == "__main__":
     if sys.argv[1] == 'work':
-        work('192.168.1.3')
+        work(sys.argv[2] if len(sys.argv) > 2 else 'localhost')
     else:
         client(sys.argv[1], sys.argv[2:])
