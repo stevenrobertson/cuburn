@@ -361,7 +361,7 @@ class RenderManager(ClsMod):
             while not last_evt.query():
                 time.sleep(0.01)
             gpu_time = last_evt.time_since(two_evts_ago)
-            return RenderedImage(h_buf, idx, gpu_time)
+            return RenderedImage(last_buf, last_idx, gpu_time)
         for idx, tc in times:
             evt, h_buf = self.queue_frame(rdr, gnm, tc, w, h, last_idx is None)
             if last_idx:
