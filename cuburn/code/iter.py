@@ -2,15 +2,16 @@
 The main iteration loop.
 """
 
-from cuburn.code import mwc, variations, interp
-from cuburn.code.util import *
+import variations
+import interp
+from util import Template, devlib, ringbuflib
+from mwc import mwclib
 
 def precalc_densities(pcp, std_xforms):
     # This pattern recurs a few times for precalc segments. Unfortunately,
     # namespace stuff means it's not easy to functionalize this boilerplate
     pre_cp = pcp._precalc()
     pre_cp._code(Template(r"""
-
         float sum = 0.0f;
 
         {{for n in std_xforms}}
@@ -30,7 +31,6 @@ def precalc_densities(pcp, std_xforms):
 def precalc_chaos(pcp, std_xforms):
     pre_cp = pcp._precalc()
     pre_cp._code(Template("""
-
         float sum, rsum;
 
         {{for p in std_xforms}}
@@ -50,7 +50,6 @@ def precalc_chaos(pcp, std_xforms):
         {{endfor}}
 
         {{endfor}}
-
     """, name='precalc_chaos').substitute(locals()))
 
 def precalc_camera(pcam):
@@ -64,7 +63,6 @@ def precalc_camera(pcam):
     # . matrix([X],[Y],[1]);
 
     pre_cam._code(Template(r"""
-
         float rot = {{pre_cam.rotation}} * M_PI / 180.0f;
         float rotsin = sin(rot), rotcos = cos(rot);
         float cenx = {{pre_cam.center.x}}, ceny = {{pre_cam.center.y}};
@@ -79,13 +77,11 @@ def precalc_camera(pcam):
         {{pre_cam._set('yy')}} = scale * rotcos;
         {{pre_cam._set('yo')}} = scale * -(rotsin * cenx + rotcos * ceny)
                                + 0.5f * acc_size.aheight;
-
-    """).substitute(locals()))
+    """, 'precalc_camera').substitute(locals()))
 
 def precalc_xf_affine(px):
     pre = px._precalc()
     pre._code(Template(r"""
-
         float pri = {{pre.angle}} * M_PI / 180.0f;
         float spr = {{pre.spread}} * M_PI / 180.0f;
 
@@ -98,27 +94,22 @@ def precalc_xf_affine(px):
         {{pre._set('yy')}} = magy * sin(pri+spr);
         {{pre._set('xo')}} = {{pre.offset.x}};
         {{pre._set('yo')}} = -{{pre.offset.y}};
+    """, 'precalc_xf_affine').substitute(locals()))
 
-    """).substitute(locals()))
+def apply_affine(x, y, xo, yo, packer):
+    return Template("""
+    {{xo}} = {{packer.xx}} * {{x}} + {{packer.xy}} * {{y}} + {{packer.xo}};
+    {{yo}} = {{packer.yx}} * {{x}} + {{packer.yy}} * {{y}} + {{packer.yo}};
+    """, 'apply_affine').substitute(locals())
 
-class IterCode(HunkOCode):
-    # The number of threads per block
-    NTHREADS = 256
+# The number of threads per block used in the iteration function. Don't change
+# it lightly; the code may depend on it in unusual ways.
+NTHREADS = 256
 
-    def __init__(self, info, genome):
-        self.packer = interp.GenomePacker('iter_params')
-        self.pcp = self.packer.view('params', genome, 'cp')
-
-        iterbody = self._iterbody(info, genome)
-        bodies = [self._xfbody(i,x) for i,x in sorted(genome.xforms.items())]
-        bodies.append(iterbody)
-        self.defs = '\n'.join(bodies)
-
-    decls = """
+iter_decls = """
 // Note: for normalized lookups, uchar4 actually returns floats
 texture<uchar4, cudaTextureType2D, cudaReadModeNormalizedFloat> palTex;
 __shared__ iter_params params;
-__device__ int rb_head, rb_tail, rb_size;
 
 typedef struct {
     uint32_t width;
@@ -128,12 +119,9 @@ typedef struct {
     uint32_t astride;
 } acc_size_t;
 __constant__ acc_size_t acc_size;
-
 """
 
-    def _xfbody(self, xfid, xform):
-        px = self.pcp.xforms[xfid]
-        tmpl = Template(r"""
+iter_xf_body_code = r"""
 __device__
 void apply_xf_{{xfid}}(float &ox, float &oy, float &color, mwc_st &rctx) {
     float tx, ty;
@@ -162,44 +150,30 @@ void apply_xf_{{xfid}}(float &ox, float &oy, float &color, mwc_st &rctx) {
     float csp = {{px.color_speed}};
     color = color * (1.0f - csp) + {{px.color}} * csp;
 };
-""", 'apply_xf_'+xfid)
-        g = dict(globals())
-        g.update(locals())
-        return tmpl.substitute(g)
+"""
 
-    def _iterbody(self, info, genome):
-        tmpl = Template(r'''
+def iter_xf_body(pcp, xfid, xform):
+    px = pcp.xforms[xfid]
+    tmpl = Template(iter_xf_body_code, 'apply_xf_'+xfid)
 
-__global__ void reset_rb(int size) {
-    rb_head = rb_tail = 0;
-    rb_size = size;
-}
+    g = dict(globals())
+    g.update(locals())
+    return tmpl.substitute(g)
 
-__global__
-void iter(
-        uint64_t out_ptr,
-        mwc_st *msts,
-        float4 *points,
-        const iter_params *all_params
-{{if info.acc_mode == 'atomic'}}
-      , uint64_t atom_ptr
-{{endif}}
-) {
-    const iter_params *global_params = &(all_params[blockIdx.x]);
-
-
+iter_body_code = r'''
+__global__ void
+iter(uint64_t out_ptr, uint64_t atom_ptr,
+     ringbuf *rb, mwc_st *msts, float4 *points,
+     const iter_params *all_params)
+{
     // load params to shared memory cooperatively
+    const iter_params *global_params = &(all_params[blockIdx.x]);
     for (int i = threadIdx.y * blockDim.x + threadIdx.x;
          i < (sizeof(iter_params) / 4); i += blockDim.x * blockDim.y)
         reinterpret_cast<float*>(&params)[i] =
             reinterpret_cast<const float*>(global_params)[i];
 
-    __shared__ int rb_idx;
-    if (threadIdx.y == 1 && threadIdx.x == 1)
-        rb_idx = 32 * blockDim.y * (atomicAdd(&rb_head, 1) % rb_size);
-
-    __syncthreads();
-    int this_rb_idx = rb_idx + threadIdx.x + 32 * threadIdx.y;
+    int this_rb_idx = rb_incr(rb->head, blockDim.x * threadIdx.y + threadIdx.x);
     mwc_st rctx = msts[this_rb_idx];
 
     {{precalc_camera(pcp.camera)}}
@@ -209,22 +183,15 @@ void iter(
         {{pcp.camera.yo}} += ditherwidth * mwc_next_11(rctx);
     }
 
-{{if info.acc_mode == 'global'}}
-    __shared__ float time_frac;
-    time_frac = blockIdx.x / (float) gridDim.x;
-{{else}}
-    {{if info.acc_mode == 'atomic'}}
     // TODO: spare the register, reuse at call site?
     int time = blockIdx.x >> 4;
-    {{endif}}
     float color_dither = 0.49f * mwc_next_11(rctx);
-{{endif}}
 
     // TODO: 4th channel unused. Kill or use for something helpful
     float4 old_point = points[this_rb_idx];
     float x = old_point.x, y = old_point.y, color = old_point.z;
 
-{{if not info.chaos_used}}
+{{if not chaos_used}}
     // Shared memory size can be reduced by a factor of four using a slower
     // 4-stage reduce, but on Fermi hardware shmem use isn't a bottleneck
     __shared__ float swap[{{4*NTHREADS}}];
@@ -250,7 +217,7 @@ void iter(
     // TODO: link up with FUSE, etc
     for (int round = 0; round < 256; round++) {
 
-{{if info.chaos_used}}
+{{if chaos_used}}
 
         {{precalc_chaos(pcp, std_xforms)}}
 
@@ -315,16 +282,7 @@ void iter(
 
 {{endif}}
 
-{{if info.acc_mode == 'deferred'}}
-        int tid = threadIdx.y * 32 + threadIdx.x;
-        int offset = 4 * (256 * (256 * blockIdx.x + round) + tid);
-        int *log = reinterpret_cast<int*>(out_ptr + offset);
-{{endif}}
-
         if (fuse) {
-{{if info.acc_mode == 'deferred'}}
-            *log = 0xffffffff;
-{{endif}}
             continue;
         }
 
@@ -346,15 +304,11 @@ void iter(
         uint32_t ix = trunca(cx), iy = trunca(cy);
 
         if (ix >= acc_size.astride || iy >= acc_size.aheight) {
-{{if info.acc_mode == 'deferred'}}
-            *log = 0xffffffff;
-{{endif}}
             continue;
         }
 
-        uint32_t ibase = (last_xf_used % {{info.max_nxf}}) * acc_size.aheight;
-        uint32_t i = (ibase + iy) * acc_size.astride + ix;
-{{if info.acc_mode == 'atomic'}}
+        uint32_t i = iy * acc_size.astride + ix;
+
         asm volatile ({{crep("""
 {
     // To prevent overflow, we need to flush each pixel before the density
@@ -432,38 +386,45 @@ oflow_end:
         """)}}  ::  "f"(cc), "f"(color_dither), "r"(time), "r"(i),
                     "l"(atom_ptr), "f"(cosel[threadIdx.y + {{NWARPS}}]),
                     "l"(out_ptr));
-{{endif}}
-
-{{if info.acc_mode == 'global'}}
-        float4 outcol = tex2D(palTex, cc, time_frac);
-        float4 *accbuf = reinterpret_cast<float4*>(out_ptr + (16*i));
-        float4 pix = *accbuf;
-        pix.x += outcol.x;
-        pix.y += outcol.y;
-        pix.z += outcol.z;
-        pix.w += 1.0f;
-        *accbuf = pix;
-{{elif info.acc_mode == 'deferred'}}
-        // 'color' gets the top 8 bits. TODO: add dithering via precalc.
-        uint32_t icolor = fminf(1.0f, cc) * 255.0f + color_dither;
-        asm("bfi.b32    %0, %1, %0, 24, 8;" : "+r"(i) : "r"(icolor));
-        *log = i;
-{{endif}}
     }
 
-    if (threadIdx.x == 0 && threadIdx.y == 0)
-        rb_idx = 32 * blockDim.y * (atomicAdd(&rb_tail, 1) % rb_size);
-    __syncthreads();
-    this_rb_idx = rb_idx + threadIdx.x + 32 * threadIdx.y;
-
+    this_rb_idx = rb_incr(rb->tail, blockDim.x * threadIdx.y + threadIdx.x);
     points[this_rb_idx] = make_float4(x, y, color, 0.0f);
     msts[this_rb_idx] = rctx;
     return;
 }
+'''
 
-{{if info.acc_mode == 'atomic'}}
-__global__
-void flush_atom(uint64_t out_ptr, uint64_t atom_ptr, int nbins) {
+def iter_body(cp, pcp):
+    # For legacy reasons, 'cp' is used here instead of 'genome'.
+    tmpl = Template(iter_body_code, 'iter_body')
+    NWARPS = NTHREADS / 32
+    std_xforms = [n for n in sorted(cp.xforms) if n != 'final']
+
+    # TODO: detect this properly and use it
+    chaos_used = False
+
+    vars = globals()
+    vars.update(locals())
+    return tmpl.substitute(vars)
+
+def mkiterlib(genome):
+    packer = interp.GenomePacker('iter_params')
+    pcp = packer.view('params', genome, 'cp')
+
+    iterbody = iter_body(genome, pcp)
+    bodies = [iter_xf_body(pcp, i, x) for i, x in sorted(genome.xforms.items())]
+    bodies.append(iterbody)
+    packer_lib = packer.finalize()
+
+    lib = devlib(deps=[packer_lib, mwclib, ringbuflib],
+                 # We grab the surf decl from palintlib as well
+                 decls=iter_decls + interp.palintlib.decls,
+                 defs='\n'.join(bodies))
+    return packer, lib
+
+flushatomlib = devlib(defs=Template(r'''
+__global__ void flush_atom(uint64_t out_ptr, uint64_t atom_ptr, int nbins) {
     int i = (blockIdx.y * gridDim.x + blockIdx.x) * blockDim.x + threadIdx.x;
     if (i >= nbins) return;
     asm volatile ({{crep("""
@@ -499,168 +460,4 @@ void flush_atom(uint64_t out_ptr, uint64_t atom_ptr, int nbins) {
 }
     """)}}  ::  "r"(i), "l"(atom_ptr), "l"(out_ptr));
 }
-
-{{endif}}
-
-{{if info.acc_mode == 'deferred'}}
-
-// Block size, shared accumulation bits, shared accumulation width.
-#define BS 1024
-#define SHAB 12
-#define SHAW (1<<SHAB)
-
-// Read the point log, accumulate in shared memory, and write the results.
-// This kernel is to be launched with one block for every 4,096 addresses to
-// be processed, and will handle those addresses.
-//
-// log_bounds is an array mapping radix values to the first index in the log
-// with that radix position. For performance reasons in other parts of the
-// code, the radix may actually include bits within the lower SHAB part of the
-// address, or it might not cover the first few bits after the SHAB part;
-// log_bounds_shift covers that. glob_addr_bits specifies the number of bits
-// above SHAB which are address bits.
-
-__global__ void
-__launch_bounds__(BS, 1)
-write_shmem(
-        float4 *acc,
-        const uint32_t *log,
-        const uint32_t *log_bounds,
-        uint32_t nbins
-) {
-    const int tid = threadIdx.x;
-    const int bid = blockIdx.x;
-
-    // These two accumulators, used in write_shmem, hold {density, red} and
-    // {green, blue} values as packed u16 pairs. The fixed size represents
-    // 4,096 pixels in the accumulator.
-    __shared__ uint32_t s_acc[SHAW*2];
-
-    int idx = tid;
-    for (int i = 0; i < (SHAW * 2 / BS); i++) {
-        s_acc[idx] = 0;
-        idx += BS;
-    }
-    __syncthreads();
-
-    // Shut the compiler up
-    idx = s_acc[0];
-
-    // log_bounds[] holds inclusive prefix sums, so that log_bounds[0] is the
-    // largest index with radix 0, and so on.
-    int lb_idx_hi = bid & 0xff;
-    int lb_idx_lo = lb_idx_hi - 1;
-
-    int idx_lo;
-    if (lb_idx_lo > 0) idx_lo = log_bounds[lb_idx_lo] & ~(BS - 1);
-    else               idx_lo = 0;
-    int idx_hi = (log_bounds[lb_idx_hi] & ~(BS - 1)) + BS;
-
-    float rnrounds = {{'%d.0f' % info.palette_height}} / (idx_hi - idx_lo);
-    float time = tid * rnrounds;
-    float time_step = BS * rnrounds;
-
-    int magic = ((blockIdx.x & 0xff) << 3) + ((blockIdx.x & 0xf00) << 12);
-    int magic_mask = 0xf007f8;
-
-    for (int i = idx_lo + tid; i < idx_hi; i += BS) {
-        int entry = log[i];
-
-        asm volatile ({{crep("""
-{
-    .reg .pred q;
-    .reg .u32 shoff, color, time, d, r, g, b, hi, lo, hiw, low, tmp;
-    .reg .u64 ptr;
-    .reg .f32 rf, gf, bf, df, rg, gg, dg, bg;
-
-    // TODO: opacity
-    and.b32         tmp,    %0,     %4;
-    setp.eq.u32     q,      tmp,    %3;
-@!q bra             before_sync;
-
-    and.b32         shoff,  %0,     0xff800;
-    shr.b32         shoff,  shoff,  5;
-    bfi.b32         shoff,  %0,     shoff,  3,  3;
-
-    bfe.u32         color,  %0,     24, 8;
-    shl.b32         color,  color,  3;
-    cvt.rni.u32.f32 time,   %1;
-
-    suld.b.2d.v2.b32.clamp  {lo, hi},   [flatpal, {color, time}];
-    ld.shared.v2.u32    {low, hiw},     [shoff];
-    add.cc.u32          lo,     lo,     low;
-    addc.u32            hi,     hi,     hiw;
-    setp.hs.u32         q,      hi,     (1023 << 22);
-@q  bra                 oflow_sync;
-    st.shared.v2.u32    [shoff],        {hi, lo};
-before_sync:
-    bar.sync            0;
-    bra                 oflow_write_end;
-oflow_sync:
-    st.shared.v2.u32    [shoff],    {0, 0};
-
-    // TODO: opacity
-    bfi.b32         shoff,  %0,     0,  4,  24;
-    cvt.u64.u32     ptr,    shoff;
-    add.u64         ptr,    ptr,    %2;
-    ld.global.v4.f32    {dg,bg,gg,rg},  [ptr];
-    bar.sync        0;
-
-    bfe.u32         r,      hi,     4,      18;
-    bfe.u32         g,      lo,     18,     14;
-    bfi.b32         g,      hi,     g,      14,     4;
-    and.b32         b,      lo,     ((1<<18)-1);
-    cvt.rn.f32.u32  rf,     r;
-    cvt.rn.f32.u32  gf,     g;
-    cvt.rn.f32.u32  bf,     b;
-    fma.rn.ftz.f32  rf,     rf,     (1.0/255.0),    rg;
-    fma.rn.ftz.f32  gf,     gf,     (1.0/255.0),    gg;
-    fma.rn.ftz.f32  bf,     bf,     (1.0/255.0),    bg;
-    add.f32         df,     df,     dg;
-    st.global.v4.f32    [ptr],  {df,bf,gf,rf};
-
-oflow_write_end:
-}
-        """)}}  ::  "r"(entry), "f"(time), "l"(acc), "r"(magic), "r"(magic_mask));
-        time += time_step;
-    }
-
-    __syncthreads();
-
-
-    idx = tid;
-    int glo_idx = magic | (((idx << 8) | idx) & 0xff807);
-
-    for (int i = 0; i < (SHAW / BS) && glo_idx < nbins; i++) {
-        int d, r, g, b;
-        float4 pix = acc[glo_idx];
-        asm({{crep("""
-{
-    .reg .u32 hi, lo;
-    ld.shared.v2.u32   {lo, hi},    [%4];
-    shr.u32         %0,     hi,     22;
-    bfe.u32         %1,     hi,     4,      18;
-    bfe.u32         %2,     lo,     18,     14;
-    bfi.b32         %2,     hi,     %2,     14,     4;
-    and.b32         %3,     lo,     ((1<<18)-1);
-}
-        """)}} : "=r"(d), "=r"(r), "=r"(g), "=r"(b) : "r"(idx*8));
-        pix.x += r / 255.0f;
-        pix.y += g / 255.0f;
-        pix.z += b / 255.0f;
-        pix.w += d;
-        acc[glo_idx] = pix;
-        idx += BS;
-        glo_idx += (BS << 8);
-    }
-}
-{{endif}}
-''', 'iter_kern')
-        return tmpl.substitute(
-                info = info,
-                cp = genome,
-                pcp = self.pcp,
-                NTHREADS = self.NTHREADS,
-                NWARPS = self.NTHREADS / 32,
-                std_xforms = [n for n in sorted(genome.xforms) if n != 'final'],
-                **globals())
+''', 'flush_atom').substitute())

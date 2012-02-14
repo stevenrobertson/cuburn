@@ -17,6 +17,8 @@ import redis
 
 from cuburn import render, genome
 
+import pycuda.driver as cuda
+
 pycuda = None
 
 # The default maximum number of waiting jobs. Also used to determine when a
@@ -50,20 +52,6 @@ def get_temperature():
                 return out[idx+1:idx+3]
     return ''
 
-def push_frame(r, out):
-    if out is None:
-        return
-    sid, sidx, ftag = out.idx
-    # TODO: gotta put this in a module somewhere and make it adjustable
-    noalpha = out.buf[:,:,:3]
-    img = scipy.misc.toimage(noalpha, cmin=0, cmax=1)
-    buf = StringIO()
-    img.save(buf, 'jpeg', quality=98)
-    buf.seek(0)
-    head = ' '.join([sidx, str(out.gpu_time), ftag])
-    r.rpush(sid + ':queue', head + '\0' + buf.read())
-    print 'Pushed frame: %s' % head
-
 def work(server):
     global pycuda
     import pycuda.autoinit
@@ -80,7 +68,11 @@ def work(server):
     r.expire(wid, 180)
     last_ping = time.time()
 
-    last_pid, last_gid, riter = None, None, None
+    idx = evt = buf = None
+    last_idx = last_buf = last_evt = two_evts_ago = None
+    last_pid = last_gid = rdr = None
+
+    mgr = render.RenderManager()
 
     while True:
         task = r.blpop('renderpool:' + rev + ':queue', 10)
@@ -90,28 +82,46 @@ def work(server):
             r.expire(wid, 180)
             last_ping = now
 
+        # last_evt will be populated during normal queue operation (when evt
+        # contains the most recent event), as well as when the render queue is
+        # flushing due to not receiving a new task before the timeout.
+        if last_idx is not None:
+            while not last_evt.query():
+                # This delay could probably be a lot higher with zero impact
+                # on throughput for Fermi cards
+                time.sleep(0.05)
+
+            sid, sidx, ftag = last_idx
+            obuf = StringIO()
+            rdr.out.save(buf, obuf, 'jpeg')
+            obuf.seek(0)
+            gpu_time = last_evt.time_since(two_evts_ago)
+            head = ' '.join([sidx, str(gpu_time), ftag])
+            r.rpush(sid + ':queue', head + '\0' + obuf.read())
+            print 'Pushed frame: %s' % head
+
+        two_evts_ago, last_evt = last_evt, evt
+        last_idx, last_buf = idx, buf
+
         if not task:
-            if riter:
-                push_frame(r, riter.send(None))
-                riter = None
+            idx = evt = buf = None
             continue
 
         sid, sidx, pid, gid, ftime, ftag = task[1].split(' ', 5)
-        if pid != last_pid or gid != last_gid or not riter:
+        if pid != last_pid or gid != last_gid or not rdr:
             gnm = genome.Genome(json.loads(r.get(gid)))
             prof = json.loads(r.get(pid))
             gnm.set_profile(prof)
-            renderer = render.Renderer()
-            renderer.load(gnm)
+            rdr = render.Renderer(gnm)
 
-            if riter:
-                push_frame(r, riter.send(None))
+        if last_evt is None:
+            # Create a dummy event for timing
+            last_evt = cuda.Event().record(mgr.stream_a)
 
-            riter = renderer.render_gen(gnm, prof['width'], prof['height'])
-            next(riter)
-            last_pid, last_gid = pid, gid
-
-        push_frame(r, riter.send(((sid, sidx, ftag), float(ftime))))
+        copy = last_idx is None
+        w, h = prof['width'], prof['height']
+        evt, buf = mgr.queue_frame(rdr, gnm, float(ftime), w, h, copy)
+        idx = sid, sidx, ftag
 
 def iter_genomes(prof, gpaths, pname='540p'):
     """

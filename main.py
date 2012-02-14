@@ -3,8 +3,8 @@
 # cuburn, one of a surprisingly large number of ports of the fractal flame
 # algorithm to NVIDIA GPUs.
 #
-# This one is copyright 2010-2011, Steven Robertson <steven@strobe.cc>
-# and Eric Reckase <e.reckase@gmail.com>.
+# This one is copyright 2010-2012, Steven Robertson <steven@strobe.cc>
+# and Erik Reckase <e.reckase@gmail.com>.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later
@@ -20,11 +20,9 @@ from subprocess import Popen
 from itertools import ifilter
 
 import numpy as np
-import Image
-import scipy
 import pycuda.driver as cuda
 
-from cuburn import genome, render
+from cuburn import genome, render, filters, output
 
 profiles = {
     '1080p': dict(fps=24, width=1920, height=1080, quality=3000, skip=0),
@@ -33,11 +31,10 @@ profiles = {
     'preview': dict(fps=24, width=640, height=360, quality=800, skip=1)
 }
 
-def save(rframe):
-    noalpha = rframe.buf[:,:,:3]
-    img = scipy.misc.toimage(noalpha, cmin=0, cmax=1)
-    img.save(rframe.idx, quality=98)
-    print rframe.idx, rframe.gpu_time
+def save(out):
+    # Temporary! TODO: fix this
+    output.PILOutput.save(out.buf, out.idx)
+    print out.idx, out.gpu_time
 
 def main(args, prof):
     import pycuda.autoinit
@@ -53,9 +50,7 @@ def main(args, prof):
     gnm = genome.Genome(gnm)
     err, times = gnm.set_profile(prof)
 
-    anim = render.Renderer()
-    anim.compile(gnm, keep=args.keep)
-    anim.load(gnm)
+    rmgr = render.RenderManager()
 
     basename = os.path.basename(args.flame.name).rsplit('.', 1)[0] + '_'
     if args.flame.name == '-':
@@ -76,61 +71,61 @@ def main(args, prof):
                   if not os.path.isfile(f[0]) or m > os.path.getmtime(f[0]))
 
     w, h = prof['width'], prof['height']
-    gen = anim.render(gnm, frames, w, h)
+    gen = rmgr.render(gnm, frames, w, h)
 
-    if args.gfx:
-        import pyglet
-        window = pyglet.window.Window(w, h, vsync=False)
-        image = pyglet.image.CheckerImagePattern().create_image(w, h)
-        label = pyglet.text.Label('Rendering first frame', x=5, y=h-5,
-                                  width=w, anchor_y='top', font_size=16,
-                                  bold=True, multiline=True)
-
-        @window.event
-        def on_draw():
-            window.clear()
-            image.texture.blit(0, 0)
-            label.draw()
-
-        @window.event
-        def on_key_press(sym, mod):
-            if sym == pyglet.window.key.Q:
-                pyglet.app.exit()
-
-        @window.event
-        def on_mouse_motion(x, y, dx, dy):
-            pass
-
-        last_time = [time.time()]
-
-        def poll(dt):
-            out = next(gen, False)
-            if out is False:
-                if args.pause:
-                    label.text = "Done. ('q' to quit)"
-                    #pyglet.clock.unschedule(poll)
-                else:
-                    pyglet.app.exit()
-            elif out is not None:
-                real_dt = time.time() - last_time[0]
-                last_time[0] = time.time()
-                save(out)
-                imgbuf = np.uint8(out.buf.flatten() * 255)
-                image.set_data('RGBA', -w*4, imgbuf.tostring())
-                label.text = '%s (%g fps)' % (out.idx, 1./real_dt)
-            else:
-                label.text += '.'
-            if args.sync:
-                cuda.Context.synchronize()
-
-        pyglet.clock.set_fps_limit(30)
-        pyglet.clock.schedule_interval(poll, 1/30.)
-        pyglet.app.run()
-    else:
+    if not args.gfx:
         for out in gen:
             save(out)
-            if args.sync:
-                cuda.Context.synchronize()
+        return
+
+    import pyglet
+    window = pyglet.window.Window(w, h, vsync=False)
+    image = pyglet.image.CheckerImagePattern().create_image(w, h)
+    label = pyglet.text.Label('Rendering first frame', x=5, y=h-5,
+                              width=w, anchor_y='top', font_size=16,
+                              bold=True, multiline=True)
+
+    @window.event
+    def on_draw():
+        window.clear()
+        image.texture.blit(0, 0)
+        label.draw()
+
+    @window.event
+    def on_key_press(sym, mod):
+        if sym == pyglet.window.key.Q:
+            pyglet.app.exit()
+
+    @window.event
+    def on_mouse_motion(x, y, dx, dy):
+        pass
+
+    last_time = [time.time()]
+
+    def poll(dt):
+        out = next(gen, False)
+        if out is False:
+            if args.pause:
+                label.text = "Done. ('q' to quit)"
+                #pyglet.clock.unschedule(poll)
+            else:
+                pyglet.app.exit()
+        elif out is not None:
+            real_dt = time.time() - last_time[0]
+            last_time[0] = time.time()
+            save(out)
+            imgbuf = np.uint8(out.buf.flatten() * 255)
+            image.set_data('RGBA', -w*4, imgbuf.tostring())
+            label.text = '%s (%g fps)' % (out.idx, 1./real_dt)
+        else:
+            label.text += '.'
+        if args.sync:
+            cuda.Context.synchronize()
+
+    pyglet.clock.set_fps_limit(30)
+    pyglet.clock.schedule_interval(poll, 1/30.)
+    pyglet.app.run()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Render fractal flames.')
@@ -150,8 +145,6 @@ if __name__ == "__main__":
     parser.add_argument('--pause', action='store_true',
         help="Don't close the preview window after rendering is finished")
 
-    parser.add_argument('--keep', action='store_true', dest='keep',
-        help='Keep compilation directory (disables kernel caching)')
     parser.add_argument('--sync', action='store_true', dest='sync',
         help='Use synchronous launches whenever possible')
 

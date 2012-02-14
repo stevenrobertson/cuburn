@@ -2,8 +2,10 @@ from collections import OrderedDict
 from itertools import cycle
 import numpy as np
 
-import tempita
-from util import HunkOCode, Template, BaseCode, assemble_code
+import util
+from util import Template, assemble_code, devlib, binsearchlib, ringbuflib
+from color import yuvlib
+from mwc import mwclib
 
 class GenomePackerName(str):
     """Class to indicate that a property is precalculated on the device"""
@@ -115,17 +117,10 @@ class GenomePackerPrecalc(GenomePackerView):
     def _code(self, code):
         self.packer.precalc_code.append(code)
 
-class GenomePacker(HunkOCode):
+class GenomePacker(object):
     """
     Packs a genome for use in iteration.
     """
-
-    # 2^search_rounds is the maximum number of control points, including
-    # endpoints, that can be used in a single genome. It should be okay to
-    # change this number without touching other code, but 32 samples fits
-    # nicely on a single cache line.
-    search_rounds = 5
-
     def __init__(self, tname):
         """
         Create a new DataPacker.
@@ -152,6 +147,7 @@ class GenomePacker(HunkOCode):
 
         self.packed = None
         self.genome = None
+        self.search_rounds = util.DEFAULT_SEARCH_ROUNDS
 
     def __len__(self):
         assert self._len is not None, 'len() called before finalize()'
@@ -189,42 +185,41 @@ class GenomePacker(HunkOCode):
 
         self._len = len(self.packed)
 
-        self.decls = self._decls.substitute(
-                packed=self.packed, tname=self.tname,
-                search_rounds=self.search_rounds)
-        self.defs = self._defs.substitute(
+        decls = self._decls.substitute(packed=self.packed, tname=self.tname)
+        defs = self._defs.substitute(
                 packed_direct=self.packed_direct, tname=self.tname,
                 precalc_code=self.precalc_code,
                 search_rounds=self.search_rounds)
 
+        return devlib(deps=[catmullromlib], decls=decls, defs=defs)
 
-    def pack(self):
+    def pack(self, pool=None):
         """
-        Return a packed copy of the genome ready for uploading to the GPU as a
-        3D NDArray, with the first element being the times and the second
-        being the values.
+        Return a packed copy of the genome ready for uploading to the GPU,
+        as two float32 NDArrays for the knot times and values.
         """
         width = 1 << self.search_rounds
-        out = np.empty((2, len(self.genome), width), dtype=np.float32)
-        # Ensure that unused values at the top are always big (must be >2.0)
-        out[0].fill(1e9)
+        if pool:
+            times = pool.allocate((len(self.genome), width), 'f4')
+            knots = pool.allocate((len(self.genome), width), 'f4')
+        else:
+            times, knots = np.empty((2, len(self.genome), width), 'f4')
+        times.fill(1e9)
 
         for idx, gname in enumerate(self.genome):
             attr = self.ns[gname[0]]
             for g in gname[1:]:
                 attr = getattr(attr, g)
-            out[0][idx][:len(attr.knots[0])] = attr.knots[0]
-            out[1][idx][:len(attr.knots[1])] = attr.knots[1]
-        return out
+            times[idx,:len(attr.knots[0])] = attr.knots[0]
+            knots[idx,:len(attr.knots[1])] = attr.knots[1]
+        return times, knots
 
     _defs = Template(r"""
-
-__global__
-void interp_{{tname}}(
+__global__ void interp_{{tname}}(
         {{tname}}* out,
         const float *times, const float *knots,
-        float tstart, float tstep, int maxid
-) {
+        float tstart, float tstep, int maxid)
+{
     int id = gtid();
     if (id >= maxid) return;
     out = &out[id];
@@ -249,7 +244,6 @@ void interp_{{tname}}(
     }
     {{endfor}}
 }
-
 """)
 
     _decls = Template(r"""
@@ -259,22 +253,13 @@ typedef struct {
 {{endfor}}
 } {{tname}};
 
-/* Search through the fixed-size list 'hay' to find the rightmost index which
- * contains a value strictly smaller than the input 'needle'. The crazy
- * bitwise search is just for my own amusement.
- */
-__device__
-int bitwise_binsearch(const float *hay, float needle) {
-    int lo = 0;
 
-    // TODO: improve efficiency on 64-bit arches
-    {{for i in range(search_rounds-1, -1, -1)}}
-    if (needle > hay[lo + {{1 << i}}])
-        lo += {{1 << i}};
-    {{endfor}}
-    return lo;
-}
+""")
 
+catmullromlib = devlib(deps=[binsearchlib], decls=r'''
+__device__ __noinline__
+float catmull_rom(const float *times, const float *knots, float t);
+''', defs=r'''
 __device__ __noinline__
 float catmull_rom(const float *times, const float *knots, float t) {
     int idx = bitwise_binsearch(times, t);
@@ -303,67 +288,14 @@ float catmull_rom(const float *times, const float *knots, float t) {
          + m2 * (      ttt -      tt)
          + k2 * (-2.0f*ttt + 3.0f*tt);
 }
+''')
 
-__global__
-void test_cr(const float *times, const float *knots, const float *t, float *r) {
-    int i = threadIdx.x + blockDim.x * blockIdx.x;
-    r[i] = catmull_rom(times, knots, t[i]);
-}
-""")
-
-class Palette(HunkOCode):
-    # The JPEG YUV full-range matrix, without bias into the positve regime.
-    # This assumes input color space is CIERGB D65, encoded with gamma 2.2.
-    # Note that some interpolated colors may exceed the sRGB and YUV gamuts.
-    YUV = np.matrix([[ 0.299,        0.587,      0.114],
-                     [-0.168736,    -0.331264,   0.5],
-                     [ 0.5,         -0.418688,  -0.081312]])
-
-    def __init__(self, interp_mode):
-        assert interp_mode in self.modes
-        self.mode = interp_mode
-        self.defs = self._defs.substitute(mode=interp_mode)
-
-    def prepare(self, palettes):
-        """
-        Produce palettes suitable for uploading to the device. Returns an
-        array of palettes in the same size and shape as the input.
-
-        This function will never modify its argument, but may return it
-        unmodified for certain interpolation modes.
-        """
-        if self.mode == 'yuvpolar':
-            ys, uvrs, uvts, alphas = zip(*map(self.rgbtoyuvpolar, palettes))
-            # Center all medians as closely to 0 as possible
-            means = np.mean(uvts, axis=1)
-            newmeans = (means + np.pi) % (2 * np.pi) - np.pi
-            uvts = (newmeans - means).reshape((-1, 1)) + uvts
-            zipped = zip(ys, uvrs, uvts, alphas)
-            return np.array(zipped, dtype='f4').transpose((0, 2, 1))
-        return palettes
-
-    @classmethod
-    def rgbtoyuvpolar(cls, pal):
-        # TODO: premultiply alpha or some nonsense like that?
-        y, u, v = np.array(cls.YUV * pal.T[:3])
-        uvr = np.hypot(u, v)
-        uvt = np.unwrap(np.arctan2(v, u))
-        return y, uvr, uvt, pal.T[3]
-
-    @classmethod
-    def yuvpolartorgb(cls, y, uvr, uvt, a):
-        u = uvr * np.cos(uvt)
-        v = uvr * np.sin(uvt)
-        r, g, b = np.array(cls.YUV.I * np.array([y, u, v]))
-        # Ensure Fortran order so that the memory gets laid out correctly
-        return np.array([r, g, b, a], order='F').T
-
-    modes = ['hsv', 'yuv', 'yuvpolar']
-    decls = "surface<void, cudaSurfaceType2D> flatpal;\n"
-
-    _defs = Template(r"""
-__device__
-float4 interp_color(const float *times, const float4 *sources, float time) {
+palintlib = devlib(deps=[binsearchlib, ringbuflib, yuvlib, mwclib], decls='''
+surface<void, cudaSurfaceType2D> flatpal;
+''', defs=r'''
+__device__ float4
+interp_color(const float *times, const float4 *sources, float time)
+{
     int idx = fmaxf(bitwise_binsearch(times, time) + 1, 1);
     float lf = (times[idx] - time) / (times[idx] - times[idx-1]);
     float rf = 1.0f - lf;
@@ -375,42 +307,11 @@ float4 interp_color(const float *times, const float4 *sources, float time) {
     float3 l3 = make_float3(left.x, left.y, left.z);
     float3 r3 = make_float3(right.x, right.y, right.z);
 
-{{if mode == 'hsv'}}
-    float3 lhsv = rgb2hsv(l3);
-    float3 rhsv = rgb2hsv(r3);
-
-    if (fabs(lhsv.x - rhsv.x) > 3.0f)
-        if (lhsv.x < rhsv.x)
-            lhsv.x += 6.0f;
-        else
-            rhsv.x += 6.0f;
-
-    float3 hsv;
-    hsv.x = lhsv.x * lf + rhsv.x * rf;
-    hsv.y = lhsv.y * lf + rhsv.y * rf;
-    hsv.z = lhsv.z * lf + rhsv.z * rf;
-
-    if (hsv.x > 6.0f)
-        hsv.x -= 6.0f;
-    if (hsv.x < 0.0f)
-        hsv.x += 6.0f;
-
-    yuv = rgb2yuv(hsv2rgb(hsv));
-{{elif mode.startswith('yuv')}}
-    {{if mode == 'yuv'}}
     float3 lyuv = rgb2yuv(l3);
     float3 ryuv = rgb2yuv(r3);
     yuv.x = lyuv.x * lf + ryuv.x * rf;
     yuv.y = lyuv.y * lf + ryuv.y * rf;
     yuv.z = lyuv.z * lf + ryuv.z * rf;
-    {{elif mode == 'yuvpolar'}}
-    yuv.x = l3.x * lf + r3.x * rf;
-    float radius = l3.y * lf + r3.y * rf;
-    float angle  = l3.z * lf + r3.z * rf;
-    yuv.y = radius * cosf(angle);
-    yuv.z = radius * sinf(angle);
-    {{endif}}
-{{endif}}
 
     yuv.y += 0.5f;
     yuv.z += 0.5f;
@@ -418,28 +319,13 @@ float4 interp_color(const float *times, const float4 *sources, float time) {
     return make_float4(yuv.x, yuv.y, yuv.z, left.w * lf + right.w * rf);
 }
 
-__global__
-void interp_palette(uchar4 *outs,
+__global__ void interp_palette_flat(
+        ringbuf *rb, mwc_st *rctxs,
         const float *times, const float4 *sources,
-        float tstart, float tstep) {
-    float time = tstart + blockIdx.x * tstep;
-    float4 yuva = interp_color(times, sources, time);
-
-    uchar4 out;
-    out.x = yuva.x * 255.0f;
-    out.y = yuva.y * 255.0f;
-    out.z = yuva.z * 255.0f;
-    out.w = yuva.w * 255.0f;
-    outs[blockDim.x * blockIdx.x + threadIdx.x] = out;
-}
-
-__global__
-void interp_palette_flat(mwc_st *rctxs,
-        const float *times, const float4 *sources,
-        float tstart, float tstep) {
-
+        float tstart, float tstep)
+{
+    mwc_st rctx = rctxs[rb_incr(rb->head, threadIdx.x)];
     int gid = blockIdx.x * blockDim.x + threadIdx.x;
-    mwc_st rctx = rctxs[gid];
 
     float time = tstart + blockIdx.x * tstep;
     float4 yuva = interp_color(times, sources, time);
@@ -447,17 +333,30 @@ void interp_palette_flat(mwc_st *rctxs,
     // TODO: pack Y at full precision, UV at quarter
     uint2 out;
 
-    uint32_t y = min(255, (uint32_t) (yuva.x * 255.0f + 0.49f * mwc_next_11(rctx)));
-    uint32_t u = min(255, (uint32_t) (yuva.y * 255.0f + 0.49f * mwc_next_11(rctx)));
-    uint32_t v = min(255, (uint32_t) (yuva.z * 255.0f + 0.49f * mwc_next_11(rctx)));
+    uint32_t y = yuva.x * 255.0f + 0.49f * mwc_next_11(rctx);
+    uint32_t u = yuva.y * 255.0f + 0.49f * mwc_next_11(rctx);
+    uint32_t v = yuva.z * 255.0f + 0.49f * mwc_next_11(rctx);
+    y = min(255, y);
+    u = min(255, u);
+    v = min(255, v);
     out.y = (1 << 22) | (y << 4);
     out.x = (u << 18) | v;
+
     surf2Dwrite(out, flatpal, 8 * threadIdx.x, blockIdx.x);
-    rctxs[gid] = rctx;
+    rctxs[rb_incr(rb->tail, threadIdx.x)] = rctx;
 }
-""")
+''')
+
+testcrlib = devlib(defs=r'''
+__global__ void
+test_cr(const float *times, const float *knots, const float *t, float *r) {
+    int i = threadIdx.x + blockDim.x * blockIdx.x;
+    r[i] = catmull_rom(times, knots, t[i]);
+}
+''')
 
 if __name__ == "__main__":
+    # Test spline evaluation. This code will probably drift pretty often.
     import pycuda.driver as cuda
     from pycuda.compiler import SourceModule
     import pycuda.autoinit

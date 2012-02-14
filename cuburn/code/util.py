@@ -1,55 +1,119 @@
 """
 Provides tools and miscellaneous functions for building device code.
 """
+import os
+import tempfile
+from collections import namedtuple
 
+import pycuda.driver as cuda
+import pycuda.compiler
 import numpy as np
 import tempita
 
-def crep(s):
-    """Escape for PTX assembly"""
-    if isinstance(s, unicode):
-        s = s.encode('utf-8')
-    return '"%s"' % s.encode("string_escape")
-
 def argset(obj, **kwargs):
+    """
+    Allow an object with many properties to be set using one call.
+
+    >>> x = argset(X(), a=1, b=2)
+    >>> x.a
+    1
+    """
     for k, v in kwargs.items():
         setattr(obj, k, v)
     return obj
 
+def launch(name, mod, stream, block, grid, *args, **kwargs):
+    """
+    Oft-used kernel launch helper. Provides a nice boost in readability of
+    densely-packed asynchronous code launches.
+    """
+    fun = mod.get_function(name)
+    if isinstance(block, (int, np.number)):
+        block = (int(block), 1, 1)
+    if isinstance(grid, (int, np.number)):
+        grid = (int(grid), 1)
+    fun(*args, block=block, grid=grid, stream=stream, **kwargs)
+
+def crep(s):
+    """Multiline literal escape for inline PTX assembly."""
+    if isinstance(s, unicode):
+        s = s.encode('utf-8')
+    return '"%s"' % s.encode("string_escape")
+
 class Template(tempita.Template):
+    """
+    A Tempita template with extra stuff in the default namespace.
+    """
     default_namespace = tempita.Template.default_namespace.copy()
 Template.default_namespace.update({'np': np, 'crep': crep})
 
-class HunkOCode(object):
-    """An apparently passive container for device code."""
-    # Use property objects to make these dynamic
-    headers = ''
-    decls = ''
-    defs = ''
+# Passive container for device code.
+DevLib = namedtuple('DevLib', 'deps headers decls defs')
 
-def assemble_code(*sections):
-    return ''.join([''.join([getattr(sect, kind) for sect in sections])
-                    for kind in ['headers', 'decls', 'defs']])
+def devlib(deps=(), headers='', decls='', defs=''):
+    """Create a library of device code."""
+    # This exists because namedtuple doesn't support default args
+    return DevLib(deps, headers, decls, defs)
 
-def apply_affine(x, y, xo, yo, packer):
-    return Template("""
-    {{xo}} = {{packer.xx}} * {{x}} + {{packer.xy}} * {{y}} + {{packer.xo}};
-    {{yo}} = {{packer.yx}} * {{x}} + {{packer.yy}} * {{y}} + {{packer.yo}};
-    """).substitute(locals())
+def assemble_code(*libs):
+    seen = set()
+    out = []
+    def go(lib):
+        map(go, lib.deps)
+        code = lib[1:]
+        if code not in seen:
+            seen.add(code)
+            out.append(code)
+    go(stdlib)
+    map(go, libs)
+    return ''.join(sum(zip(*out), ()))
 
-class BaseCode(HunkOCode):
-    headers = """
+DEFAULT_CMP_OPTIONS = ('-use_fast_math', '-maxrregcount', '42')
+DEFAULT_SAVE_KERNEL = True
+def compile(name, src, opts=DEFAULT_CMP_OPTIONS, save=DEFAULT_SAVE_KERNEL):
+    """
+    Compile a module. Returns a copy of the source (for inspection or
+    display) and the compiled cubin.
+    """
+    dir = tempfile.gettempdir()
+    if save:
+        with open(os.path.join(dir, name + '_kern.cu'), 'w') as fp:
+            fp.write(src)
+    cubin = pycuda.compiler.compile(src, options=list(opts))
+    if save:
+        with open(os.path.join(dir, name + '_kern.cubin'), 'w') as fp:
+            fp.write(cubin)
+    return cubin
+
+class ClsMod(object):
+    """
+    Convenience class or mixin that automatically compiles and loads a module
+    once per class, saving potentially expensive code regeneration. Only use
+    if your class does not employ run-time code generation.
+    """
+    mod = None
+    # Supply your own DevLib on this property
+    lib = None
+
+    def __init__(self):
+        super(ClsMod, self).__init__()
+        self.load()
+
+    @classmethod
+    def load(cls, name=None):
+        if cls.mod is None:
+            if name is None:
+                name = cls.__name__.lower()
+            cubin = compile(name, assemble_code(cls.lib))
+            cls.mod = cuda.module_from_buffer(cubin)
+
+# This lib is included with *every* assembled module. It contains no global
+# functions, so it shouldn't slow down compilation time too much.
+stdlib = devlib(headers="""
 #include<cuda.h>
 #include<stdint.h>
 #include<stdio.h>
-"""
-
-    decls = """
-float3 rgb2hsv(float3 rgb);
-float3 hsv2rgb(float3 hsv);
-"""
-
-    defs = Template(r"""
+""", decls=r"""
 #undef M_E
 #undef M_LOG2E
 #undef M_LOG10E
@@ -84,33 +148,79 @@ float3 hsv2rgb(float3 hsv);
 #define bfe_decl(d, s, o, w) \
         int d; \
         bfe(d, s, o, w)
-
-// TODO: use launch parameter preconfig to eliminate unnecessary parts
-__device__
-uint32_t gtid() {
+""", defs=r'''
+__device__ uint32_t gtid() {
     return threadIdx.x + blockDim.x *
             (threadIdx.y + blockDim.y *
                 (threadIdx.z + blockDim.z *
                     (blockIdx.x + (gridDim.x * blockIdx.y))));
 }
 
-__device__
-uint32_t trunca(float f) {
+__device__ uint32_t trunca(float f) {
     // truncate as used in address calculations. note the use of a signed
     // conversion is intentional here (simplifies image bounds checking).
     uint32_t ret;
     asm("cvt.rni.s32.f32    %0,     %1;" : "=r"(ret) : "f"(f));
     return ret;
 }
+''')
 
-__global__
-void fill_dptr(uint32_t* dptr, int size, uint32_t value) {
+def mkbinsearchlib(rounds):
+    """
+    Search through the fixed-size list 'hay' to find the rightmost index which
+    contains a value strictly smaller than the input 'needle'. The list must
+    be exactly '2^rounds' long, although padding at the top with very large
+    numbers or even +inf effectively shortens it.
+    """
+    # TODO: this doesn't optimize well on a 64-bit arch, not that it's a
+    # performance-critical chunk of code or anything
+    src = Template(r'''
+__device__ int bitwise_binsearch(const float *hay, float needle) {
+    int lo = 0;
+
+    // TODO: improve efficiency on 64-bit arches
+    {{for i in range(search_rounds-1, -1, -1)}}
+    if (needle > hay[lo + {{1 << i}}])
+        lo += {{1 << i}};
+    {{endfor}}
+    return lo;
+}
+''', 'bitwise_binsearch')
+    return devlib(defs=src.substitute(search_rounds=rounds))
+
+# 2^search_rounds is the maximum number of knots allowed in a single spline.
+# This includes the four required knots, so a 5 round search supports 28
+# interior knots in the domain (0, 1). 2^5 fits nicely on a single cache line.
+DEFAULT_SEARCH_ROUNDS = 5
+binsearchlib = mkbinsearchlib(DEFAULT_SEARCH_ROUNDS)
+
+
+filldptrlib = devlib(defs=r'''
+__global__ void
+fill_dptr(uint32_t* dptr, int size, uint32_t value) {
     int i = (gridDim.x * blockIdx.y + blockIdx.x) * blockDim.x + threadIdx.x;
     if (i < size) {
         dptr[i] = value;
     }
 }
+''')
+def fill_dptr(mod, dptr, size, stream=None, value=np.uint32(0)):
+    """
+    A memory zeroer which can be embedded in a stream, unlike the various
+    memset routines. Size is the number of 4-byte words in the pointer;
+    value is the word to fill it with. If value is not an np.uint32, it
+    will be coerced to a buffer and the first four bytes taken.
+    """
+    if not isinstance(value, np.uint32):
+        if isinstance(value, int):
+            value = np.uint32(value)
+        else:
+            value = np.frombuffer(buffer(value), np.uint32)[0]
+    blocks = int(np.ceil(np.sqrt(size / 1024.)))
+    launch('fill_dptr', mod, stream, (1024, 1, 1), (blocks, blocks),
+            dptr, np.int32(size), value)
 
+writehalflib = devlib(defs=r'''
 /* read_half and write_half decode and encode, respectively, two
  * floating-point values from a 32-bit value (typed as a 'float' for
  * convenience but not really). The values are packed into u16s as a
@@ -122,8 +232,8 @@ void fill_dptr(uint32_t* dptr, int size, uint32_t value) {
  * approach when the alpha channel is present.
  */
 
-__device__
-void read_half(float &x, float &y, float xy, float den) {
+__device__ void
+read_half(float &x, float &y, float xy, float den) {
     asm("\n\t{"
         "\n\t   .reg .u16       x, y;"
         "\n\t   .reg .f32       rc;"
@@ -137,8 +247,8 @@ void read_half(float &x, float &y, float xy, float den) {
         : "=f"(x), "=f"(y) : "f"(xy), "f"(den));
 }
 
-__device__
-void write_half(float &xy, float x, float y, float den) {
+__device__ void
+write_half(float &xy, float x, float y, float den) {
     asm("\n\t{"
         "\n\t   .reg .u16       x, y;"
         "\n\t   .reg .f32       rc, xf, yf;"
@@ -152,87 +262,41 @@ void write_half(float &xy, float x, float y, float den) {
         "\n\t}"
         : "=f"(xy) : "f"(x), "f"(y), "f"(den));
 }
+''')
 
 
-/* This conversion uses the JPEG full-range standard. Note that UV have range
- * [-0.5, 0.5], so consider biasing the results. */
-__device__
-float3 rgb2yuv(float3 rgb) {
-    return make_float3(
-        0.299f      * rgb.x + 0.587f    * rgb.y + 0.114f    * rgb.z,
-        -0.168736f  * rgb.x - 0.331264f * rgb.y + 0.5f      * rgb.z,
-        0.5f        * rgb.x - 0.418688f * rgb.y - 0.081312f * rgb.z);
+def mkringbuflib(rb_size):
+    """
+    A ringbuffer for access to shared resources.
+
+    Some components, such as the MWC contexts, are expensive to generate, and
+    have no affinity to a particular block. Rather than maintain a separate
+    copy of each of these objects for every thread block in a launch, we want
+    to only keep enough copies of these resources around to service every
+    thread block that could possibly be active simultaneously on one card,
+    which is often considerably smaller. This class provides a simple
+    ringbuffer type and an increment function, used in a couple places to
+    implement this kind of sharing.
+    """
+    return devlib(headers="#define RB_SIZE_MASK %d" % (rb_size - 1), decls='''
+typedef struct {
+    int head;
+    int tail;
+} ringbuf;
+''', defs=r'''
+__shared__ int rb_idx;
+__device__ int rb_incr(int &rb_base, int tidx) {
+    if (threadIdx.y == 1 && threadIdx.x == 1)
+        rb_idx = 256 * (atomicAdd(&rb_base, 1) & RB_SIZE_MASK);
+    __syncthreads();
+    return rb_idx + tidx;
 }
+''')
 
-__device__
-float3 yuv2rgb(float3 yuv) {
-    return make_float3(
-        yuv.x                    + 1.402f   * yuv.z,
-        yuv.x - 0.34414f * yuv.y - 0.71414f * yuv.z,
-        yuv.x + 1.772f   * yuv.y);
-}
-
-__device__
-float3 rgb2hsv(float3 rgb) {
-    float M = fmaxf(fmaxf(rgb.x, rgb.y), rgb.z);
-    float m = fminf(fminf(rgb.x, rgb.y), rgb.z);
-    float C = M - m;
-
-    float s = M > 0.0f ? C / M : 0.0f;
-
-    float h = 0.0f;
-    if (s != 0.0f) {
-        C = 1.0f / C;
-        float rc = (M - rgb.x) * C;
-        float gc = (M - rgb.y) * C;
-        float bc = (M - rgb.z) * C;
-
-        if      (rgb.x == M)  h = bc - gc;
-        else if (rgb.y == M)  h = 2 + rc - bc;
-        else                  h = 4 + gc - rc;
-        
-        if (h < 0) h += 6.0f;
-    }
-    return make_float3(h, s, M);
-}
-
-__device__
-float3 hsv2rgb(float3 hsv) {
-
-    float whole = floorf(hsv.x);
-    float frac = hsv.x - whole;
-    float val = hsv.z;
-    float min = val * (1 - hsv.y);
-    float mid = val * (1 - (hsv.y * frac));
-    float alt = val * (1 - (hsv.y * (1 - frac)));
-
-    float3 out;
-         if (whole == 0.0f) { out.x = val; out.y = alt; out.z = min; }
-    else if (whole == 1.0f) { out.x = mid; out.y = val; out.z = min; }
-    else if (whole == 2.0f) { out.x = min; out.y = val; out.z = alt; }
-    else if (whole == 3.0f) { out.x = min; out.y = mid; out.z = val; }
-    else if (whole == 4.0f) { out.x = alt; out.y = min; out.z = val; }
-    else                    { out.x = val; out.y = min; out.z = mid; }
-    return out;
-}
-""").substitute()
-
-    @staticmethod
-    def fill_dptr(mod, dptr, size, stream=None, value=np.uint32(0)):
-        """
-        A memory zeroer which can be embedded in a stream, unlike the various
-        memset routines. Size is the number of 4-byte words in the pointer;
-        value is the word to fill it with. If value is not an np.uint32, it
-        will be coerced to a buffer and the first four bytes taken.
-        """
-        fill = mod.get_function("fill_dptr")
-        if not isinstance(value, np.uint32):
-            if isinstance(value, int):
-                value = np.uint32(value)
-            else:
-                value = np.frombuffer(buffer(value), np.uint32)[0]
-        blocks = int(np.ceil(np.sqrt(size / 1024 + 1)))
-        fill(dptr, np.int32(size), value, stream=stream,
-             block=(1024, 1, 1), grid=(blocks, blocks, 1))
-
-
+# For now, the number of entries is fixed to a value known to work on all
+# Fermi cards. Autodetection, or perhaps just a global limit increase, will be
+# done when I get my hands on a Kepler device. The fixed size assumes blocks
+# of 256 threads, although even at that size there are pathological cases that
+# could break the assumption.
+DEFAULT_RB_SIZE = 64
+ringbuflib = mkringbuflib(DEFAULT_RB_SIZE)

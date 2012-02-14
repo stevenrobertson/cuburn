@@ -1,383 +1,372 @@
+"""
+Resources and tools to perform rendering.
+"""
+
 import os
 import sys
 import re
-import time as timemod
+import time
 import tempfile
 from collections import namedtuple
-from itertools import cycle, repeat, chain, izip, imap, ifilter
-from ctypes import *
-from cStringIO import StringIO
 import numpy as np
 from numpy import float32 as f32, int32 as i32, uint32 as u32, uint64 as u64
-from scipy import ndimage
 
-import pycuda.compiler
 import pycuda.driver as cuda
 import pycuda.tools
 
-import cuburn.genome
-from cuburn import affine
-from cuburn.code import util, mwc, iter, interp, filtering, sort
+import filters
+import output
+from code import util, mwc, iter, interp, sort
+from code.util import ClsMod, devlib, filldptrlib, assemble_code, launch
 
 RenderedImage = namedtuple('RenderedImage', 'buf idx gpu_time')
 Dimensions = namedtuple('Dimensions', 'w h aw ah astride')
 
-def _sync_stream(dst, src):
-    dst.wait_for_event(cuda.Event(cuda.event_flags.DISABLE_TIMING).record(src))
+class Framebuffers(object):
+    """
+    The largest memory allocations, and a stream to serialize their use.
 
-class Renderer(object):
+    ``d_front`` and ``d_back`` are separate buffers, each large enough to hold
+    four float32 components per pixel (including any gutter pixels added for
+    alignment or padding). ``d_side`` is another buffer large enough to hold
+    two float32 components per pixel.
+
+    Every user of this set of buffers may use and overwrite the buffers in
+    any way, as long as the output for the next stage winds up in the front
+    buffer. The front and back buffers can be exchanged by the ``flip()``
+    method (which simply exchanges the pointers); while no similar method
+    exists for the side buffer, you're free to do the same by taking local
+    copies of the references and exchanging them yourself.
+
+    There's one spot in the stream interleaving where the behavior is
+    different: the ``Output.convert`` call must store its output to the back
+    buffer, which will remain untouched until the dtoh copy of the converted
+    buffer is finished. This happens while the ``iter`` kernel of the next
+    frame writes to the front and side buffers, which means in practice that
+    there's essentially no waiting on any buffers.
+
+    If an output module decides to get all krazy and actually replaces the
+    references to the buffers on this object - to, say, implement a temporally
+    aware tone-mapping or denoising pass - that's probably okay, but just make
+    sure it appears like it's expected to.
     """
-    Control structure for rendering a series of frames.
+
+    # Minimum extension of accumulation buffer beyond output region. Used to
+    # alleviate edge effects during filtering. Actual gutter may be larger to
+    # accomodate alignment requirements; when it is, that extension will be
+    # applied to the lower-right corner of the buffer. This is asymmetrical,
+    # but simplifies trimming logic when it's time for that.
+    gutter = 10
+
+    @classmethod
+    def calc_dim(cls, width, height):
+        """
+        Given a width and height, return a valid set of dimensions which
+        include at least enough gutter to exceed the minimum, and where
+        (acc_width % 32) == 0 and (acc_height % 8) == 0.
+        """
+        awidth = width + 2 * cls.gutter
+        aheight = 8 * int(np.ceil((height + 2 * cls.gutter) / 8.))
+        astride = 32 * int(np.ceil(awidth / 32.))
+        return Dimensions(width, height, awidth, aheight, astride)
+
+    def __init__(self):
+        self.stream = cuda.Stream()
+        self._clear()
+
+        # These resources rely on the slots/ringbuffer mechanism for sharing,
+        # and so can be shared across any number of launches, genomes, and
+        # render kernels. Notably, seeds are self-synchronizing, so they're not
+        # attached to either stream object.
+        self.d_rb = cuda.to_device(np.array([0, 0], dtype=u32))
+        seeds = mwc.make_seeds(util.DEFAULT_RB_SIZE * 256)
+        self.d_seeds = cuda.to_device(seeds)
+        self._len_d_points = util.DEFAULT_RB_SIZE * 256 * 16
+        self.d_points = cuda.mem_alloc(self._len_d_points)
+
+    def _clear(self):
+        self.nbins = self.d_front = self.d_back = self.d_side = None
+
+    def free(self, stream=None):
+        if stream is not None:
+            stream.synchronize()
+        else:
+            cu
+        for p in (self.d_front, self.d_back, self.d_side):
+            if p is not None:
+                p.free()
+        self._clear()
+
+    def alloc(self, dim, stream=None):
+        """
+        Ensure that this object's framebuffers are large enough to handle the
+        given dimensions, allocating new ones if not.
+
+        If ``stream`` is not None and a reallocation is necessary, the stream
+        will be synchronized before the old buffers are deallocated.
+        """
+        nbins = dim.ah * dim.astride
+        if self.nbins >= nbins: return
+        if self.nbins is not None: self.free()
+        try:
+            self.d_front = cuda.mem_alloc(16 * nbins)
+            self.d_back  = cuda.mem_alloc(16 * nbins)
+            self.d_side  = cuda.mem_alloc(8 * nbins)
+            self.nbins = nbins
+        except cuda.MemoryError, e:
+            # If a frame that's too large sneaks by the task distributor, we
+            # don't want to kill the server, but we also don't want to leave
+            # it stuck without any free memory to complete the next alloc.
+            # TODO: measure free mem and only take tasks that fit (but that
+            # should be done elsewhere)
+            self.free(stream)
+            raise e
+
+    def set_dim(self, width, height, stream=None):
+        """
+        Compute padded dimensions for given width and height, ensure that the
+        buffers are large enough (and reallocate if not), and return the
+        calculated dimensions.
+
+        Note that the returned dimensions are always the same for a given
+        width, height, and minimum gutter, even if the underlying buffers are
+        larger due to a previous allocation.
+        """
+        dim = self.calc_dim(width, height)
+        self.alloc(dim, stream)
+        return dim
+
+    def flip(self):
+        """Flip the front and back buffers."""
+        self.d_front, self.d_back = self.d_back, self.d_front
+
+class DevSrc(object):
     """
+    The buffers which represent a genome on-device, in the formats needed to
+    serve as a source for interpolating temporal samples.
+    """
+
+    # Maximum number of knots per parameter. This also covers the maximum
+    # number of palettes allowed.
+    max_knots = 1 << util.DEFAULT_SEARCH_ROUNDS
+
+    # Maximum number of parameters per genome. This number is exceedingly
+    # high, and should never even come close to being hit.
+    max_params = 1024
+
+    def __init__(self):
+        self.d_times = cuda.mem_alloc(4 * self.max_knots * self.max_params)
+        self.d_knots = cuda.mem_alloc(4 * self.max_knots * self.max_params)
+        self.d_ptimes = cuda.mem_alloc(4 * self.max_knots)
+        self.d_pals = cuda.mem_alloc(4 * 4 * 256 * self.max_knots)
+
+class DevInfo(object):
+    """
+    The buffers which hold temporal samples on-device, as used by iter.
+    """
+
+    # The palette texture/surface covers the color coordinate from [0,1] with
+    # equidistant horizontal samples, and spans the temporal range of the
+    # frame linearly with this many rows. Increasing these values increases the
+    # number of uniquely-dithered samples when using pre-dithered surfaces, as
+    # is done in 'atomic' accumulation.
+    palette_width = 256 # TODO: make this setting be respected
+    palette_height = 64
+
+    # This used to be determined automagically, but simultaneous occupancy
+    # and a much smaller block size simplifies this.
+    ntemporal_samples = 1024
 
     # Number of iterations to iterate without write after generating a new
     # point. This number is currently fixed pretty deeply in the set of magic
     # constants which govern buffer sizes; changing the value here won't
     # actually change the code on the device to do something different.
+    # It's here just for documentation purposes.
     fuse = 256
 
-    # The palette texture/surface covers the color coordinate from [0,1] with
-    # (for now, a fixed 256) equidistant horizontal samples, and spans the
-    # temporal range of the frame linearly with this many rows. Increasing
-    # this value increases the number of uniquely-dithered samples when using
-    # pre-dithered surfaces.
-    palette_height = 64
+    def __init__(self):
+        self.d_params = cuda.mem_alloc(
+                self.ntemporal_samples * DevSrc.max_params * 4)
+        self.palette_surf_dsc = util.argset(cuda.ArrayDescriptor3D(),
+                height=self.palette_height, width=self.palette_width, depth=0,
+                format=cuda.array_format.SIGNED_INT32,
+                num_channels=2, flags=cuda.array3d_flags.SURFACE_LDST)
+        self.d_pal_array = cuda.Array(self.palette_surf_dsc)
 
-    # Palette color interpolation mode (see code.interp.Palette)
-    palette_interp_mode = 'yuv'
+class Renderer(object):
+    def __init__(self, gnm):
+        self.packer, self.lib = iter.mkiterlib(gnm)
+        cubin = util.compile('iter', assemble_code(self.lib))
+        self.mod = cuda.module_from_buffer(cubin)
 
-    # Maximum width of DE and other spatial filters, and thus in turn the
-    # amount of padding applied. Note that, for now, this must not be changed!
-    # The filtering code makes deep assumptions about this value.
-    gutter = 10
+        # TODO: make these customizable
+        self.filts = [ filters.Bilateral()
+                     , filters.Logscale()
+                     , filters.ColorClip() ]
+        self.out = output.PILOutput()
 
-    # Accumulation mode. Leave it at 'atomic' for now.
-    acc_mode = 'atomic'
-
-    # At most this many separate buffers for xforms will be allocated, after
-    # which further xforms will wrap to the first when writing. Currently it
-    # is compiled in, so power-of-two and no runtime maximization. Current
-    # value of 16 fits into a 1GB card at 1080p.
-    max_nxf = 1
-
-    # TODO
-    chaos_used = False
-
-    cmp_options = ('-use_fast_math', '-maxrregcount', '42')
-    keep = False
+class RenderManager(ClsMod):
+    lib = devlib(deps=[interp.palintlib, filldptrlib, iter.flushatomlib])
 
     def __init__(self):
-        self._iter = self.pal = self.src = self.cubin = self.mod = None
+        super(RenderManager, self).__init__()
+        self.pool = pycuda.tools.PageLockedMemoryPool()
 
-        # Ensure class options don't get contaminated on an instance
-        self.cmp_options = list(self.cmp_options)
+        self.fb = Framebuffers()
+        self.src_a, self.src_b = DevSrc(), DevSrc()
+        self.info_a, self.info_b = DevInfo(), DevInfo()
+        self.stream_a, self.stream_b = cuda.Stream(), cuda.Stream()
+        self.filt_evt = self.copy_evt = None
 
-    def compile(self, genome, keep=None, cmp_options=None):
+    def _copy(self, rdr, gnm):
         """
-        Compile a kernel capable of rendering every frame in this animation.
-        The resulting compiled kernel is stored in the ``cubin`` property;
-        the source is available as ``src``, and is also returned for
-        inspection and display.
+        Queue a copy of a host genome into a set of device interpolation source
+        buffers.
 
-        This operation is idempotent, and has no side effects outside of
-        setting properties on this instance (unless there's a compiler error,
-        which is a bug); it should therefore be threadsafe as well.
-        It is, however, rather slow.
+        Note that for now, this is broken! It ignores ``gnm``, and only packs
+        the genome that was used when creating the renderer.
         """
-        keep = self.keep if keep is None else keep
-        cmp_options = self.cmp_options if cmp_options is None else cmp_options
+        times, knots = rdr.packer.pack(self.pool)
+        cuda.memcpy_htod_async(self.src_a.d_times, times, self.stream_a)
+        cuda.memcpy_htod_async(self.src_a.d_knots, knots, self.stream_a)
 
-        self._iter = iter.IterCode(self, genome)
-        self._iter.packer.finalize()
-        self.pal = interp.Palette(self.palette_interp_mode)
-        self.src = util.assemble_code(util.BaseCode, mwc.MWC, self._iter.packer,
-                                      self.pal, self._iter)
-        with open(os.path.join(tempfile.gettempdir(), 'kernel.cu'), 'w') as fp:
-            fp.write(self.src)
-        self.cubin = pycuda.compiler.compile(
-                self.src, keep=keep, options=cmp_options,
-                cache_dir=False if keep else None)
+        ptimes, pidxs = zip(*gnm.palette_times)
+        palettes = self.pool.allocate((len(ptimes), 256, 4), f32)
+        palettes[:] = [gnm.decoded_palettes[i] for i in pidxs]
+        palette_times = self.pool.allocate((self.src_a.max_knots,), f32)
+        palette_times.fill(1e9)
+        palette_times[:len(ptimes)] = ptimes
+        cuda.memcpy_htod_async(self.src_a.d_pals, palettes, self.stream_a)
+        cuda.memcpy_htod_async(self.src_a.d_ptimes, palette_times,
+                               self.stream_a)
 
-    def load(self, genome, jit_options=[]):
-        if not self.cubin:
-            self.compile(genome)
-        self.mod = cuda.module_from_buffer(self.cubin, jit_options)
-        with open('/tmp/iter_kern.cubin', 'wb') as fp:
-            fp.write(self.cubin)
-        return self.src
+        # TODO: use bilerp tex as src for palette interp
 
-    def render(self, genome, times, width, height, blend=True):
+    def _interp(self, rdr, gnm, dim, ts, td):
+        d_acc_size = rdr.mod.get_global('acc_size')[0]
+        p_dim = self.pool.allocate((len(dim),), u32)
+        p_dim[:] = dim
+        cuda.memcpy_htod_async(d_acc_size, p_dim, self.stream_a)
+
+        tref = self.mod.get_surfref('flatpal')
+        tref.set_array(self.info_a.d_pal_array, 0)
+        launch('interp_palette_flat', self.mod, self.stream_a,
+                256, self.info_a.palette_height,
+                self.fb.d_rb, self.fb.d_seeds,
+                self.src_a.d_ptimes, self.src_a.d_pals,
+                f32(ts), f32(td / self.info_a.palette_height))
+
+        nts = self.info_a.ntemporal_samples
+        launch('interp_iter_params', rdr.mod, self.stream_a,
+                256, np.ceil(nts / 256.),
+                self.info_a.d_params, self.src_a.d_times, self.src_a.d_knots,
+                f32(ts), f32(td / nts), i32(nts))
+
+    def _print_interp_knots(self, rdr, tsidx=5):
+        infos = cuda.from_device_like(self.info_a.d_params,
+                (tsidx + 1, self.info_a.max_params), f32)
+        for i, n in zip(infos[-1], rdr.packer.packed):
+            print '%60s %g' % ('_'.join(n), i)
+
+    def _iter(self, rdr, gnm, dim, tc):
+        tref = rdr.mod.get_surfref('flatpal')
+        tref.set_array(self.info_a.d_pal_array, 0)
+
+        nbins = dim.ah * dim.astride
+        fill = lambda b, s, v=i32(0): util.fill_dptr(
+                self.mod, b, s, stream=self.stream_a, value=v)
+        fill(self.fb.d_front,  4 * nbins)
+        fill(self.fb.d_side,   2 * nbins)
+        fill(self.fb.d_points, self.fb._len_d_points / 4, f32(np.nan))
+
+        nts = self.info_a.ntemporal_samples
+        nsamps = (gnm.spp(tc) * dim.w * dim.h)
+        nrounds = int(nsamps / (nts * 256. * 256)) + 1
+        launch('iter', rdr.mod, self.stream_a, (32, 8, 1), (nts, nrounds),
+                self.fb.d_front, self.fb.d_side,
+                self.fb.d_rb, self.fb.d_seeds, self.fb.d_points,
+                self.info_a.d_params)
+
+        nblocks = int(np.ceil(np.sqrt(dim.ah*dim.astride/256.)))
+        launch('flush_atom', self.mod, self.stream_a,
+                256, (nblocks, nblocks),
+                u64(self.fb.d_front), u64(self.fb.d_side), i32(nbins))
+
+    def queue_frame(self, rdr, gnm, tc, w, h, copy=True):
         """
-        Render a frame for each timestamp in the iterable value ``times``. This
-        function returns a generator that will yield a RenderedImage object
-        containing a shared reference to the output buffer for each specified
-        frame.
+        Queue one frame for rendering.
 
-        The returned buffer is page-locked host memory. Between the time a
-        buffer is yielded and the time the next frame's results are requested,
-        the buffer will not be modified. Thereafter, however, it will be
-        overwritten by an asynchronous DMA operation coming from the CUDA
-        device. If you hang on to it for longer than one frame, copy it.
+        ``rdr`` is a compiled Renderer module. Caller must ensure that the
+        module is compatible with the genome data provided.
 
-        ``genome`` is the genome to be rendered. Successive calls to the
-        `render()` method on one ``Renderer`` object must use genomes which
-        produce identical compiled code, and this will not be verified by the
-        renderer. In practice, this means you can alter genome parameter
-        values, but the full set of keys must remain identical between runs on
-        the same renderer.
+        ``gnm`` is the genome to be rendered.
 
-        ``times`` is a list of (idx, cen_time) tuples, where ``idx`` is passed
-        unmodified in the RenderedImage return value and ``cen_time`` is the
-        central time of the current frame in spline-time units. (Any
-        clock-time or frame-time units in the genome should be preconverted.)
+        ``tc`` is the center time at which to render.
 
-        If ``blend`` is False, the output buffer will contain unclipped,
-        premultiplied RGBA data, without vibrancy, highlight power, or the
-        alpha elbow applied.
+        ``w``, ``h`` are the width and height of the desired output in px.
+
+        If ``copy`` is False, the genome data will not be recopied for each
+        new genome. This function must be called with ``copy=True`` the first
+        time a new genome is used, and may be called in that manner
+        subsequently without harm. I suspect the performance impact is low, so
+        leave ``copy`` to True every time for now.
+
+        The return value is a 2-tuple ``(evt, h_out)``, where ``evt`` is a
+        CUDA event and ``h_out`` is the return value of the output module's
+        ``copy`` function. In the typical case, ``h_out`` will be a host
+        allocation containing data in an appropriate format for the output
+        module's file writer, and ``evt`` indicates when the asynchronous
+        DMA copy which will populate ``h_out`` is complete. This can vary
+        depending on the output module in use, though.
         """
-        r = self.render_gen(genome, width, height, blend=blend)
-        next(r)
-        return ifilter(None, imap(r.send, chain(times, [None])))
+        # Note: we synchronize on the previous stream if buffers need to be
+        # reallocated, which implicitly also syncs the current stream.
+        dim = self.fb.set_dim(w, h, self.stream_b)
 
-    def render_gen(self, genome, width, height, blend=True):
+        td = gnm.adj_frame_width(tc)
+        ts, te = tc - 0.5 * td, tc + 0.5 * td
+
+        # The stream interleaving here is nontrivial.
+        # TODO: update diagram and link to it here
+        if copy:
+            self.src_a, self.src_b = self.src_b, self.src_a
+            self._copy(rdr, gnm)
+        self._interp(rdr, gnm, dim, ts, td)
+        if self.filt_evt:
+            self.stream_a.wait_for_event(self.filt_evt)
+        self._iter(rdr, gnm, dim, tc)
+        if self.copy_evt:
+            self.stream_a.wait_for_event(self.copy_evt)
+        for filt in rdr.filts:
+            filt.apply(self.fb, gnm, dim, tc, self.stream_a)
+        rdr.out.convert(self.fb, gnm, dim, self.stream_a)
+        self.filt_evt = cuda.Event().record(self.stream_a)
+        h_out = rdr.out.copy(self.fb, dim, self.pool, self.stream_a)
+        self.copy_evt = cuda.Event().record(self.stream_a)
+
+        self.info_a, self.info_b = self.info_b, self.info_a
+        self.stream_a, self.stream_b = self.stream_b, self.stream_a
+        return self.copy_evt, h_out
+
+    def render(self, gnm, times, w, h):
         """
-        Render frames. This method is wrapped by the ``render()`` method; see
-        its docstring for warnings and details.
-
-        Instead of passing frame times as an iterable, they are passed
-        individually via the ``generator.send()`` method. There is an
-        internal pipeline latency of one frame, so the first call to the
-        ``send()`` method will return None, the second call will return the
-        first frame's result, and so on. To retrieve the last frame in a
-        sequence, send ``None``.
-
-        Direct use of this method is useful for implementing render servers.
+        A port of the old rendering function, retained for backwards
+        compatibility. Some of this will be pulled into as-yet-undecided
+        methods for more DRY.
         """
-
+        rdr = Renderer(gnm)
+        last_evt = cuda.Event().record(self.stream_a)
         last_idx = None
-        next_frame = yield
-        if next_frame is None:
-            return
-
-        if not self.mod:
-            self.load(genome)
-
-        filt = filtering.Filtering()
-
-        reset_rb_fun = self.mod.get_function("reset_rb")
-        packer_fun = self.mod.get_function("interp_iter_params")
-        iter_fun = self.mod.get_function("iter")
-
-        # The synchronization model is messy. See helpers/task_model.svg.
-        iter_stream = cuda.Stream()
-        filt_stream = cuda.Stream()
-        if self.acc_mode == 'deferred':
-            write_stream = cuda.Stream()
-            write_fun = self.mod.get_function("write_shmem")
-        else:
-            write_stream = iter_stream
-
-        # These events fire when the corresponding buffer is available for
-        # reading on the host (i.e. the copy is done). On the first pass, 'a'
-        # will be ignored, and subsequently moved to 'b'.
-        event_a = cuda.Event().record(filt_stream)
-        event_b = None
-
-        awidth = width + 2 * self.gutter
-        aheight = 32 * int(np.ceil((height + 2 * self.gutter) / 32.))
-        astride = 32 * int(np.ceil(awidth / 32.))
-        dim = Dimensions(width, height, awidth, aheight, astride)
-        d_acc_size = self.mod.get_global('acc_size')[0]
-        cuda.memcpy_htod_async(d_acc_size, u32(list(dim)), write_stream)
-
-        nbins = astride * aheight
-        nxf = len(filter(lambda g: g != 'final', genome.xforms))
-        nxf = min(nxf, self.max_nxf)
-        d_accum = cuda.mem_alloc(16 * nbins * nxf)
-        d_out = cuda.mem_alloc(16 * nbins)
-        if self.acc_mode == 'atomic':
-            d_atom = cuda.mem_alloc(8 * nbins * nxf)
-            flush_fun = self.mod.get_function("flush_atom")
-        else:
-            # d_atom is also used as a scratch buffer during filtering, so we
-            # need it at least this size
-            d_atom = cuda.mem_alloc(4 * nbins)
-
-        obuf_copy = util.argset(cuda.Memcpy2D(),
-            src_y=self.gutter, src_x_in_bytes=16*self.gutter,
-            src_pitch=16*astride, dst_pitch=16*width,
-            width_in_bytes=16*width, height=height)
-        obuf_copy.set_src_device(d_out)
-        h_out_a = cuda.pagelocked_empty((height, width, 4), f32)
-        h_out_b = cuda.pagelocked_empty((height, width, 4), f32)
-
-        if self.acc_mode == 'deferred':
-            # Having a fixed, power-of-two log size makes things much easier
-            log_size = 64 << 20
-            d_log = cuda.mem_alloc(log_size * 4)
-            d_log_sorted = cuda.mem_alloc(log_size * 4)
-            sorter = sort.Sorter(log_size)
-            # We need to cover each unique tag - address bits 20-23 - with one
-            # write block per sort bin. Or somethinig like that.
-            nwriteblocks = int(np.ceil(nbins / float(1<<20))) * 256
-
-        # Calculate 'nslots', the number of simultaneous running threads that
-        # can be active on the GPU during iteration (and thus the number of
-        # slots for loading and storing RNG and point context that will be
-        # prepared on the device), and derive 'rb_size', the number of blocks in
-        # 'nslots'.
-        iter_threads_per_block = 256
-        dev_data = pycuda.tools.DeviceData()
-        occupancy = pycuda.tools.OccupancyRecord(
-                dev_data, iter_threads_per_block,
-                iter_fun.shared_size_bytes, iter_fun.num_regs)
-        nsms = cuda.Context.get_device().multiprocessor_count
-        rb_size = occupancy.warps_per_mp * nsms / (iter_threads_per_block / 32)
-        nslots = iter_threads_per_block * rb_size
-
-        # Reset the ringbuffer info for the slots
-        reset_rb_fun(np.int32(rb_size), block=(1,1,1))
-
-        d_points = cuda.mem_alloc(nslots * 16)
-        # This statement may add extra seeds to simplify palette dithering.
-        seeds = mwc.MWC.make_seeds(max(nslots, 256 * self.palette_height))
-        d_seeds = cuda.to_device(seeds)
-
-        # We used to auto-calculate this to a multiple of the number of SMs on
-        # the device, but since we now use shorter launches and, to a certain
-        # extent, allow simultaneous occupancy, that's not as important. The
-        # 1024 is a magic constant to ensure reasonable and power-of-two log
-        # size for deferred: 256MB / (4B * FUSE * NTHREADS). Enhancements to
-        # the sort engine are needed to make this more flexible.
-        ntemporal_samples = 1024
-        genome_times, genome_knots = self._iter.packer.pack()
-        d_genome_times = cuda.to_device(genome_times)
-        d_genome_knots = cuda.to_device(genome_knots)
-        info_size = 4 * len(self._iter.packer) * ntemporal_samples
-        d_infos = cuda.mem_alloc(info_size)
-
-        ptimes, pidxs = zip(*genome.palette_times)
-        palint_times = np.empty(len(genome_times[0]), f32)
-        palint_times.fill(1e10)
-        palint_times[:len(ptimes)] = ptimes
-        d_palint_times = cuda.to_device(palint_times)
-        pvals = self.pal.prepare([genome.decoded_palettes[i] for i in pidxs])
-        d_palint_vals = cuda.to_device(np.concatenate(pvals))
-
-        if self.acc_mode in ('deferred', 'atomic'):
-            palette_fun = self.mod.get_function("interp_palette_flat")
-            dsc = util.argset(cuda.ArrayDescriptor3D(),
-                    height=self.palette_height, width=256, depth=0,
-                    format=cuda.array_format.SIGNED_INT32,
-                    num_channels=2, flags=cuda.array3d_flags.SURFACE_LDST)
-            palarray = cuda.Array(dsc)
-
-            tref = self.mod.get_surfref('flatpal')
-            tref.set_array(palarray, 0)
-        else:
-            palette_fun = self.mod.get_function("interp_palette")
-            dsc = util.argset(cuda.ArrayDescriptor(),
-                    height=self.palette_height, width=256,
-                    format=cuda.array_format.UNSIGNED_INT8,
-                    num_channels=4)
-            d_palmem = cuda.mem_alloc(256 * self.palette_height * 4)
-
-            tref = self.mod.get_texref('palTex')
-            tref.set_address_2d(d_palmem, dsc, 1024)
-            tref.set_flags(cuda.TRSF_NORMALIZED_COORDINATES)
-            tref.set_filter_mode(cuda.filter_mode.LINEAR)
-
-        while next_frame is not None:
-            # tc, td, ts, te: central, delta, start, end times
-            idx, tc = next_frame
-            td = genome.adj_frame_width(tc)
-            ts, te = tc - 0.5 * td, tc + 0.5 * td
-
-            if self.acc_mode in ('deferred', 'atomic'):
-                # In this mode, the palette writes to a surface reference, but
-                # requires dithering, so we pass it the seeds instead
-                arg0 = d_seeds
-            else:
-                arg0 = d_palmem
-            palette_fun(arg0, d_palint_times, d_palint_vals,
-                        f32(ts), f32(td / self.palette_height),
-                        block=(256,1,1), grid=(self.palette_height,1),
-                        stream=write_stream)
-
-            packer_fun(d_infos, d_genome_times, d_genome_knots,
-                       f32(ts), f32(td / ntemporal_samples),
-                       i32(ntemporal_samples), block=(256,1,1),
-                       grid=(int(np.ceil(ntemporal_samples/256.)),1),
-                       stream=iter_stream)
-
-            # Reset points so that they will be FUSEd
-            util.BaseCode.fill_dptr(self.mod, d_points, 4 * nslots,
-                                    iter_stream, f32(np.nan))
-
-            # Get interpolated control points for debugging
-            #iter_stream.synchronize()
-            #d_temp = cuda.from_device(d_infos,
-                    #(ntemporal_samples, len(self._iter.packer)), f32)
-            #for i, n in zip(d_temp[5], self._iter.packer.packed):
-                #print '%60s %g' % ('_'.join(n), i)
-
-            util.BaseCode.fill_dptr(self.mod, d_accum, 4 * nbins * nxf,
-                                    write_stream)
-            if self.acc_mode == 'atomic':
-                util.BaseCode.fill_dptr(self.mod, d_atom, 2 * nbins * nxf,
-                                        write_stream)
-            nrounds = int( (genome.spp(tc) * width * height)
-                         / (ntemporal_samples * 256 * 256) ) + 1
-            if self.acc_mode == 'deferred':
-                for i in range(nrounds):
-                    iter_fun(np.uint64(d_log), d_seeds, d_points, d_infos,
-                             block=(32, self._iter.NTHREADS/32, 1),
-                             grid=(ntemporal_samples, 1), stream=iter_stream)
-                    _sync_stream(write_stream, iter_stream)
-                    sorter.sort(d_log_sorted, d_log, log_size, 3, True,
-                                stream=write_stream)
-                    _sync_stream(iter_stream, write_stream)
-                    write_fun(d_accum, d_log_sorted, sorter.dglobal, i32(nbins),
-                              block=(1024, 1, 1), grid=(nwriteblocks, 1),
-                              stream=write_stream)
-            else:
-                args = [u64(d_accum), d_seeds, d_points, d_infos]
-                if self.acc_mode == 'atomic':
-                    args.append(u64(d_atom))
-                iter_fun(*args, block=(32, self._iter.NTHREADS/32, 1),
-                         grid=(ntemporal_samples, nrounds), stream=iter_stream)
-                if self.acc_mode == 'atomic':
-                    nblocks = int(np.ceil(np.sqrt(nbins*nxf/float(512))))
-                    flush_fun(u64(d_accum), u64(d_atom), i32(nbins*nxf),
-                              block=(512, 1, 1), grid=(nblocks, nblocks),
-                              stream=iter_stream)
-
-            util.BaseCode.fill_dptr(self.mod, d_out, 4 * nbins, filt_stream)
-            _sync_stream(filt_stream, write_stream)
-            filt.de(d_out, d_accum, d_atom, genome, dim, tc, nxf,
-                    stream=filt_stream)
-            _sync_stream(write_stream, filt_stream)
-            filt.colorclip(d_out, genome, dim, tc, blend, stream=filt_stream)
-            obuf_copy.set_dst_host(h_out_a)
-            obuf_copy(filt_stream)
-
-            if event_b:
-                while not event_a.query():
-                    timemod.sleep(0.01)
-                gpu_time = event_a.time_since(event_b)
-                result = RenderedImage(h_out_b, last_idx, gpu_time)
-            else:
-                result = None
-            last_idx = idx
-
-            event_a, event_b = cuda.Event().record(filt_stream), event_a
-            h_out_a, h_out_b = h_out_b, h_out_a
-
-            # TODO: add ability to flush a frame without breaking the pipe
-            next_frame = yield result
-
-        while not event_a.query():
-            timemod.sleep(0.001)
-        gpu_time = event_a.time_since(event_b)
-        yield RenderedImage(h_out_b, last_idx, gpu_time)
-
+        def wait(): # Times like these where you wish for a macro
+            while not last_evt.query():
+                time.sleep(0.01)
+            gpu_time = last_evt.time_since(two_evts_ago)
+            return RenderedImage(h_buf, idx, gpu_time)
+        for idx, tc in times:
+            evt, h_buf = self.queue_frame(rdr, gnm, tc, w, h, last_idx is None)
+            if last_idx:
+                yield wait()
+            two_evts_ago, last_evt = last_evt, evt
+            last_buf, last_idx = h_buf, idx
+        if last_idx:
+            yield wait()
