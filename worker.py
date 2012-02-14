@@ -113,6 +113,11 @@ def work(server):
             prof = json.loads(r.get(pid))
             gnm.set_profile(prof)
             rdr = render.Renderer(gnm)
+            # Temporarily use animation filter settings for the bilateral
+            # filter. TODO: specify these in profiles.
+            rdr.filts[0].sstd = 10.0
+            rdr.filts[0].dstd = 2.0
+            rdr.filts[0].gspeed = 2.0
 
         if last_evt is None:
             # Create a dummy event for timing
