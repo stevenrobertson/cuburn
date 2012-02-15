@@ -194,10 +194,20 @@ class DevInfo(object):
         self.d_pal_array = cuda.Array(self.palette_surf_dsc)
 
 class Renderer(object):
+    # Unloading a module triggers a context sync. To keep the renderer
+    # asynchronous, and avoid expensive CPU polling, this hangs on to
+    # a number of (relatively small) CUDA modules and flushes them together.
+    MAX_MODREFS = 20
+    _modrefs = []
+
     def __init__(self, gnm):
         self.packer, self.lib = iter.mkiterlib(gnm)
         cubin = util.compile('iter', assemble_code(self.lib))
         self.mod = cuda.module_from_buffer(cubin)
+
+        if len(self._modrefs) > self.MAX_MODREFS:
+            del self._modrefs[:]
+        self._modrefs.append(self.mod)
 
         # TODO: make these customizable
         self.filts = [ filters.Bilateral()
