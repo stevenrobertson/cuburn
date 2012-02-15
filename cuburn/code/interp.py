@@ -325,7 +325,6 @@ __global__ void interp_palette_flat(
         float tstart, float tstep)
 {
     mwc_st rctx = rctxs[rb_incr(rb->head, threadIdx.x)];
-    int gid = blockIdx.x * blockDim.x + threadIdx.x;
 
     float time = tstart + blockIdx.x * tstep;
     float4 yuva = interp_color(times, sources, time);

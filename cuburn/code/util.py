@@ -280,13 +280,13 @@ def mkringbuflib(rb_size):
     """
     return devlib(headers="#define RB_SIZE_MASK %d" % (rb_size - 1), decls='''
 typedef struct {
-    int head;
-    int tail;
+    uint32_t head;
+    uint32_t tail;
 } ringbuf;
 ''', defs=r'''
-__shared__ int rb_idx;
-__device__ int rb_incr(int &rb_base, int tidx) {
-    if (threadIdx.y == 1 && threadIdx.x == 1)
+__shared__ uint32_t rb_idx;
+__device__ uint32_t rb_incr(uint32_t &rb_base, int tidx) {
+    if (threadIdx.y == 0 && threadIdx.x == 0)
         rb_idx = 256 * (atomicAdd(&rb_base, 1) & RB_SIZE_MASK);
     __syncthreads();
     return rb_idx + tidx;
