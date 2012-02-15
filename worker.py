@@ -118,6 +118,7 @@ def work(server):
             rdr.filts[0].sstd = 10.0
             rdr.filts[0].dstd = 2.0
             rdr.filts[0].gspeed = 2.0
+            last_pid, last_gid = pid, gid
 
         if last_evt is None:
             # Create a dummy event for timing
