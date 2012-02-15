@@ -137,11 +137,13 @@ def iter_genomes(prof, gpaths, pname='540p'):
 
     for gpath in gpaths:
         gname = os.path.basename(gpath).rsplit('.', 1)[0]
+        odir = 'out/%s/%s/untracked' % (pname, gname)
+        if os.path.isfile(os.path.join(odir, 'COMPLETE')):
+            continue
         with open(gpath) as fp:
             gsrc = fp.read()
         gnm = genome.Genome(json.loads(gsrc))
         err, times = gnm.set_profile(prof)
-        odir = 'out/%s/%s/untracked' % (pname, gname)
         gtimes = []
         for i, t in enumerate(times):
             opath = os.path.join(odir, '%05d.jpg' % (i+1))
@@ -150,6 +152,8 @@ def iter_genomes(prof, gpaths, pname='540p'):
         if gtimes:
             if not os.path.isdir(odir):
                 os.makedirs(odir)
+            with open(os.path.join(odir, 'NFRAMES'), 'w') as fp:
+                fp.write(str(len(times)) + '\n')
             latest = odir.rsplit('/', 1)[0] + '/latest'
             if not os.path.isdir(latest):
                 os.symlink('untracked', latest)
