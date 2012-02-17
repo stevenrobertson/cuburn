@@ -107,6 +107,7 @@ def work(server):
             idx = evt = buf = None
             continue
 
+        copy = False
         sid, sidx, pid, gid, ftime, ftag = task[1].split(' ', 5)
         if pid != last_pid or gid != last_gid or not rdr:
             gnm = genome.Genome(json.loads(r.get(gid)))
@@ -119,12 +120,12 @@ def work(server):
             rdr.filts[0].dstd = 2.0
             rdr.filts[0].gspeed = 2.0
             last_pid, last_gid = pid, gid
+            copy = True
 
         if last_evt is None:
             # Create a dummy event for timing
             last_evt = cuda.Event().record(mgr.stream_a)
 
-        copy = last_idx is None
         w, h = prof['width'], prof['height']
         evt, buf = mgr.queue_frame(rdr, gnm, float(ftime), w, h, copy)
         idx = sid, sidx, ftag
