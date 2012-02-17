@@ -29,6 +29,6 @@ __global__ void f32_to_u8(
 
     int idst = dstride * y + x;
     dst[idst] = out;
-    rctxs[rb_incr(rb->head, tid)] = rctx;
+    rctxs[rb_incr(rb->tail, tid)] = rctx;
 }
 ''')
