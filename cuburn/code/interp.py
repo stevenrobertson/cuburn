@@ -297,12 +297,23 @@ __device__ float4
 interp_color(const float *times, const float4 *sources, float time)
 {
     int idx = fmaxf(bitwise_binsearch(times, time) + 1, 1);
-    float lf = (times[idx] - time) / (times[idx] - times[idx-1]);
+    float tr = times[idx];
+
+    float lf = (tr - time) / (tr - times[idx-1]);
     float rf = 1.0f - lf;
 
     float4 left  = sources[blockDim.x * (idx - 1) + threadIdx.x];
     float4 right = sources[blockDim.x * (idx)     + threadIdx.x];
     float3 yuv;
+
+    if (tr > 1.0f) {
+        // The right-side time is larger than 1.0. This only normally occurs
+        // in a single-palette genome. In any case, we don't want to consider
+        // the rightmost palette, since it's out of bounds now.
+        right = left;
+        lf = 1.0f;  // Correct for possibility of inf/nan
+        rf = 0.0f;
+    }
 
     float3 l3 = make_float3(left.x, left.y, left.z);
     float3 r3 = make_float3(right.x, right.y, right.z);
