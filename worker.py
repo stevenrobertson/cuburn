@@ -23,7 +23,7 @@ pycuda = None
 
 # The default maximum number of waiting jobs. Also used to determine when a
 # job has expired.
-QUEUE_LENGTH=50
+QUEUE_LENGTH=10
 
 def partition(pred, arg):
     return filter(pred, arg), filter(lambda a: not pred(a), arg)
@@ -212,7 +212,7 @@ def run_jobs(r, rev, jobs):
             pending.pop(sidx)
         else:
             print 'Got two responses for %d' % sidx
-        if retry and retry[0] < sidx - 2 * QUEUE_LENGTH:
+        if retry and retry[0] < sidx - 4 * QUEUE_LENGTH:
             # TODO: ensure that this doesn't happen accidentally; raise an
             # appropriate exception when it does
             print "Double retry!"
