@@ -340,7 +340,7 @@ def convert_flame(flame, arc=-360, offset=0):
         'center': dict(zip('xy', map(float, flame['center'].split()))),
         'scale': float(flame['scale']) / float(flame['size'].split()[0]),
         'dither_width': float(flame['filter']),
-        'rotation': float(flame['rotate']),
+        'rotation': float(flame.get('rotate', 0)),
         'density': 1.0
     }
 
@@ -358,7 +358,7 @@ def convert_flame(flame, arc=-360, offset=0):
     color = cvt(['brightness', 'gamma'])
     color.update((k, float(flame.get(k, d))) for k, d in
                  [('highlight_power', -1), ('gamma_threshold', 0.01)])
-    color['vibrance'] = float(flame['vibrancy'])
+    color['vibrance'] = float(flame.get('vibrancy', 1))
     color['background'] = dict(zip('rgb',
                                map(float, flame['background'].split())))
     color['palette_times'] = "0"
