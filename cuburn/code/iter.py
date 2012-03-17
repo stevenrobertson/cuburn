@@ -85,15 +85,15 @@ def precalc_xf_affine(px):
         float pri = {{pre.angle}} * M_PI / 180.0f;
         float spr = {{pre.spread}} * M_PI / 180.0f;
 
-        float magx = {{pre.magnitude.x}};
-        float magy = {{pre.magnitude.y}};
+        float magx = {{pre.magnitude.x._magscale()}};
+        float magy = {{pre.magnitude.y._magscale()}};
 
         {{pre._set('xx')}} = magx * cos(pri-spr);
         {{pre._set('yx')}} = -magx * sin(pri-spr);
         {{pre._set('xy')}} = -magy * cos(pri+spr);
         {{pre._set('yy')}} = magy * sin(pri+spr);
-        {{pre._set('xo')}} = {{pre.offset.x}};
-        {{pre._set('yo')}} = -{{pre.offset.y}};
+        {{pre._set('xo')}} = {{pre.offset.x._magscale()}};
+        {{pre._set('yo')}} = -{{pre.offset.y._magscale()}};
     """, 'precalc_xf_affine').substitute(locals()))
 
 def apply_affine(x, y, xo, yo, packer):

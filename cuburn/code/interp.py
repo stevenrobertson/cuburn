@@ -107,6 +107,12 @@ class GenomePackerPrecalc(GenomePackerView):
         super(GenomePackerPrecalc, self).__init__(packer, 'out', wrapped, prefix)
     def __str__(self):
         return self.packer._require_pre(self.prefix)
+    def _magscale(self):
+        """
+        This is a temporary hack which turns on magnitude scaling for the
+        value on which it is called. Takes the place of __str__ serialization.
+        """
+        return self.packer._require_pre(self.prefix, True)
     def _set(self, name):
         fullname = self.prefix + (name,)
         self.packer._pre_alloc(fullname)
@@ -165,10 +171,11 @@ class GenomePacker(object):
         """
         self.packed_direct[name] = None
 
-    def _require_pre(self, name):
+    def _require_pre(self, name, mag_scaling=False):
         i = len(self.genome_precalc) << self.search_rounds
         self.genome_precalc[name] = None
-        return 'catmull_rom(&times[%d], &knots[%d], time)' % (i, i)
+        name = 'catmull_rom_mag' if mag_scaling else 'catmull_rom'
+        return '%s(&times[%d], &knots[%d], time)' % (name, i, i)
 
     def _pre_alloc(self, name):
         self.packed_precalc[name] = None
@@ -259,9 +266,39 @@ typedef struct {
 catmullromlib = devlib(deps=[binsearchlib], decls=r'''
 __device__ __noinline__
 float catmull_rom(const float *times, const float *knots, float t);
-''', defs=r'''
+
 __device__ __noinline__
-float catmull_rom(const float *times, const float *knots, float t) {
+float catmull_rom_mag(const float *times, const float *knots, float t);
+''', defs=r'''
+
+// ELBOW is the linearization threhsold; above this magnitude, a value scales
+// logarithmically, and below it, linearly. ELOG1 is a constant used to make
+// this happen. See helpers/spline_mag_domain_interp.wxm for nice graphs.
+#define ELBOW 0.0625f   // 2^(-4)
+#define ELOG1 5.0f      // 1 - log2(elbow)
+
+// Transform from linear to magnitude domain
+__device__ float linlog(float x) {
+    if (x > ELBOW)  return   log2f(x)  + ELOG1;
+    if (x < -ELBOW) return -(log2f(-x) + ELOG1);
+    return x / ELBOW;
+}
+
+// Reverse of above
+__device__ float linexp(float v) {
+    if (v >= 1.0)   return  exp2f( v - ELOG1);
+    if (v <= -1.0)  return -exp2f(-v - ELOG1);
+    return v * ELBOW;
+}
+
+__device__ float linslope(float x, float m) {
+    if (x >=  ELBOW) return m /  x;
+    if (x <= -ELBOW) return m / -x;
+    return m / ELBOW;
+}
+
+__device__ float
+catmull_rom_base(const float *times, const float *knots, float t, bool mag) {
     int idx = bitwise_binsearch(times, t);
 
     // The left bias of the search means that we never have to worry about
@@ -281,12 +318,33 @@ float catmull_rom(const float *times, const float *knots, float t) {
     float m1 = (k2 - k0) / (1.0f - t0),
           m2 = (k3 - k1) / (t3);
 
+    if (mag) {
+        m1 = linslope(k1, m1);
+        m2 = linslope(k2, m2);
+        k1 = linlog(k1);
+        k2 = linlog(k2);
+    }
+
     float tt = t * t, ttt = tt * t;
 
-    return m1 * (      ttt - 2.0f*tt + t)
-         + k1 * ( 2.0f*ttt - 3.0f*tt + 1)
-         + m2 * (      ttt -      tt)
-         + k2 * (-2.0f*ttt + 3.0f*tt);
+    float r = m1 * (      ttt - 2.0f*tt + t)
+            + k1 * ( 2.0f*ttt - 3.0f*tt + 1)
+            + m2 * (      ttt -      tt)
+            + k2 * (-2.0f*ttt + 3.0f*tt);
+
+    if (mag) r = linexp(r);
+    return r;
+}
+
+// Variants with scaling domain logic inlined
+__device__ __noinline__
+float catmull_rom(const float *times, const float *knots, float t) {
+    return catmull_rom_base(times, knots, t, false);
+}
+
+__device__ __noinline__
+float catmull_rom_mag(const float *times, const float *knots, float t) {
+    return catmull_rom_base(times, knots, t, true);
 }
 ''')
 
