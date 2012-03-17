@@ -271,10 +271,11 @@ class RenderManager(ClsMod):
                 256, np.ceil(nts / 256.),
                 self.info_a.d_params, self.src_a.d_times, self.src_a.d_knots,
                 f32(ts), f32(td / nts), i32(nts))
+        #self._print_interp_knots(rdr)
 
     def _print_interp_knots(self, rdr, tsidx=5):
-        infos = cuda.from_device_like(self.info_a.d_params,
-                (tsidx + 1, self.info_a.max_params), f32)
+        infos = cuda.from_device(self.info_a.d_params,
+                (tsidx + 1, len(rdr.packer)), f32)
         for i, n in zip(infos[-1], rdr.packer.packed):
             print '%60s %g' % ('_'.join(n), i)
 
