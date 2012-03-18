@@ -172,9 +172,11 @@ var(17, 'popcorn', """
 
 var(18, 'exponential', """
     float dx = w * expf(tx - 1.0f);
-    float dy = M_PI * ty;
-    ox += dx * cosf(dy);
-    oy += dx * sinf(dy);
+    if (isfinite(dx)) {
+        float dy = M_PI * ty;
+        ox += dx * cosf(dy);
+        oy += dx * sinf(dy);
+    }
     """)
 
 var(19, 'power', """
