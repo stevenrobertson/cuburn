@@ -206,16 +206,28 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
     bool fuse = false;
     int last_xf_used = 0;
 
-    // This condition checks for large numbers, Infs, and NaNs.
-    if (!(-(fabsf(x) + fabsf(y)) > -1.0e6f)) {
+    // If there is a NaN at the start of this set of iterations, it's usually
+    // the signal that this is the first iter to use this point data, so reset
+    // and run without writeback to stabilize the trajectory.
+    if (!isfinite(fabsf(x) + fabsf(y))) {
         x = mwc_next_11(rctx);
         y = mwc_next_11(rctx);
         color = mwc_next_01(rctx);
         fuse = true;
     }
 
-    // TODO: link up with FUSE, etc
     for (int round = 0; round < 256; round++) {
+        // If we're still getting NaNs, the flame is probably divergent. The
+        // correct action would be to allow the NaNs to be filtered out.
+        // However, this deviates from flam3 behavior, and makes it difficult
+        // to correct a flame (manually or programmatically) by editing
+        // splines, since incremental improvements won't be visible until the
+        // system is sufficiently convergent. We reset but do *not* set fuse.
+        if (!isfinite(fabsf(x) + fabsf(y))) {
+            x = mwc_next_11(rctx);
+            y = mwc_next_11(rctx);
+            color = mwc_next_01(rctx);
+        }
 
 {{if chaos_used}}
 
