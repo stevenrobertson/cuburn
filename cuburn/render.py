@@ -91,7 +91,7 @@ class Framebuffers(object):
         if stream is not None:
             stream.synchronize()
         else:
-            cu
+            cuda.Context.synchronize()
         for p in (self.d_front, self.d_back, self.d_side):
             if p is not None:
                 p.free()
