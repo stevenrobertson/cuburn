@@ -8,6 +8,18 @@ from pycuda.gpuarray import vec
 import code.filters
 from code.util import ClsMod, argset, launch
 
+def mktref(mod, n):
+    tref = mod.get_texref(n)
+    tref.set_filter_mode(cuda.filter_mode.POINT)
+    tref.set_address_mode(0, cuda.address_mode.WRAP)
+    tref.set_address_mode(1, cuda.address_mode.WRAP)
+    return tref
+
+def mkdsc(dim, ch):
+    return argset(cuda.ArrayDescriptor(), height=dim.ah,
+                  width=dim.astride, num_channels=ch,
+                  format=cuda.array_format.FLOAT)
+
 class Filter(object):
     def apply(self, fb, gnm, dim, tc, stream=None):
         """
@@ -34,20 +46,10 @@ class Bilateral(Filter, ClsMod):
         bs = sb * dim.ah
         bl, gr = (32, 8, 1), (dim.astride / 32, dim.ah / 8)
 
-        mkdsc = lambda c: argset(cuda.ArrayDescriptor(), height=dim.ah,
-                                 width=dim.astride, num_channels=c,
-                                 format=cuda.array_format.FLOAT)
-        def mktref(n):
-            tref = self.mod.get_texref(n)
-            tref.set_filter_mode(cuda.filter_mode.POINT)
-            tref.set_address_mode(0, cuda.address_mode.WRAP)
-            tref.set_address_mode(1, cuda.address_mode.WRAP)
-            return tref
-
-        dsc = mkdsc(4)
-        tref = mktref('bilateral_src')
-        grad_dsc = mkdsc(1)
-        grad_tref = mktref('blur_src')
+        dsc = mkdsc(dim, 4)
+        tref = mktref(self.mod, 'chan4_src')
+        grad_dsc = mkdsc(dim, 1)
+        grad_tref = mktref(self.mod, 'chan1_src')
 
         for pattern in range(self.directions):
             # Scale spatial parameter so that a "pixel" is equivalent to an

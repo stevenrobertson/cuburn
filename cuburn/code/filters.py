@@ -69,8 +69,9 @@ fma_buf(float4 *dst, const float4 *src, int astride, float scale) {
 }
 ''')
 
-denblurlib = devlib(decls='''
-texture<float,  cudaTextureType2D> blur_src;
+denblurlib = devlib(deps=[texshearlib], decls='''
+texture<float4, cudaTextureType2D> chan4_src;
+texture<float,  cudaTextureType2D> chan1_src;
 
 __constant__ float gauss_coefs[7] = {
     0.00443305f,  0.05400558f,  0.24203623f,  0.39905028f,
@@ -78,7 +79,7 @@ __constant__ float gauss_coefs[7] = {
 };
 ''', defs=r'''
 // Apply a Gaussian-esque blur to the density channel of the texture in
-// ``bilateral_src`` in the horizontal direction, and write it to ``dst``, a
+// ``chan4_src`` in the horizontal direction, and write it to ``dst``, a
 // one-channel buffer.
 __global__ void den_blur(float *dst, int pattern, int upsample) {
     int xi = blockIdx.x * blockDim.x + threadIdx.x;
@@ -89,7 +90,7 @@ __global__ void den_blur(float *dst, int pattern, int upsample) {
 
     #pragma unroll
     for (int i = 0; i < 7; i++)
-        den += tex_shear(bilateral_src, pattern, x, y, (i - 3) << upsample).w
+        den += tex_shear(chan4_src, pattern, x, y, (i - 3) << upsample).w
              * gauss_coefs[i];
     dst[yi * (blockDim.x * gridDim.x) + xi] = den;
 }
@@ -104,15 +105,13 @@ __global__ void den_blur_1c(float *dst, int pattern, int upsample) {
 
     #pragma unroll
     for (int i = 0; i < 7; i++)
-        den += tex_shear(blur_src, pattern, x, y, (i - 3) << upsample)
+        den += tex_shear(chan1_src, pattern, x, y, (i - 3) << upsample)
              * gauss_coefs[i];
     dst[yi * (blockDim.x * gridDim.x) + xi] = den;
 }
 ''')
 
-bilaterallib = devlib(deps=[logscalelib, texshearlib, denblurlib], decls='''
-texture<float4, cudaTextureType2D> bilateral_src;
-''', defs=r'''
+bilaterallib = devlib(deps=[logscalelib, texshearlib, denblurlib], defs=r'''
 /* sstd:    spatial standard deviation (Gaussian filter)
  * cstd:    color standard deviation (Gaussian on the range [0, 1], where 1
  *          represents an "opposite" color).
@@ -146,7 +145,7 @@ bilateral(float4 *dst, int pattern, int radius,
 
     // Gather the center point, and pre-average the color values for faster
     // comparison.
-    float4 cen = tex2D(bilateral_src, x, y);
+    float4 cen = tex2D(chan4_src, x, y);
     float cdrcp = 1.0f / (cen.w + 1.0e-6f);
     cen.x *= cdrcp;
     cen.y *= cdrcp;
@@ -160,13 +159,13 @@ bilateral(float4 *dst, int pattern, int radius,
     // Be extra-sure spatial coeffecients have been written
     __syncthreads();
 
-    float4 pix = tex_shear(bilateral_src, pattern, x, y, -radius - 1.0f);
-    float4 next = tex_shear(bilateral_src, pattern, x, y, -radius);
+    float4 pix = tex_shear(chan4_src, pattern, x, y, -radius - 1.0f);
+    float4 next = tex_shear(chan4_src, pattern, x, y, -radius);
 
     for (float r = -radius; r <= radius; r++) {
         float prev = pix.w;
         pix = next;
-        next = tex_shear(bilateral_src, pattern, x, y, r + 1.0f);
+        next = tex_shear(chan4_src, pattern, x, y, r + 1.0f);
 
         // This initial factor is arbitrary, but seems to do a decent job at
         // preventing excessive bleed-out from points inside an empty region.
@@ -201,7 +200,7 @@ bilateral(float4 *dst, int pattern, int radius,
         //
         // Note that both the gradient and the blurred weight are calculated
         // in one dimension, along the current sampling vector.
-        float avg = tex_shear(blur_src, pattern, x, y, r);
+        float avg = tex_shear(chan1_src, pattern, x, y, r);
         float gradfact = (next.w - prev) / (avg + 1.0e-6f);
         if (r < 0) gradfact = -gradfact;
         gradfact = exp2f(-exp2f(gspeed * gradfact));
