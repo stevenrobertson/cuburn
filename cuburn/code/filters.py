@@ -72,7 +72,7 @@ fma_buf(float4 *dst, const float4 *src, int astride, float scale) {
 denblurlib = devlib(decls='''
 texture<float,  cudaTextureType2D> blur_src;
 
-__constant__ float gauss_coefs[9] = {
+__constant__ float gauss_coefs[7] = {
     0.00443305f,  0.05400558f,  0.24203623f,  0.39905028f,
     0.24203623f,  0.05400558f,  0.00443305f
 };
@@ -88,8 +88,8 @@ __global__ void den_blur(float *dst, int pattern, int upsample) {
     float den = 0.0f;
 
     #pragma unroll
-    for (int i = 0; i < 9; i++)
-        den += tex_shear(bilateral_src, pattern, x, y, (i - 4) << upsample).w
+    for (int i = 0; i < 7; i++)
+        den += tex_shear(bilateral_src, pattern, x, y, (i - 3) << upsample).w
              * gauss_coefs[i];
     dst[yi * (blockDim.x * gridDim.x) + xi] = den;
 }
@@ -103,8 +103,8 @@ __global__ void den_blur_1c(float *dst, int pattern, int upsample) {
     float den = 0.0f;
 
     #pragma unroll
-    for (int i = 0; i < 9; i++)
-        den += tex_shear(blur_src, pattern, x, y, (i - 4) << upsample)
+    for (int i = 0; i < 7; i++)
+        den += tex_shear(blur_src, pattern, x, y, (i - 3) << upsample)
              * gauss_coefs[i];
     dst[yi * (blockDim.x * gridDim.x) + xi] = den;
 }
