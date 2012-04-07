@@ -6,7 +6,7 @@ import pycuda.compiler
 from pycuda.gpuarray import vec
 
 import code.filters
-from code.util import ClsMod, argset, launch
+from code.util import ClsMod, argset, launch2
 
 def mktref(mod, n):
     tref = mod.get_texref(n)
@@ -44,7 +44,6 @@ class Bilateral(Filter, ClsMod):
         # Helper variables and functions to keep it clean
         sb = 16 * dim.astride
         bs = sb * dim.ah
-        bl, gr = (32, 8, 1), (dim.astride / 32, dim.ah / 8)
 
         dsc = mkdsc(dim, 4)
         tref = mktref(self.mod, 'chan4_src')
@@ -60,14 +59,14 @@ class Bilateral(Filter, ClsMod):
 
             # Blur density two octaves along sampling vector, ultimately
             # storing in the side buffer
-            launch('den_blur', self.mod, stream, bl, gr,
+            launch2('den_blur', self.mod, stream, dim,
                     fb.d_back, i32(pattern), i32(0), texrefs=[tref])
             grad_tref.set_address_2d(fb.d_back, grad_dsc, sb / 4)
-            launch('den_blur_1c', self.mod, stream, bl, gr,
+            launch2('den_blur_1c', self.mod, stream, dim,
                     fb.d_side, i32(pattern), i32(1), texrefs=[grad_tref])
             grad_tref.set_address_2d(fb.d_side, grad_dsc, sb / 4)
 
-            launch('bilateral', self.mod, stream, bl, gr,
+            launch2('bilateral', self.mod, stream, dim,
                     fb.d_back, i32(pattern), i32(self.r),
                     f32(sstd), f32(self.cstd), f32(self.dstd),
                     f32(self.dpow), f32(self.gspeed),
@@ -83,8 +82,7 @@ class Logscale(Filter, ClsMod):
         # s/w, new definition is (w*h/(s*s*w*w)) = (h/(s*s*w))
         area = dim.h / (gnm.camera.scale(tc) ** 2 * dim.w)
         k2 = f32(1.0 / (area * gnm.spp(tc)))
-        nbins = dim.ah * dim.astride
-        launch('logscale', self.mod, stream, 256, nbins/256,
+        launch2('logscale', self.mod, stream, dim,
                 fb.d_front, fb.d_front, k1, k2)
 
 class ColorClip(Filter, ClsMod):
@@ -101,7 +99,5 @@ class ColorClip(Filter, ClsMod):
                 gnm.color.background.g(tc),
                 gnm.color.background.b(tc))
 
-        nbins = dim.ah * dim.astride
-        blocks = int(np.ceil(np.sqrt(nbins / 256.)))
-        launch('colorclip', self.mod, stream, 256, (blocks, blocks),
-                fb.d_front, gam, vib, hipow, lin, lingam, bkgd, i32(nbins))
+        launch2('colorclip', self.mod, stream, dim,
+                fb.d_front, gam, vib, hipow, lin, lingam, bkgd)

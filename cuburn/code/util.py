@@ -34,6 +34,16 @@ def launch(name, mod, stream, block, grid, *args, **kwargs):
         grid = (int(grid), 1)
     fun(*args, block=block, grid=grid, stream=stream, **kwargs)
 
+def launch2(name, mod, stream, dim, *args, **kwargs):
+    """
+    Launch using a standardized 2D grid: blocks in the shape (32, 8, 1), and
+    grid size set to fully cover the image. The GET_IDX and GET_IDX_2 macros
+    assume this launch pattern.
+    """
+    # 32 has a tied constant in the GET_IDX_2 macro definition below
+    block, grid = (32, 8, 1), (dim.astride / 32, dim.ah / 8)
+    launch(name, mod, stream, block, grid, *args, **kwargs)
+
 def crep(s):
     """Multiline literal escape for inline PTX assembly."""
     if isinstance(s, unicode):
@@ -148,6 +158,14 @@ stdlib = devlib(headers="""
 #define bfe_decl(d, s, o, w) \
         int d; \
         bfe(d, s, o, w)
+
+#define GET_IDX_2(xi, yi, gi) \
+    int xi = blockIdx.x * blockDim.x + threadIdx.x; \
+    int yi = blockIdx.y * blockDim.y + threadIdx.y; \
+    int gi = yi * (32 * gridDim.x) + xi
+
+#define GET_IDX(i) GET_IDX_2(x___, y___, i)
+
 """, defs=r'''
 __device__ uint32_t gtid() {
     return threadIdx.x + blockDim.x *

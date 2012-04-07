@@ -16,7 +16,7 @@ __constant__ float2 addressing_patterns[16] = {
     { 1.0f, -0.333333f},   { 0.333333f,  1.0f}, // 14, 15: -15,    75
 };
 
-// Mon dieu! A C++ feature? Gotta to close the "extern C" added by the compiler.
+// Mon dieu! A C++ feature? Gotta close the "extern C" added by the compiler.
 }
 
 template <typename T> __device__ T
@@ -40,7 +40,7 @@ extern "C" {
 logscalelib = devlib(defs=r'''
 __global__ void
 logscale(float4 *outbuf, const float4 *pixbuf, float k1, float k2) {
-    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    GET_IDX(i);
     float4 pix = pixbuf[i];
 
     float ls = fmaxf(0, k1 * logf(1.0f + pix.w * k2) / pix.w);
@@ -56,10 +56,8 @@ logscale(float4 *outbuf, const float4 *pixbuf, float k1, float k2) {
 fmabuflib = devlib(defs=r'''
 // Element-wise computation of ``dst[i]=dst[i]+src[i]*scale``.
 __global__ void
-fma_buf(float4 *dst, const float4 *src, int astride, float scale) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int i = y * astride + x;
+fma_buf(float4 *dst, const float4 *src, float scale) {
+    GET_IDX(i);
     float4 d = dst[i], s = src[i];
     d.x += s.x * scale;
     d.y += s.y * scale;
@@ -82,8 +80,7 @@ __constant__ float gauss_coefs[7] = {
 // ``chan4_src`` in the horizontal direction, and write it to ``dst``, a
 // one-channel buffer.
 __global__ void den_blur(float *dst, int pattern, int upsample) {
-    int xi = blockIdx.x * blockDim.x + threadIdx.x;
-    int yi = blockIdx.y * blockDim.y + threadIdx.y;
+    GET_IDX_2(xi, yi, gi);
     float x = xi, y = yi;
 
     float den = 0.0f;
@@ -92,13 +89,12 @@ __global__ void den_blur(float *dst, int pattern, int upsample) {
     for (int i = 0; i < 7; i++)
         den += tex_shear(chan4_src, pattern, x, y, (i - 3) << upsample).w
              * gauss_coefs[i];
-    dst[yi * (blockDim.x * gridDim.x) + xi] = den;
+    dst[gi] = den;
 }
 
-// As above, but with the one-channel texture as source
+// As den_blur, but with the one-channel texture as source
 __global__ void den_blur_1c(float *dst, int pattern, int upsample) {
-    int xi = blockIdx.x * blockDim.x + threadIdx.x;
-    int yi = blockIdx.y * blockDim.y + threadIdx.y;
+    GET_IDX_2(xi, yi, gi);
     float x = xi, y = yi;
 
     float den = 0.0f;
@@ -107,7 +103,7 @@ __global__ void den_blur_1c(float *dst, int pattern, int upsample) {
     for (int i = 0; i < 7; i++)
         den += tex_shear(chan1_src, pattern, x, y, (i - 3) << upsample)
              * gauss_coefs[i];
-    dst[yi * (blockDim.x * gridDim.x) + xi] = den;
+    dst[gi] = den;
 }
 ''')
 
@@ -127,8 +123,7 @@ __global__ void
 bilateral(float4 *dst, int pattern, int radius,
           float sstd, float cstd, float dstd, float dpow, float gspeed)
 {
-    int xi = blockIdx.x * blockDim.x + threadIdx.x;
-    int yi = blockIdx.y * blockDim.y + threadIdx.y;
+    GET_IDX_2(xi, yi, gi);
     float x = xi, y = yi;
 
     // Precalculate the spatial coeffecients.
@@ -221,19 +216,16 @@ bilateral(float4 *dst, int pattern, int radius,
     out.z *= weightrcp;
     out.w *= weightrcp;
 
-    const int astride = blockDim.x * gridDim.x;
-    dst[yi * astride + xi] = out;
+    dst[gi] = out;
 }
 ''')
 
 colorcliplib = devlib(deps=[yuvlib], defs=r'''
 __global__ void
 colorclip(float4 *pixbuf, float gamma, float vibrance, float highpow,
-          float linrange, float lingam, float3 bkgd, int fbsize)
+          float linrange, float lingam, float3 bkgd)
 {
-    int i = threadIdx.x + blockDim.x * (blockIdx.x + gridDim.x * blockIdx.y);
-    if (i >= fbsize) return;
-
+    GET_IDX(i);
     float4 pix = pixbuf[i];
 
     if (pix.w <= 0) {
