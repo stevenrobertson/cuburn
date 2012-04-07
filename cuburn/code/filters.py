@@ -220,6 +220,43 @@ bilateral(float4 *dst, int pattern, int radius,
 }
 ''')
 
+halocliplib = devlib(deps=[yuvlib, denblurlib], defs=r'''
+__global__ void apply_gamma(float *dst, float4 *src, float gamma) {
+    GET_IDX(i);
+    float4 pix = src[i];
+    float ls = powf(fmaxf(0.0f, src[i].z), gamma);
+    dst[i] = ls * pix.x;
+}
+
+__global__ void
+haloclip(float4 *pixbuf, const float *denbuf, float gamma) {
+    GET_IDX(i);
+    float4 pix = pixbuf[i];
+    float areaval = denbuf[i];
+
+    if (pix.w <= 0) {
+        pixbuf[i] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        return;
+    }
+
+    float ls = powf(pix.z, gamma) / fmaxf(1.0f, areaval);
+
+    pix.x *= ls;
+    pix.y *= ls;
+    pix.z *= ls;
+    pix.w *= ls;
+
+    pix.y -= 0.5f * pix.w;
+    pix.z -= 0.5f * pix.w;
+    float3 tmp = yuv2rgb(make_float3(pix.x, pix.y, pix.z));
+    pix.x = fmaxf(0.0f, tmp.x);
+    pix.y = fmaxf(0.0f, tmp.y);
+    pix.z = fmaxf(0.0f, tmp.z);
+
+    pixbuf[i] = pix;
+}
+''')
+
 colorcliplib = devlib(deps=[yuvlib], defs=r'''
 __global__ void
 colorclip(float4 *pixbuf, float gamma, float vibrance, float highpow,

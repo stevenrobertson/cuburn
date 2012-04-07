@@ -85,6 +85,26 @@ class Logscale(Filter, ClsMod):
         launch2('logscale', self.mod, stream, dim,
                 fb.d_front, fb.d_front, k1, k2)
 
+class HaloClip(Filter, ClsMod):
+    lib = code.filters.halocliplib
+    def apply(self, fb, gnm, dim, tc, stream=None):
+        gam = f32(1 / gnm.color.gamma(tc) - 1)
+
+        dsc = mkdsc(dim, 1)
+        tref = mktref(self.mod, 'chan1_src')
+
+        launch2('apply_gamma', self.mod, stream, dim,
+                fb.d_side, fb.d_front, gam)
+        tref.set_address_2d(fb.d_side, dsc, 4 * dim.astride)
+        launch2('den_blur_1c', self.mod, stream, dim,
+               fb.d_back, i32(0), i32(0), texrefs=[tref])
+        tref.set_address_2d(fb.d_back, dsc, 4 * dim.astride)
+        launch2('den_blur_1c', self.mod, stream, dim,
+               fb.d_side, i32(1), i32(0), texrefs=[tref])
+
+        launch2('haloclip', self.mod, stream, dim,
+                fb.d_front, fb.d_side)
+
 class ColorClip(Filter, ClsMod):
     lib = code.filters.colorcliplib
     def apply(self, fb, gnm, dim, tc, stream=None):
