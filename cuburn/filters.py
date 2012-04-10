@@ -21,7 +21,7 @@ def mkdsc(dim, ch):
                   format=cuda.array_format.FLOAT)
 
 class Filter(object):
-    def apply(self, fb, gnm, dim, tc, stream=None):
+    def apply(self, fb, gprof, params, dim, tc, stream=None):
         """
         Queue the application of this filter. When the live stream finishes
         executing the last item enqueued by this method, the result must be
@@ -32,15 +32,10 @@ class Filter(object):
 
 class Bilateral(Filter, ClsMod):
     lib = code.filters.bilaterallib
-    def __init__(self, directions=8, r=15, sstd=6, cstd=0.05,
-                 dstd=1.5, dpow=0.8, gspeed=4.0):
-        # TODO: expose these parameters on the genome, or at least on the
-        # profile, and set them by a less ugly mechanism
-        for n in 'directions r sstd cstd dstd dpow gspeed'.split():
-            setattr(self, n, locals()[n])
-        super(Bilateral, self).__init__()
+    radius = 15
+    directions = 8
 
-    def apply(self, fb, gnm, dim, tc, stream=None):
+    def apply(self, fb, gprof, params, dim, tc, stream=None):
         # Helper variables and functions to keep it clean
         sb = 16 * dim.astride
         bs = sb * dim.ah
@@ -53,7 +48,7 @@ class Bilateral(Filter, ClsMod):
         for pattern in range(self.directions):
             # Scale spatial parameter so that a "pixel" is equivalent to an
             # actual pixel at 1080p
-            sstd = self.sstd * dim.w / 1920.
+            sstd = params.spatial_std(tc) * dim.w / 1920.
 
             tref.set_address_2d(fb.d_front, dsc, sb)
 
@@ -67,38 +62,39 @@ class Bilateral(Filter, ClsMod):
             grad_tref.set_address_2d(fb.d_side, grad_dsc, sb / 4)
 
             launch2('bilateral', self.mod, stream, dim,
-                    fb.d_back, i32(pattern), i32(self.r),
-                    f32(sstd), f32(self.cstd), f32(self.dstd),
-                    f32(self.dpow), f32(self.gspeed),
+                    fb.d_back, i32(pattern), i32(self.radius),
+                    f32(sstd), f32(params.color_std(tc)),
+                    f32(params.density_std(tc)), f32(params.density_pow(tc)),
+                    f32(params.gradient(tc)),
                     texrefs=[tref, grad_tref])
             fb.flip()
 
 class Logscale(Filter, ClsMod):
     lib = code.filters.logscalelib
-    def apply(self, fb, gnm, dim, tc, stream=None):
+    def apply(self, fb, gprof, params, dim, tc, stream=None):
         """Log-scale in place."""
-        k1 = f32(gnm.color.brightness(tc) * 268 / 256)
+        k1 = f32(params.brightness(tc) * 268 / 256)
         # Old definition of area is (w*h/(s*s)). Since new scale 'ns' is now
         # s/w, new definition is (w*h/(s*s*w*w)) = (h/(s*s*w))
-        area = dim.h / (gnm.camera.scale(tc) ** 2 * dim.w)
-        k2 = f32(1.0 / (area * gnm.spp(tc)))
+        area = dim.h / (params.scale(tc) ** 2 * dim.w)
+        k2 = f32(1.0 / (area * gprof.spp(tc)))
         launch2('logscale', self.mod, stream, dim,
                 fb.d_front, fb.d_front, k1, k2)
 
 class HaloClip(Filter, ClsMod):
     lib = code.filters.halocliplib
-    def apply(self, fb, gnm, dim, tc, stream=None):
-        gam = f32(1 / gnm.color.gamma(tc) - 1)
+    def apply(self, fb, gprof, params, dim, tc, stream=None):
+        gam = f32(1 / params.gamma(tc) - 1)
 
         dsc = mkdsc(dim, 1)
         tref = mktref(self.mod, 'chan1_src')
 
         launch2('apply_gamma', self.mod, stream, dim,
                 fb.d_side, fb.d_front, gam)
-        tref.set_address_2d(fb.d_side, dsc, 4 * dim.astride)
+        tref.set_address_2d(fb.d_side, dsc, 4 * params.astride)
         launch2('den_blur_1c', self.mod, stream, dim,
                fb.d_back, i32(0), i32(0), texrefs=[tref])
-        tref.set_address_2d(fb.d_back, dsc, 4 * dim.astride)
+        tref.set_address_2d(fb.d_back, dsc, 4 * params.astride)
         launch2('den_blur_1c', self.mod, stream, dim,
                fb.d_side, i32(1), i32(0), texrefs=[tref])
 
@@ -107,17 +103,22 @@ class HaloClip(Filter, ClsMod):
 
 class ColorClip(Filter, ClsMod):
     lib = code.filters.colorcliplib
-    def apply(self, fb, gnm, dim, tc, stream=None):
+    def apply(self, fb, gprof, params, dim, tc, stream=None):
         # TODO: implement integration over cubic splines?
-        gam = f32(1 / gnm.color.gamma(tc))
-        vib = f32(gnm.color.vibrance(tc))
-        hipow = f32(gnm.color.highlight_power(tc))
-        lin = f32(gnm.color.gamma_threshold(tc))
+        gam = f32(1 / params.gamma(tc))
+        vib = f32(params.vibrance(tc))
+        hipow = f32(params.highlight_power(tc))
+        lin = f32(params.gamma_threshold(tc))
         lingam = f32(lin ** (gam-1.0) if lin > 0 else 0)
-        bkgd = vec.make_float3(
-                gnm.color.background.r(tc),
-                gnm.color.background.g(tc),
-                gnm.color.background.b(tc))
 
         launch2('colorclip', self.mod, stream, dim,
-                fb.d_front, gam, vib, hipow, lin, lingam, bkgd)
+                fb.d_front, gam, vib, hipow, lin, lingam)
+
+# Ungainly but practical.
+filter_map = dict(bilateral=Bilateral, logscale=Logscale, haloclip=HaloClip,
+                  colorclip=ColorClip)
+def create(gprof):
+    # TODO: redesign this (should not have to care about internals of
+    # use.Wrapper in order to find types from TypedList elements)
+    filts = gprof._val.get('filters') or gprof.spec['filters'].defaults
+    return [filter_map[f['type']]() for f in filts]

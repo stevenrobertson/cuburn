@@ -22,13 +22,14 @@ from itertools import ifilter
 import numpy as np
 import pycuda.driver as cuda
 
-from cuburn import genome, render, filters, output
+from cuburn import render, filters, output
+from cuburn.genome import convert, use
 
 profiles = {
-    '1080p': dict(fps=24, width=1920, height=1080, quality=3000, skip=0),
-    '720p': dict(fps=24, width=1280, height=720, quality=2500, skip=0),
-    '540p': dict(fps=24, width=960, height=540, quality=2500, skip=0),
-    'preview': dict(fps=24, width=640, height=360, quality=800, skip=1)
+    '1080p': dict(width=1920, height=1080),
+    '720p': dict(width=1280, height=720),
+    '540p': dict(width=960, height=540),
+    'preview': dict(width=640, height=360, quality=800, skip=1)
 }
 
 def save(out):
@@ -41,15 +42,14 @@ def main(args, prof):
 
     gnm_str = args.flame.read()
     if '<' in gnm_str[:10]:
-        flames = genome.XMLGenomeParser.parse(gnm_str)
+        flames = convert.XMLGenomeParser.parse(gnm_str)
         if len(flames) != 1:
             warnings.warn('%d flames in file, only using one.' % len(flames))
-        gnm = genome.convert_flame(flames[0])
+        gnm = convert.convert_flame(flames[0])
     else:
         gnm = json.loads(gnm_str)
-    gnm = genome.Genome(gnm)
-    err, times = gnm.set_profile(prof)
 
+    gprof, times = use.wrap_genome(prof, gnm)
     rmgr = render.RenderManager()
 
     basename = os.path.basename(args.flame.name).rsplit('.', 1)[0] + '_'
@@ -71,7 +71,7 @@ def main(args, prof):
                   if not os.path.isfile(f[0]) or m > os.path.getmtime(f[0]))
 
     w, h = prof['width'], prof['height']
-    gen = rmgr.render(gnm, frames, w, h)
+    gen = rmgr.render(gnm, gprof, frames)
 
     if not args.gfx:
         for out in gen:

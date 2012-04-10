@@ -260,13 +260,13 @@ haloclip(float4 *pixbuf, const float *denbuf, float gamma) {
 colorcliplib = devlib(deps=[yuvlib], defs=r'''
 __global__ void
 colorclip(float4 *pixbuf, float gamma, float vibrance, float highpow,
-          float linrange, float lingam, float3 bkgd)
+          float linrange, float lingam)
 {
     GET_IDX(i);
     float4 pix = pixbuf[i];
 
     if (pix.w <= 0) {
-        pixbuf[i] = make_float4(bkgd.x, bkgd.y, bkgd.z, 0.0f);
+        pixbuf[i] = make_float4(0, 0, 0, 0);
         return;
     }
     pix.y -= 0.5f * pix.w;
@@ -320,10 +320,6 @@ colorclip(float4 *pixbuf, float gamma, float vibrance, float highpow,
     pix.x += (1.0f - vibrance) * powf(opix.x, gamma);
     pix.y += (1.0f - vibrance) * powf(opix.y, gamma);
     pix.z += (1.0f - vibrance) * powf(opix.z, gamma);
-
-    pix.x += (1.0f - alpha) * bkgd.x;
-    pix.y += (1.0f - alpha) * bkgd.y;
-    pix.z += (1.0f - alpha) * bkgd.z;
 
     pix.x = fminf(1.0f, pix.x);
     pix.y = fminf(1.0f, pix.y);

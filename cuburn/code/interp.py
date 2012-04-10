@@ -2,16 +2,14 @@ from collections import OrderedDict
 from itertools import cycle
 import numpy as np
 
+from cuburn.genome.use import Wrapper, SplineEval
+
 import util
 from util import Template, assemble_code, devlib, binsearchlib, ringbuflib
 from color import yuvlib
 from mwc import mwclib
 
-class GenomePackerName(str):
-    """Class to indicate that a property is precalculated on the device"""
-    pass
-
-class GenomePackerView(object):
+class PackerWrapper(Wrapper):
     """
     Obtain accessors in generated code.
 
@@ -25,47 +23,46 @@ class GenomePackerView(object):
     code and an interpolator for use in generating that code. This conversion
     is done when the property is coerced into a string by the templating
     mechanism, so you can easily nest objects by saying, for instance,
-    {{pcp.camera.rotation}} from within templated code. The accessed property
-    must be a SplEval object, or a precalculated value (see
-    ``GenomePackerPrecalc``).
-
-    Index operations are converted to property accesses as well, so that you
-    don't have to make a mess with 'getattr' in your code: {{pcp.xforms[x]}}
-    works just fine. This means, however, that no arrays can be packed
-    directly; they must be converted to have string-based keys first, and
-    any loops must be unrolled in your code.
+    {{pcp.camera.rotation}} from within templated code.
     """
-    def __init__(self, packer, ptr_name, wrapped, prefix=()):
-        self.packer = packer
-        self.ptr_name = ptr_name
-        self.wrapped = wrapped
-        self.prefix = prefix
+    def __init__(self, packer, val, spec=None, path=()):
+        super(PackerWrapper, self).__init__(val, spec)
+        self.packer, self.path = packer, path
+
+    def wrap_dict(self, path, spec, val):
+        return type(self)(self.packer, val, spec, path)
+
+    def wrap_spline(self, path, spec, val):
+        return PackerSpline(self.packer, path, spec)
+
     def __getattr__(self, name):
-        w = getattr(self.wrapped, name)
-        return type(self)(self.packer, self.ptr_name, w, self.prefix+(name,))
-    # As with the Genome class, we're all-dict, no-array here
-    __getitem__ = lambda s, n: getattr(s, str(n))
+        path = self.path + (name,)
+        if path in self.packer.packed_precalc:
+            return self.packer.devname(path)
+        return super(PackerWrapper, self).__getattr__(name)
+
+    def _precalc(self):
+        """Create a GenomePackerPrecalc object. See that class for details."""
+        return PrecalcWrapper(self.packer, self._val, self.spec, self.path)
+
+class PackerSpline(object):
+    def __init__(self, packer, path, spec):
+        self.packer, self.path, self.spec = packer, path, spec
 
     def __str__(self):
         """
         Returns the packed name in a format suitable for embedding directly
         into device code.
         """
-        # So evil. When the template calls __str__ to format the output, we
-        # allocate things. This makes for neater embedded code, which is where
-        # the real complexity lies, but it also means printf() debugging when
-        # templating will screw with the allocation tables!
-        if not isinstance(self.wrapped, GenomePackerName):
-            self.packer._require(self.prefix)
-        # TODO: verify namespace stomping, etc
-        return '%s.%s' % (self.ptr_name, '_'.join(self.prefix))
+        # When the template calls __str__ to format one of these splines, this
+        # allocates the corresponding spline.
+        return self.packer._require(self.spec, self.path)
 
-    def _precalc(self):
-        """Create a GenomePackerPrecalc object. See that class for details."""
-        return GenomePackerPrecalc(self.packer, self.ptr_name,
-                                   self.wrapped, self.prefix)
+class PrecalcSpline(PackerSpline):
+    def __str__(self):
+        return self.packer._require_pre(self.spec, self.path)
 
-class GenomePackerPrecalc(GenomePackerView):
+class PrecalcWrapper(PackerWrapper):
     """
     Insert precalculated values into the packed genome.
 
@@ -91,35 +88,24 @@ class GenomePackerPrecalc(GenomePackerView):
 
     Example:
 
-        def do_precalc(px):
-            pcam = px._precalc()
+        def do_precalc(pcam):
             pcam._code(Template('''
                 {{pcam._set('prop_sin')}} = sin({{pcam.prop}});
                 ''').substitute(pcam=pcam))
 
         def gen_code(px):
             return Template('''
-                {{do_precalc(px)}}
+                {{do_precalc(px._precalc())}}
                 printf("The sin of %g is %g.", {{px.prop}}, {{px.prop_sin}});
                 ''').substitute(px=px)
     """
-    def __init__(self, packer, ptr_name, wrapped, prefix):
-        super(GenomePackerPrecalc, self).__init__(packer, 'out', wrapped, prefix)
-    def __str__(self):
-        return self.packer._require_pre(self.prefix)
-    def _magscale(self):
-        """
-        This is a temporary hack which turns on magnitude scaling for the
-        value on which it is called. Takes the place of __str__ serialization.
-        """
-        return self.packer._require_pre(self.prefix, True)
+    def wrap_spline(self, path, spec, val):
+        return PrecalcSpline(self.packer, path, spec)
+
     def _set(self, name):
-        fullname = self.prefix + (name,)
-        self.packer._pre_alloc(fullname)
-        # This just modifies the underlying object, because I'm too lazy right
-        # now to ghost the namespace
-        self.wrapped[name] = GenomePackerName('_'.join(fullname))
-        return '%s->%s' % (self.ptr_name, self.wrapped[name])
+        path = self.path + (name,)
+        return self.packer._pre_alloc(path)
+
     def _code(self, code):
         self.packer.precalc_code.append(code)
 
@@ -127,25 +113,26 @@ class GenomePacker(object):
     """
     Packs a genome for use in iteration.
     """
-    def __init__(self, tname):
+    def __init__(self, tname, ptr_name, spec):
         """
         Create a new DataPacker.
 
         ``tname`` is the name of the structure typedef that will be emitted
         via this object's ``decls`` property.
         """
-        self.tname = tname
+        self.tname, self.ptr_name, self.spec = tname, ptr_name, spec
         # We could do this in the order that things are requested, but we want
         # to be able to treat the direct stuff as a list so this function
         # doesn't unroll any more than it has to. So we separate things into
         # direct requests, and those that need precalculation.
         # Values of OrderedDict are unused; basically, it's just OrderedSet.
         self.packed_direct = OrderedDict()
+        # Feel kind of bad about this, but it's just under the threshold of
+        # being worth refactoring to be agnostic to interpolation types
+        self.packed_direct_mag = OrderedDict()
         self.genome_precalc = OrderedDict()
         self.packed_precalc = OrderedDict()
         self.precalc_code = []
-
-        self.ns = {}
 
         self._len = None
         self.decls = None
@@ -156,29 +143,37 @@ class GenomePacker(object):
         self.search_rounds = util.DEFAULT_SEARCH_ROUNDS
 
     def __len__(self):
+        """Length in elements. (*4 for length in bytes.)"""
         assert self._len is not None, 'len() called before finalize()'
         return self._len
 
-    def view(self, ptr_name, wrapped_obj, prefix):
+    def view(self, val={}):
         """Create a DataPacker view. See DataPackerView class for details."""
-        self.ns[prefix] = wrapped_obj
-        return GenomePackerView(self, ptr_name, wrapped_obj, (prefix,))
+        return PackerWrapper(self, val, self.spec)
 
-    def _require(self, name):
+    def _require(self, spec, path):
         """
         Called to indicate that the named parameter from the original genome
         must be available during interpolation.
         """
-        self.packed_direct[name] = None
+        if spec.interp == 'mag':
+            self.packed_direct_mag[path] = None
+        else:
+            self.packed_direct[path] = None
+        return self.devname(path)
 
-    def _require_pre(self, name, mag_scaling=False):
+    def _require_pre(self, spec, path):
         i = len(self.genome_precalc) << self.search_rounds
-        self.genome_precalc[name] = None
-        name = 'catmull_rom_mag' if mag_scaling else 'catmull_rom'
-        return '%s(&times[%d], &knots[%d], time)' % (name, i, i)
+        self.genome_precalc[path] = None
+        func = 'catmull_rom_mag' if spec.interp == 'mag' else 'catmull_rom'
+        return '%s(&times[%d], &knots[%d], time)' % (func, i, i)
 
-    def _pre_alloc(self, name):
-        self.packed_precalc[name] = None
+    def _pre_alloc(self, path):
+        self.packed_precalc[path] = None
+        return '%s->%s' % (self.ptr_name, '_'.join(path))
+
+    def devname(self, path):
+        return '%s.%s' % (self.ptr_name, '_'.join(path))
 
     def finalize(self):
         """
@@ -187,20 +182,18 @@ class GenomePacker(object):
         # At the risk of packing a few things more than once, we don't
         # uniquify the overall precalc order, sparing us the need to implement
         # recursive code generation
-        self.packed = self.packed_direct.keys() + self.packed_precalc.keys()
-        self.genome = self.packed_direct.keys() + self.genome_precalc.keys()
+        direct = self.packed_direct.keys() + self.packed_direct_mag.keys()
+        self.packed = direct + self.packed_precalc.keys()
+        self.genome = direct + self.genome_precalc.keys()
 
         self._len = len(self.packed)
 
-        decls = self._decls.substitute(packed=self.packed, tname=self.tname)
-        defs = self._defs.substitute(
-                packed_direct=self.packed_direct, tname=self.tname,
-                precalc_code=self.precalc_code,
-                search_rounds=self.search_rounds)
+        decls = self._decls.substitute(**self.__dict__)
+        defs = self._defs.substitute(**self.__dict__)
 
         return devlib(deps=[catmullromlib], decls=decls, defs=defs)
 
-    def pack(self, pool=None):
+    def pack(self, gnm, pool=None):
         """
         Return a packed copy of the genome ready for uploading to the GPU,
         as two float32 NDArrays for the knot times and values.
@@ -213,50 +206,59 @@ class GenomePacker(object):
             times, knots = np.empty((2, len(self.genome), width), 'f4')
         times.fill(1e9)
 
-        for idx, gname in enumerate(self.genome):
-            attr = self.ns[gname[0]]
-            for g in gname[1:]:
-                attr = getattr(attr, g)
-            times[idx,:len(attr.knots[0])] = attr.knots[0]
-            knots[idx,:len(attr.knots[1])] = attr.knots[1]
+        for idx, path in enumerate(self.genome):
+            attr = gnm
+            for name in path:
+                attr = attr[name]
+            attr = SplineEval.normalize(attr)
+            times[idx,:len(attr[0])] = attr[0]
+            knots[idx,:len(attr[1])] = attr[1]
         return times, knots
 
     _defs = Template(r"""
 __global__ void interp_{{tname}}(
-        {{tname}}* out,
+        {{tname}}* {{ptr_name}},
         const float *times, const float *knots,
         float tstart, float tstep, int maxid)
 {
     int id = gtid();
     if (id >= maxid) return;
-    out = &out[id];
+    {{ptr_name}} = &{{ptr_name}}[id];
     float time = tstart + id * tstep;
 
-    float *outf = reinterpret_cast<float*>(out);
+    float *outf = reinterpret_cast<float*>({{ptr_name}});
+
+    {{py:lpd = len(packed_direct)}}
+    {{py:lpdm = len(packed_direct_mag)}}
 
     // TODO: unroll pragma?
-    for (int i = 0; i < {{len(packed_direct)}}; i++) {
+    for (int i = 0; i < {{lpd}}; i++) {
         int j = i << {{search_rounds}};
         outf[i] = catmull_rom(&times[j], &knots[j], time);
     }
 
+    for (int i = {{lpd}}; i < {{lpd+lpdm}}; i++) {
+        int j = i << {{search_rounds}};
+        outf[i] = catmull_rom_mag(&times[j], &knots[j], time);
+    }
+
     // Advance 'times' and 'knots' to the purely generated sections, so that
     // the pregenerated statements emitted by _require_pre are correct.
-    times = &times[{{len(packed_direct)<<search_rounds}}];
-    knots = &knots[{{len(packed_direct)<<search_rounds}}];
+    times = &times[{{(lpd+lpdm)<<search_rounds}}];
+    knots = &knots[{{(lpd+lpdm)<<search_rounds}}];
 
     {{for hunk in precalc_code}}
-    if (1) {
+{
     {{hunk}}
-    }
+}
     {{endfor}}
 }
 """)
 
     _decls = Template(r"""
 typedef struct {
-{{for name in packed}}
-    float   {{'_'.join(name)}};
+{{for path in packed}}
+    float   {{'_'.join(path)}};
 {{endfor}}
 } {{tname}};
 

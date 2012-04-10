@@ -18,6 +18,7 @@ import filters
 import output
 from code import util, mwc, iter, interp, sort
 from code.util import ClsMod, devlib, filldptrlib, assemble_code, launch
+from cuburn.genome.util import palette_decode
 
 RenderedImage = namedtuple('RenderedImage', 'buf idx gpu_time')
 Dimensions = namedtuple('Dimensions', 'w h aw ah astride')
@@ -200,7 +201,7 @@ class Renderer(object):
     MAX_MODREFS = 20
     _modrefs = []
 
-    def __init__(self, gnm):
+    def __init__(self, gnm, gprof):
         self.packer, self.lib = iter.mkiterlib(gnm)
         cubin = util.compile('iter', assemble_code(self.lib))
         self.mod = cuda.module_from_buffer(cubin)
@@ -210,9 +211,7 @@ class Renderer(object):
         self._modrefs.append(self.mod)
 
         # TODO: make these customizable
-        self.filts = [ filters.Bilateral()
-                     , filters.Logscale()
-                     , filters.ColorClip() ]
+        self.filts = filters.create(gprof)
         self.out = output.PILOutput()
 
 class RenderManager(ClsMod):
@@ -236,13 +235,14 @@ class RenderManager(ClsMod):
         Note that for now, this is broken! It ignores ``gnm``, and only packs
         the genome that was used when creating the renderer.
         """
-        times, knots = rdr.packer.pack(self.pool)
+        times, knots = rdr.packer.pack(gnm, self.pool)
         cuda.memcpy_htod_async(self.src_a.d_times, times, self.stream_a)
         cuda.memcpy_htod_async(self.src_a.d_knots, knots, self.stream_a)
 
-        ptimes, pidxs = zip(*gnm.palette_times)
-        palettes = self.pool.allocate((len(ptimes), 256, 4), f32)
-        palettes[:] = [gnm.decoded_palettes[i] for i in pidxs]
+        palsrc = dict([(v[0], palette_decode(v[1:])) for v in gnm['palette']])
+        ptimes, pvals = zip(*sorted(palsrc.items()))
+        palettes = self.pool.allocate((len(palsrc), 256, 4), f32)
+        palettes[:] = pvals
         palette_times = self.pool.allocate((self.src_a.max_knots,), f32)
         palette_times.fill(1e9)
         palette_times[:len(ptimes)] = ptimes
@@ -271,7 +271,7 @@ class RenderManager(ClsMod):
                 256, np.ceil(nts / 256.),
                 self.info_a.d_params, self.src_a.d_times, self.src_a.d_knots,
                 f32(ts), f32(td / nts), i32(nts))
-        #self._print_interp_knots(rdr)
+        self._print_interp_knots(rdr)
 
     def _print_interp_knots(self, rdr, tsidx=5):
         infos = cuda.from_device(self.info_a.d_params,
@@ -279,7 +279,7 @@ class RenderManager(ClsMod):
         for i, n in zip(infos[-1], rdr.packer.packed):
             print '%60s %g' % ('_'.join(n), i)
 
-    def _iter(self, rdr, gnm, dim, tc):
+    def _iter(self, rdr, gnm, gprof, dim, tc):
         tref = rdr.mod.get_surfref('flatpal')
         tref.set_array(self.info_a.d_pal_array, 0)
 
@@ -291,19 +291,29 @@ class RenderManager(ClsMod):
         fill(self.fb.d_points, self.fb._len_d_points / 4, f32(np.nan))
 
         nts = self.info_a.ntemporal_samples
-        nsamps = (gnm.spp(tc) * dim.w * dim.h)
+        nsamps = (gprof.spp(tc) * dim.w * dim.h)
         nrounds = int(nsamps / (nts * 256. * 256)) + 1
-        launch('iter', rdr.mod, self.stream_a, (32, 8, 1), (nts, nrounds),
-                self.fb.d_front, self.fb.d_side,
-                self.fb.d_rb, self.fb.d_seeds, self.fb.d_points,
-                self.info_a.d_params)
+
+        def launch_iter(n):
+            if n == 0: return
+            launch('iter', rdr.mod, self.stream_a, (32, 8, 1), (nts, n),
+                    self.fb.d_front, self.fb.d_side,
+                    self.fb.d_rb, self.fb.d_seeds, self.fb.d_points,
+                    self.info_a.d_params)
+        # Split the launch into multiple rounds, possibly (slightly) reducing
+        # work overlap but avoiding stalls when working on a device with an
+        # active X session. TODO: characterize performance impact, autodetect
+        BLOCK_SIZE = 4
+        for i in range(BLOCK_SIZE-1, nrounds, BLOCK_SIZE):
+            launch_iter(BLOCK_SIZE)
+        launch_iter(nrounds%BLOCK_SIZE)
 
         nblocks = int(np.ceil(np.sqrt(dim.ah*dim.astride/256.)))
         launch('flush_atom', self.mod, self.stream_a,
                 256, (nblocks, nblocks),
                 u64(self.fb.d_front), u64(self.fb.d_side), i32(nbins))
 
-    def queue_frame(self, rdr, gnm, tc, w, h, copy=True):
+    def queue_frame(self, rdr, gnm, gprof, tc, copy=True):
         """
         Queue one frame for rendering.
 
@@ -332,9 +342,10 @@ class RenderManager(ClsMod):
         """
         # Note: we synchronize on the previous stream if buffers need to be
         # reallocated, which implicitly also syncs the current stream.
-        dim = self.fb.set_dim(w, h, self.stream_b)
+        dim = self.fb.set_dim(gprof.width, gprof.height, self.stream_b)
 
-        td = gnm.adj_frame_width(tc)
+        # TODO: calculate this externally somewhere?
+        td = gprof.frame_width(tc) / round(gprof.fps * gprof.duration)
         ts, te = tc - 0.5 * td, tc + 0.5 * td
 
         # The stream interleaving here is nontrivial.
@@ -345,12 +356,12 @@ class RenderManager(ClsMod):
         self._interp(rdr, gnm, dim, ts, td)
         if self.filt_evt:
             self.stream_a.wait_for_event(self.filt_evt)
-        self._iter(rdr, gnm, dim, tc)
+        self._iter(rdr, gnm, gprof, dim, tc)
         if self.copy_evt:
             self.stream_a.wait_for_event(self.copy_evt)
-        for filt in rdr.filts:
-            filt.apply(self.fb, gnm, dim, tc, self.stream_a)
-        rdr.out.convert(self.fb, gnm, dim, self.stream_a)
+        for filt, params in zip(rdr.filts, gprof.filters):
+            filt.apply(self.fb, gprof, params, dim, tc, self.stream_a)
+        rdr.out.convert(self.fb, gprof, dim, self.stream_a)
         self.filt_evt = cuda.Event().record(self.stream_a)
         h_out = rdr.out.copy(self.fb, dim, self.pool, self.stream_a)
         self.copy_evt = cuda.Event().record(self.stream_a)
@@ -359,13 +370,13 @@ class RenderManager(ClsMod):
         self.stream_a, self.stream_b = self.stream_b, self.stream_a
         return self.copy_evt, h_out
 
-    def render(self, gnm, times, w, h):
+    def render(self, gnm, gprof, times):
         """
         A port of the old rendering function, retained for backwards
         compatibility. Some of this will be pulled into as-yet-undecided
         methods for more DRY.
         """
-        rdr = Renderer(gnm)
+        rdr = Renderer(gnm, gprof)
         last_evt = cuda.Event().record(self.stream_a)
         last_idx = None
         def wait(): # Times like these where you wish for a macro
@@ -374,7 +385,7 @@ class RenderManager(ClsMod):
             gpu_time = last_evt.time_since(two_evts_ago)
             return RenderedImage(last_buf, last_idx, gpu_time)
         for idx, tc in times:
-            evt, h_buf = self.queue_frame(rdr, gnm, tc, w, h, last_idx is None)
+            evt, h_buf = self.queue_frame(rdr, gnm, gprof, tc, last_idx is None)
             if last_idx:
                 yield wait()
             two_evts_ago, last_evt = last_evt, evt

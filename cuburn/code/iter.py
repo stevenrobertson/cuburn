@@ -7,54 +7,53 @@ import interp
 from util import Template, devlib, ringbuflib
 from mwc import mwclib
 
-def precalc_densities(pcp, std_xforms):
+import cuburn.genome.spec
+
+def precalc_densities(cp):
     # This pattern recurs a few times for precalc segments. Unfortunately,
     # namespace stuff means it's not easy to functionalize this boilerplate
-    pre_cp = pcp._precalc()
-    pre_cp._code(Template(r"""
+    cp._code(Template(r"""
         float sum = 0.0f;
 
-        {{for n in std_xforms}}
-        float den_{{n}} = {{pre_cp.xforms[n].density}};
+        {{for n in cp.xforms}}
+        float den_{{n}} = {{cp.xforms[n].weight}};
         sum += den_{{n}};
         {{endfor}}
 
         float rsum = 1.0f / sum;
         sum = 0.0f;
 
-        {{for n in std_xforms[:-1]}}
+        {{for n in cp.xforms.keys()[:-1]}}
         sum += den_{{n}} * rsum;
-        {{pre_cp._set('den_' + n)}} = sum;
+        {{cp._set('den_' + n)}} = sum;
         {{endfor}}
-    """, name='precalc_densities').substitute(locals()))
+    """, name='precalc_densities').substitute(cp=cp))
 
-def precalc_chaos(pcp, std_xforms):
-    pre_cp = pcp._precalc()
-    pre_cp._code(Template("""
+def precalc_chaos(cp):
+    cp._code(Template("""
         float sum, rsum;
 
-        {{for p in std_xforms}}
+        {{for p in cp.xforms}}
         sum = 0.0f;
 
-        {{for n in std_xforms}}
-        float den_{{p}}_{{n}} = {{pre_cp.xforms[p].chaos[n]}};
+        {{for n in cp.xforms}}
+        float den_{{p}}_{{n}} = {{cp.xforms[n].weight}}
+                              * {{cp.xforms[p].chaos[n]}};
         sum += den_{{p}}_{{n}};
         {{endfor}}
 
         rsum = 1.0f / sum;
         sum = 0.0f;
 
-        {{for n in std_xforms[:-1]}}
+        {{for n in cp.xforms.keys()[:-1]}}
         sum += den_{{p}}_{{n}} * rsum;
-        {{pre_cp._set('chaos_%s_%s' % (p, n))}} = sum;
+        {{cp._set('chaos_%s_%s' % (p, n))}} = sum;
         {{endfor}}
 
         {{endfor}}
-    """, name='precalc_chaos').substitute(locals()))
+    """, name='precalc_chaos').substitute(cp=cp))
 
-def precalc_camera(pcam):
-    pre_cam = pcam._precalc()
-
+def precalc_camera(cam):
     # Maxima code to check my logic:
     #   matrix([1,0,0.5*width + g],[0,1,0.5*height+g],[0,0,1])
     # . matrix([width * scale,0,0], [0,width * scale,0], [0,0,1])
@@ -62,41 +61,41 @@ def precalc_camera(pcam):
     # . matrix([1,0,-cenx],[0,1,-ceny],[0,0,1])
     # . matrix([X],[Y],[1]);
 
-    pre_cam._code(Template(r"""
-        float rot = {{pre_cam.rotation}} * M_PI / 180.0f;
+    cam._code(Template(r"""
+        float rot = {{cam.rotation}} * M_PI / 180.0f;
         float rotsin = sin(rot), rotcos = cos(rot);
-        float cenx = {{pre_cam.center.x}}, ceny = {{pre_cam.center.y}};
-        float scale = {{pre_cam.scale}} * acc_size.width;
+        float cenx = {{cam.center.x}}, ceny = {{cam.center.y}};
+        float scale = {{cam.scale}} * acc_size.width;
 
-        {{pre_cam._set('xx')}} = scale * rotcos;
-        {{pre_cam._set('xy')}} = scale * -rotsin;
-        {{pre_cam._set('xo')}} = scale * (rotsin * ceny - rotcos * cenx)
-                               + 0.5f * acc_size.awidth;
+        {{cam._set('xx')}} = scale * rotcos;
+        {{cam._set('xy')}} = scale * -rotsin;
+        {{cam._set('xo')}} = scale * (rotsin * ceny - rotcos * cenx)
+                           + 0.5f * acc_size.awidth;
 
-        {{pre_cam._set('yx')}} = scale * rotsin;
-        {{pre_cam._set('yy')}} = scale * rotcos;
-        {{pre_cam._set('yo')}} = scale * -(rotsin * cenx + rotcos * ceny)
-                               + 0.5f * acc_size.aheight;
-    """, 'precalc_camera').substitute(locals()))
+        {{cam._set('yx')}} = scale * rotsin;
+        {{cam._set('yy')}} = scale * rotcos;
+        {{cam._set('yo')}} = scale * -(rotsin * cenx + rotcos * ceny)
+                           + 0.5f * acc_size.aheight;
+    """, 'precalc_camera').substitute(cam=cam))
 
 def precalc_xf_affine(px):
-    pre = px._precalc()
-    pre._code(Template(r"""
-        float pri = {{pre.angle}} * M_PI / 180.0f;
-        float spr = {{pre.spread}} * M_PI / 180.0f;
+    px._code(Template(r"""
+        float pri = {{px.angle}} * M_PI / 180.0f;
+        float spr = {{px.spread}} * M_PI / 180.0f;
 
-        float magx = {{pre.magnitude.x._magscale()}};
-        float magy = {{pre.magnitude.y._magscale()}};
+        float magx = {{px.magnitude.x}};
+        float magy = {{px.magnitude.y}};
 
-        {{pre._set('xx')}} = magx * cos(pri-spr);
-        {{pre._set('yx')}} = -magx * sin(pri-spr);
-        {{pre._set('xy')}} = -magy * cos(pri+spr);
-        {{pre._set('yy')}} = magy * sin(pri+spr);
-        {{pre._set('xo')}} = {{pre.offset.x._magscale()}};
-        {{pre._set('yo')}} = -{{pre.offset.y._magscale()}};
-    """, 'precalc_xf_affine').substitute(locals()))
+        {{px._set('xx')}} = magx * cos(pri-spr);
+        {{px._set('yx')}} = -magx * sin(pri-spr);
+        {{px._set('xy')}} = -magy * cos(pri+spr);
+        {{px._set('yy')}} = magy * sin(pri+spr);
+        {{px._set('xo')}} = {{px.offset.x}};
+        {{px._set('yo')}} = -{{px.offset.y}};
+    """, 'precalc_xf_affine').substitute(px=px))
 
-def apply_affine(x, y, xo, yo, packer):
+def apply_affine(names, packer):
+    x, y, xo, yo = names.split()
     return Template("""
     {{xo}} = {{packer.xx}} * {{x}} + {{packer.xy}} * {{y}} + {{packer.xo}};
     {{yo}} = {{packer.yx}} * {{x}} + {{packer.yy}} * {{y}} + {{packer.yo}};
@@ -126,25 +125,24 @@ __device__
 void apply_xf_{{xfid}}(float &ox, float &oy, float &color, mwc_st &rctx) {
     float tx, ty;
 
-    {{precalc_xf_affine(px.affine)}}
-    {{apply_affine('ox', 'oy', 'tx', 'ty', px.affine)}}
+    {{precalc_xf_affine(px.pre_affine._precalc())}}
+    {{apply_affine('ox oy tx ty', px.pre_affine)}}
 
     ox = 0;
     oy = 0;
 
-    {{for name in xform.variations}}
-    if (1) {
-    {{py:pv = px.variations[name]}}
+    {{for name, pv in px.variations.items()}}
+  {
     float w = {{pv.weight}};
     {{variations.var_code[name].substitute(locals())}}
-    }
+  }
     {{endfor}}
 
-    {{if 'post' in xform}}
+    {{if 'post_affine' in px}}
     tx = ox;
     ty = oy;
-    {{precalc_xf_affine(px.post)}}
-    {{apply_affine('tx', 'ty', 'ox', 'oy', px.post)}}
+    {{precalc_xf_affine(px.post_affine._precalc())}}
+    {{apply_affine('tx ty ox oy', px.post_affine)}}
     {{endif}}
 
     float csp = {{px.color_speed}};
@@ -152,10 +150,8 @@ void apply_xf_{{xfid}}(float &ox, float &oy, float &color, mwc_st &rctx) {
 };
 """
 
-def iter_xf_body(pcp, xfid, xform):
-    px = pcp.xforms[xfid]
+def iter_xf_body(cp, xfid, px):
     tmpl = Template(iter_xf_body_code, 'apply_xf_'+xfid)
-
     g = dict(globals())
     g.update(locals())
     return tmpl.substitute(g)
@@ -176,12 +172,15 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
     int this_rb_idx = rb_incr(rb->head, blockDim.x * threadIdx.y + threadIdx.x);
     mwc_st rctx = msts[this_rb_idx];
 
-    {{precalc_camera(pcp.camera)}}
+    {{precalc_camera(cp.camera._precalc())}}
     if (threadIdx.y == 5 && threadIdx.x == 4) {
-        float ditherwidth = {{pcp.camera.dither_width}} * 0.5f;
-        {{pcp.camera.xo}} += ditherwidth * mwc_next_11(rctx);
-        {{pcp.camera.yo}} += ditherwidth * mwc_next_11(rctx);
+        if (blockIdx.x == 0)
+            printf("Hiya %f\n", {{cp.camera.xx}});
+        float ditherwidth = {{cp.camera.dither_width}} * 0.5f;
+        {{cp.camera.xo}} += ditherwidth * mwc_next_11(rctx);
+        {{cp.camera.yo}} += ditherwidth * mwc_next_11(rctx);
     }
+
 
     // TODO: spare the register, reuse at call site?
     int time = blockIdx.x >> 4;
@@ -229,24 +228,26 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
             color = mwc_next_01(rctx);
         }
 
+
+{{py:xk = cp.xforms.keys()}}
 {{if chaos_used}}
 
-        {{precalc_chaos(pcp, std_xforms)}}
+        {{precalc_chaos(cp)}}
 
         // For now, we don't attempt to use the swap buffer when chaos is used
         float xfsel = mwc_next_01(rctx);
 
-        {{for prior_xform_idx, prior_xform_name in enumerate(std_xforms)}}
+        {{for prior_xform_idx, prior_xform_name in enumerate(xk)}}
         if (last_xf_used == {{prior_xform_idx}}) {
-            {{for xform_idx, xform_name in enumerate(std_xforms[:-1])}}
-            if (xfsel <= {{pcp['chaos_'+prior_xform_name+'_'+xform_name]}}) {
+            {{for xform_idx, xform_name in enumerate(xk[:-1])}}
+            if (xfsel <= {{cp['chaos_'+prior_xform_name+'_'+xform_name]}}) {
                 apply_xf_{{xform_name}}(x, y, color, rctx);
                 last_xf_used = {{xform_idx}};
             } else
             {{endfor}}
             {
-                apply_xf_{{std_xforms[-1]}}(x, y, color, rctx);
-                last_xf_used = {{len(std_xforms)-1}};
+                apply_xf_{{xk[-1]}}(x, y, color, rctx);
+                last_xf_used = {{len(xk)-1}};
             }
         } else
         {{endfor}}
@@ -256,18 +257,18 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
         }
 
 {{else}}
-        {{precalc_densities(pcp, std_xforms)}}
+        {{precalc_densities(cp._precalc())}}
         float xfsel = cosel[threadIdx.y];
 
-        {{for xform_idx, xform_name in enumerate(std_xforms[:-1])}}
-        if (xfsel <= {{pcp['den_'+xform_name]}}) {
+        {{for xform_idx, xform_name in enumerate(xk[:-1])}}
+        if (xfsel <= {{cp['den_'+xform_name]}}) {
             apply_xf_{{xform_name}}(x, y, color, rctx);
             last_xf_used = {{xform_idx}};
         } else
         {{endfor}}
         {
-            apply_xf_{{std_xforms[-1]}}(x, y, color, rctx);
-            last_xf_used = {{len(std_xforms)-1}};
+            apply_xf_{{xk[-1]}}(x, y, color, rctx);
+            last_xf_used = {{len(xk)-1}};
         }
 
         // Rotate points between threads.
@@ -298,18 +299,14 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
             continue;
         }
 
-{{if 'final' in cp.xforms}}
+        float cx, cy, cc;
+{{if 'final_xform' in cp}}
         float fx = x, fy = y, fcolor = color;
         apply_xf_final(fx, fy, fcolor, rctx);
-{{endif}}
-
-        float cx, cy, cc;
-
-{{if 'final' in cp.xforms}}
-        {{apply_affine('fx', 'fy', 'cx', 'cy', pcp.camera)}}
+        {{apply_affine('fx fy cx cy', cp.camera)}}
         cc = fcolor;
 {{else}}
-        {{apply_affine('x', 'y', 'cx', 'cy', pcp.camera)}}
+        {{apply_affine('x y cx cy', cp.camera)}}
         cc = color;
 {{endif}}
 
@@ -407,11 +404,9 @@ oflow_end:
 }
 '''
 
-def iter_body(cp, pcp):
-    # For legacy reasons, 'cp' is used here instead of 'genome'.
+def iter_body(cp):
     tmpl = Template(iter_body_code, 'iter_body')
     NWARPS = NTHREADS / 32
-    std_xforms = [n for n in sorted(cp.xforms) if n != 'final']
 
     # TODO: detect this properly and use it
     chaos_used = False
@@ -420,12 +415,15 @@ def iter_body(cp, pcp):
     vars.update(locals())
     return tmpl.substitute(vars)
 
-def mkiterlib(genome):
-    packer = interp.GenomePacker('iter_params')
-    pcp = packer.view('params', genome, 'cp')
+def mkiterlib(gnm):
+    packer = interp.GenomePacker('iter_params', 'params',
+                                 cuburn.genome.spec.anim)
+    cp = packer.view(gnm)
 
-    iterbody = iter_body(genome, pcp)
-    bodies = [iter_xf_body(pcp, i, x) for i, x in sorted(genome.xforms.items())]
+    iterbody = iter_body(cp)
+    bodies = [iter_xf_body(cp, i, x) for i, x in sorted(cp.xforms.items())]
+    if 'final_xform' in cp:
+        bodies.append(iter_xf_body(cp, 'final', cp.final_xform))
     bodies.append(iterbody)
     packer_lib = packer.finalize()
 
