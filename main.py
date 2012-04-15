@@ -23,7 +23,7 @@ import numpy as np
 import pycuda.driver as cuda
 
 from cuburn import render, filters, output
-from cuburn.genome import convert, use
+from cuburn.genome import convert, use, db
 
 profiles = {
     '1080p': dict(width=1920, height=1080),
@@ -40,21 +40,28 @@ def save(out):
 def main(args, prof):
     import pycuda.autoinit
 
-    gnm_str = args.flame.read()
-    if '<' in gnm_str[:10]:
+    gdb = db.open(args.genomedb)
+    if os.path.isfile(args.flame) and (args.flame.endswith('.flam3') or
+                                       args.flame.endswith('.flame')):
+        with open(args.flame) as fp:
+            gnm_str = fp.read()
         flames = convert.XMLGenomeParser.parse(gnm_str)
         if len(flames) != 1:
             warnings.warn('%d flames in file, only using one.' % len(flames))
-        gnm = convert.convert_flame(flames[0])
+        gnm = convert.flam3_to_node(flames[0])
     else:
-        gnm = json.loads(gnm_str)
+        gnm = gdb.open(args.flame)
+
+    if gnm['type'] == 'node':
+        gnm = convert.node_to_anim(gnm, half=args.half)
+    elif gnm['type'] == 'edge':
+        gnm = convert.edge_to_anim(gdb, gnm)
+    assert gnm['type'] == 'animation', 'Unrecognized genome type.'
 
     gprof, times = use.wrap_genome(prof, gnm)
     rmgr = render.RenderManager()
 
-    basename = os.path.basename(args.flame.name).rsplit('.', 1)[0] + '_'
-    if args.flame.name == '-':
-        basename = ''
+    basename = os.path.basename(args.flame).rsplit('.', 1)[0] + '_'
     if args.name is not None:
         basename = args.name
     prefix = os.path.join(args.dir, basename)
@@ -130,8 +137,8 @@ def main(args, prof):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Render fractal flames.')
 
-    parser.add_argument('flame', metavar='FILE', type=argparse.FileType(),
-        help="Path to genome file ('-' for stdin)")
+    parser.add_argument('flame', metavar='ID', type=str,
+        help="Filename or flame ID of genome to render")
     parser.add_argument('-g', action='store_true', dest='gfx',
         help="Show output in OpenGL window")
     parser.add_argument('-n', metavar='NAME', type=str, dest='name',
@@ -144,6 +151,9 @@ if __name__ == "__main__":
         help="Don't overwrite output files that are newer than the input")
     parser.add_argument('--pause', action='store_true',
         help="Don't close the preview window after rendering is finished")
+    parser.add_argument('--genomedb', '-d', metavar='PATH', type=str,
+        help="Path to genome database (file or directory, default '.')",
+        default='.')
 
     parser.add_argument('--sync', action='store_true', dest='sync',
         help='Use synchronous launches whenever possible')
@@ -159,6 +169,8 @@ if __name__ == "__main__":
     prof.add_argument('-p', dest='prof', choices=profiles.keys(),
         default='preview', help='Set profile, specifying defaults for all '
         'options below. (default: "preview")')
+    prof.add_argument('--pfile', type=argparse.FileType(), metavar='PROFILE',
+        help='Set profile using a JSON file, overriding -p.')
     prof.add_argument('--skip', dest='skip', metavar='N', type=int,
         help="Skip N frames between each rendered frame")
     prof.add_argument('--quality', type=int, metavar='SPP',
@@ -168,11 +180,23 @@ if __name__ == "__main__":
     prof.add_argument('--width', type=int, metavar='PX')
     prof.add_argument('--height', type=int, metavar='PX')
 
+    node = parser.add_argument_group('Node options')
+    node.add_argument('--half', action='store_true',
+        help='Use a half-loop when rendering a node.')
+    node.add_argument('--still', action='store_true',
+        help='Override start, end, and temporal frame width to render one '
+             'frame without motion blur. (Works on edges too)')
+
     args = parser.parse_args()
     prof = dict(profiles[args.prof])
-    for k in prof:
+    if args.pfile:
+        prof = json.load(open(args.pfile))
+    for k in ['duration', 'skip', 'quality', 'fps']:
         if getattr(args, k) is not None:
             prof[k] = getattr(args, k)
-    prof['duration'] = args.duration
+    if args.still:
+        args.start = 0
+        args.end = 1
+        prof['frame_width'] = 0
 
     main(args, prof)
