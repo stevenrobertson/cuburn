@@ -2,6 +2,8 @@ from collections import OrderedDict
 from itertools import cycle
 import numpy as np
 
+from cuburn.genome import specs
+from cuburn.genome.util import resolve_spec
 from cuburn.genome.use import Wrapper, SplineEval
 
 import util
@@ -30,7 +32,7 @@ class PackerWrapper(Wrapper):
         self.packer, self.path = packer, path
 
     def wrap_dict(self, path, spec, val):
-        return type(self)(self.packer, val, spec, path)
+        return type(self)(self.packer, val or {}, spec, path)
 
     def wrap_spline(self, path, spec, val):
         return PackerSpline(self.packer, path, spec)
@@ -209,6 +211,9 @@ class GenomePacker(object):
         for idx, path in enumerate(self.genome):
             attr = gnm
             for name in path:
+                if name not in attr:
+                    attr = resolve_spec(specs.anim, path).default
+                    break
                 attr = attr[name]
             attr = SplineEval.normalize(attr)
             times[idx,:len(attr[0])] = attr[0]
