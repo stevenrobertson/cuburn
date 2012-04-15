@@ -2,6 +2,7 @@ import base64
 import numpy as np
 
 from cuburn.code.util import crep
+import spectypes
 
 def get(dct, default, *keys):
     if len(keys) == 1:
@@ -49,6 +50,13 @@ def unflatten(kvlist):
         go(out, k.split('.'), v)
     return out
 
+def resolve_spec(sp, path):
+    for name in path:
+        if isinstance(sp, spectypes.Map):
+            sp = sp.type
+        else:
+            sp = sp[name]
+    return sp
 
 def palette_decode(datastrs):
     """

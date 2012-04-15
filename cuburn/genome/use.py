@@ -62,6 +62,19 @@ class Wrapper(object):
             return self.spec.type
         return self.spec[name]
 
+    @classmethod
+    def visit(cls, obj):
+        """
+        Visit every node. Note that for simplicity, this function will be
+        called on all elements (i.e. pivoting to a new Wrapper type inside the
+        wrapping function and overriding visit() won't do anything).
+        """
+        if isinstance(obj, (Wrapper, dict)):
+            return dict((k, cls.visit(obj[k])) for k in obj)
+        elif isinstance(obj, list):
+            return [cls.visit(o) for o in obj]
+        return obj
+
     def __getattr__(self, name):
         return self.wrap(name, self.get_spec(name), self._val.get(name))
 
@@ -155,6 +168,7 @@ class SplineEval(object):
         return times, vals, t, scale
 
     def __call__(self, itime, deriv=0):
+        # TODO: respect 'interp' THIS IS IMPORTANT.
         times, vals, t, scale = self.find_knots(itime)
 
         m1 = (vals[2] - vals[0]) / (1.0 - times[0])

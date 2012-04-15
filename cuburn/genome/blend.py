@@ -9,14 +9,73 @@ from itertools import izip_longest
 from scipy.ndimage.filters import gaussian_filter1d
 
 import spectypes
-import spec
-import util
-from util import get
+import specs
+from use import Wrapper
+from util import get, json_encode, resolve_spec
 import variations
 
-# TODO: move to better place before checkin
-default_blend_opts = {'nloops': 2, 'duration': 2, 'xform_sort': 'weightflip'}
+def node_to_anim(node, half):
+    if half:
+        osrc, odst = -0.25, 0.25
+    else:
+        osrc, odst = 0, 1
+    src = apply_temporal_offset(node, osrc)
+    dst = apply_temporal_offset(node, odst)
+    edge = dict(blend=dict(duration=odst-osrc, xform_sort='natural'))
+    return blend(src, dst, edge)
 
+def edge_to_anim(gdb, edge):
+    edge = resolve(gdb, edge)
+    src, osrc = _split_ref_id(edge.link.src)
+    dst, odst = _split_ref_id(edge.link.dst)
+    src = apply_temporal_offset(resolve(gdb, src), osrc)
+    dst = apply_temporal_offset(resolve(gdb, dst), odst)
+    return blend(src, dst, edit)
+
+def resolve(gdb, item):
+    """
+    Given an item, recursively retrieve its base items, then merge according
+    to type. Returns the merged dict.
+    """
+    is_edge = (item['type'] == 'edge')
+    spec = specs.toplevels[item['type']]
+    def go(i):
+        if i.get('base') is not None:
+            return go(gdb.get(i['base'])) + [i]
+        return [i]
+    items = map(flatten, go(item))
+    out = {}
+
+    for k in set(ik for i in items for ik in i):
+        sp = _resolve_spec(spec, k)
+        vs = [i.get(k) for i in items if k in i]
+        # TODO: dict and list negation; early-stage removal of negated knots?
+        if is_edge and isinstance(sp, (Spline, List)):
+            r = sum(vs, [])
+        else:
+            r = vs[-1]
+        out[k] = r
+    return unflatten(out)
+
+def _split_ref_id(s):
+    sp = s.split('@')
+    if len(sp) == 1:
+        return sp, 0
+    return sp[0], float(sp[1])
+
+def apply_temporal_offset(node, offset=0):
+    """
+    Given a ``node`` dict, return a node with all periodic splines rotated by
+    ``offset * velocity``, with the same velocity.
+    """
+    class TemporalOffsetWrapper(Wrapper):
+        def wrap_spline(self, path, spec, val):
+            if spec.period is not None and isinstance(val, list) and val[1]:
+                position, velocity = val
+                return [position + offset * velocity, velocity]
+            return val
+    wr = TemporalOffsetWrapper(node)
+    return wr.visit(wr)
 
 def blend(src, dst, edit={}):
     """
@@ -26,19 +85,22 @@ def blend(src, dst, edit={}):
     animation. These should be plain node dicts (hierarchical, pre-merged,
     and adjusted for loop temporal offset).
 
-    ``edit`` is an optional edit dict, also hierarchical and pre-merged.
+    ``edge`` is an edge dict, also hierarchical and pre-merged. (It can be
+    empty, in violation of the spec, to support rendering straight from nodes
+    without having to insert anything into the genome database.)
 
     Returns the animation spec as a plain dict.
     """
     # By design, the blend element will contain only scalar values (no
     # splines or hierarchy), so this can be done blindly
-    opts = dict(default_blend_opts)
+    opts = {}
     for d in src, dst, edit:
         opts.update(d.get('blend', {}))
+    opts = Wrapper(opts, specs.blend)
 
-    blended = merge_nodes(specs.node, src, dst, edit, opts['nloops'])
-    name_map = sort_xforms(src['xforms'], dst['xforms'], opts['xform_sort'],
-                           explicit=zip(*opts.get('xform_map', [])))
+    blended = merge_nodes(specs.node, src, dst, edit, opts.nloops)
+    name_map = sort_xforms(src['xforms'], dst['xforms'], opts.xform_sort,
+                           explicit=zip(*opts.xform_map))
 
     blended['xforms'] = {}
     for (sxf_key, dxf_key) in name_map:
@@ -49,7 +111,7 @@ def blend(src, dst, edit={}):
         blended['xforms'][bxf_key] = blend_xform(
                 src['xforms'].get(sxf_key),
                 dst['xforms'].get(dxf_key),
-                xf_edits, opts['nloops'])
+                xf_edits, opts.nloops)
 
     if 'final_xform' in src or 'final_xform' in dst:
         blended['final_xform'] = blend_xform(src.get('final_xform'),
@@ -58,7 +120,7 @@ def blend(src, dst, edit={}):
     # TODO: write 'info' section
     # TODO: palflip
     blended['type'] = 'animation'
-    blended.setdefault('time', {})['duration'] = opts['duration']
+    blended.setdefault('time', {})['duration'] = opts.duration
     return blended
 
 def merge_edits(sv, av, bv):
@@ -75,16 +137,16 @@ def merge_edits(sv, av, bv):
     else:
         return bv if bv is not None else av
 
-def tospline(spl, src, dst, edit, loops):
-    def split_node_val(val):
-        if val is None:
-            return spl.default, 0
-        if isinstance(val, (int, float)):
-            return val, 0
-        return val
+def split_node_val(spl, val):
+    if val is None:
+        return spl.default, 0
+    if isinstance(val, (int, float)):
+        return val, 0
+    return val
 
-    sp, sv = split_node_val(src)    # position, velocity
-    dp, dv = split_node_val(dst)
+def tospline(spl, src, dst, edit, loops):
+    sp, sv = split_node_val(spl, src)    # position, velocity
+    dp, dv = split_node_val(spl, dst)
 
     # For variation parameters, copy missing values instead of using defaults
     if spl.var:
@@ -285,4 +347,4 @@ def palflip(gnm):
 if __name__ == "__main__":
     import sys, json
     a, b, c = [json.load(open(f+'.json')) for f in 'abc']
-    print util.json_encode(blend(a, b, c))
+    print json_encode(blend(a, b, c))

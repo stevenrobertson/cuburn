@@ -8,6 +8,9 @@ import numpy as np
 from variations import var_params
 import util
 
+# Re-exported
+from blend import node_to_anim, edge_to_anim
+
 class XMLGenomeParser(object):
     """
     Parse an XML genome into a list of dictionaries.
@@ -163,8 +166,10 @@ def apply_structure(struct, src):
             out[l[0]] = v
     return out
 
-def convert_flame(flame):
-    return util.unflatten(util.flatten(apply_structure(flame_structure, flame)))
+def flam3_to_node(flame):
+    n = util.unflatten(util.flatten(apply_structure(flame_structure, flame)))
+    n['type'] = 'node'
+    return n
 
 def convert_file(path):
     """Quick one-shot conversion for an XML genome."""
@@ -173,7 +178,7 @@ def convert_file(path):
         warnings.warn("Lot of flames in this file. Sure it's not a "
                       "frame-based animation?")
     for flame in flames:
-        yield convert_flame(flame)
+        yield flam3_to_node(flame)
 
 if __name__ == "__main__":
     import sys

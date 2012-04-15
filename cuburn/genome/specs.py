@@ -68,6 +68,13 @@ time = (
   , 'frame_width': scalespline(d='Scale of profile temporal width per frame.')
   })
 
+blend = (
+  { 'nloops': scalar(2)
+  , 'duration': scalar(2)
+  , 'xform_sort': enum('weightflip weight natural color')
+  , 'xform_map': list_(list_(String('xfid'), d='A pair of src, dst IDs'))
+  })
+
 base = (
   { 'name': String("Human-readable name of this work")
   , 'camera': camera
