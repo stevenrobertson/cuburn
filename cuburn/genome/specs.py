@@ -18,12 +18,16 @@ xform = (
   , 'variations': var_params
   })
 
-# Since the structure of the info element differs between anims, nodes and
-# edges, we pull out some of the common elements here
-author = String('Attribution in the form: "Name [<email>][, url]"')
-name = String('A human-readable name for this entity')
-src = String('The identifier of the source node')
-dst = String('The identifier of the destination node')
+author = (
+  { 'name': String("Human-readable name of author")
+  , 'user': String("Email or other unique identifier")
+  , 'url': String("Website or other link provided by author")
+  })
+
+link = (
+  { 'src': String("Origin node ID and temporal offset")
+  , 'dst': String("Destination node ID and temporal offset")
+  })
 
 filters = (
   { 'bilateral':
@@ -39,7 +43,7 @@ filters = (
   , 'colorclip':
     { 'gamma': scalespline(4)
     , 'gamma_threshold': spline(0.01, 0, 1)
-    , 'highlight_power': spline(-1, -1, 1)
+    , 'highlight_power': spline(-1, -1)
     , 'vibrance': scalespline()
     }
   , 'de':
@@ -65,36 +69,32 @@ time = (
   })
 
 base = (
-  { 'camera': camera
+  { 'name': String("Human-readable name of this work")
+  , 'camera': camera
   , 'filters': filters
   , 'palette': list_(Palette())
   , 'xforms': map_(xform)
   , 'final_xform': xform
   })
 
-anim = dict(base)
-anim.update(type='animation', time=time,
-            info=dict(authors=list_(author), name=name, src=src, dst=dst,
-                      origin=string_()))
-
 # TODO
 node = dict(base)
-node.update(type='node', info=dict(author=author, author_url=string_(),
-                                   id=string_(), name=name))
+node.update(type='node', blend=blend, author=author)
 
 # TODO
-edge = dict(anim)
-edge.update(type='edge',
-            info=dict(author=author, id=string_(), src=src, dst=dst),
+edge = dict(base)
+edge.update(type='edge', author=author, blend=blend, link=link, time=time,
             xforms=dict(src=map_(xform), dst=map_(xform)))
 
+anim = dict(base)
+anim.update(type='animation', authors=list_(author), link=link, time=time)
+
+default_filters = ['bilateral', 'logscale', 'colorclip']
 # Yeah, now I'm just messing around.
 prof_filters = dict([(fk, dict([(k, refscalar(1, '.'.join(['filters', fk, k])))
                            for k in fv])) for fk, fv in filters.items()])
 # And here's a completely stupid hack to drag scale into the logscale filter
 prof_filters['logscale']['scale'] = refscalar(1, 'camera.scale')
-
-default_filters = [{'type': k} for k in ['bilateral', 'logscale', 'colorclip']]
 
 profile = (
   { 'duration': RefScalar(30, 'time.duration', 'Base duration in seconds')
@@ -104,8 +104,8 @@ profile = (
   , 'frame_width': refscalar(1, 'time.frame_width')
   , 'spp': RefScalar(2000, 'camera.spp', 'Base samples per pixel')
   , 'skip': Scalar(0, 'Skip this many frames between each rendered frame')
-  , 'filters': TypedList(prof_filters, default_filters,
-                         'Ordered list of filters to apply')
+  , 'filter_order': list_(enum(filters.keys()), default_filters)
+  , 'filters': prof_filters
   })
 
 # Types recognized as independent units with a 'type' key

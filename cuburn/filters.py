@@ -118,7 +118,4 @@ class ColorClip(Filter, ClsMod):
 filter_map = dict(bilateral=Bilateral, logscale=Logscale, haloclip=HaloClip,
                   colorclip=ColorClip)
 def create(gprof):
-    # TODO: redesign this (should not have to care about internals of
-    # use.Wrapper in order to find types from TypedList elements)
-    filts = gprof._val.get('filters') or gprof.spec['filters'].defaults
-    return [filter_map[f['type']]() for f in filts]
+    return [filter_map[f]() for f in gprof.filter_order]

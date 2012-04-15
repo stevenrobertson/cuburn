@@ -1,18 +1,26 @@
 import numpy as np
 
-from spectypes import Spline, Scalar, RefScalar, Map, List, TypedList
+from spectypes import Enum, Spline, Scalar, RefScalar, Map, List
 from specs import toplevels
 
 class Wrapper(object):
+    """
+    Weird reverse visitor. Traversals of the tree are normally done externally
+    (via property accessors, in a lot of cases). This class alters the
+    returned representation of the underlying genome according to the provided
+    spec without imposing flow control.
+    """
     def __init__(self, val, spec=None, path=()):
         if spec is None:
+            assert val.get('type') in toplevels, 'Unrecognized dict type'
             spec = toplevels[val['type']]
         # plain 'val' would conflict with some variation property names
         self._val, self.spec, self.path = val, spec, path
 
     def wrap(self, name, spec, val):
-        # Oh, a visitor. How... pedestrian.
         path = self.path + (name,)
+        if isinstance(spec, Enum):
+            return self.wrap_enum(path, spec, val)
         if isinstance(spec, Spline):
             return self.wrap_spline(path, spec, val)
         elif isinstance(spec, Scalar):
@@ -25,12 +33,13 @@ class Wrapper(object):
             return self.wrap_Map(path, spec, val)
         elif isinstance(spec, List):
             return self.wrap_List(path, spec, val)
-        elif isinstance(spec, TypedList):
-            return self.wrap_TypedList(path, spec, val)
         return self.wrap_default(path, spec, val)
 
     def wrap_default(self, path, spec, val):
         return val
+
+    def wrap_enum(self, path, spec, val):
+        return val or spec.default
 
     def wrap_spline(self, path, spec, val):
         return val
@@ -45,12 +54,8 @@ class Wrapper(object):
         return self.wrap_dict(path, spec, val)
 
     def wrap_List(self, path, spec, val):
-        return [self.wrap(spec.type, v) for v in val]
-
-    def wrap_TypedList(self, path, spec, val):
-        val = val if val is not None else spec.defaults
-        return [self.wrap(path+(str(i),), spec.types[v['type']], v)
-                for i, v in enumerate(val)]
+        val = val if val is not None else spec.default
+        return [self.wrap(path, spec.type, v) for v in val]
 
     def get_spec(self, name):
         if isinstance(self.spec, Map):
@@ -72,7 +77,6 @@ class Wrapper(object):
         return iter(sorted(self._val))
     def __getitem__(self, name):
         return getattr(self, str(name))
-
 
 class RefWrapper(Wrapper):
     """

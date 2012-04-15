@@ -3,13 +3,8 @@ from collections import namedtuple
 Map = namedtuple('Map', 'type doc')
 map_ = lambda type, d=None: Map(type, d)
 
-List = namedtuple('List', 'type doc')
-list_ = lambda type, d=None: List(type, d)
-
-# A list as above, but where each element is a dict with a 'type' parameter
-# corresponding to one of the specs listed in the 'types' dict on this spec.
-TypedList = namedtuple('TypedList', 'types defaults doc')
-typedlist = lambda types, defaults=[], d=None: TypedList(types, defaults, d)
+List = namedtuple('List', 'type default doc')
+list_ = lambda type, default=(), d=None: List(type, default, d)
 
 Spline = namedtuple('Spline', 'default min max interp period doc var')
 def spline(default=0, min=None, max=None, interp='linear', period=None, d=None):
@@ -37,9 +32,11 @@ refscalar = lambda default, ref, d=None: RefScalar(default, ref, d)
 String = namedtuple('String', 'doc')
 def string_(d=None):
     return String(d)
-Enum = namedtuple('Enum', 'choices doc')
-def enum(choices, d=None):
-    """Enum helper. 'choices' is a space-separated string."""
-    return Enum(choices.split(), d)
+Enum = namedtuple('Enum', 'choices default doc')
+def enum(choices, default=None, d=None):
+    """Enum helper. 'choices' is a list or a space-separated string."""
+    if isinstance(choices, basestring):
+        choices = choices.split()
+    return Enum(choices, default, d)
 
 Palette = namedtuple('Palette', '')

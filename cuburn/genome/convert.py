@@ -105,9 +105,7 @@ def convert_xforms(flame):
         xfs.update(make_symm_xforms(float(flame['symmetry']), len(xfs)))
     return xfs
 
-split_to_dict = lambda keys: lambda v: dict(zip(keys, map(float, v.split())))
-pair = split_to_dict('xy')
-rgb_triple = split_to_dict('rgb')
+pair = lambda v: dict(zip('xy', map(float, v.split())))
 
 xform_structure = (
     ('pre_affine',  'coefs', convert_affine),
@@ -125,22 +123,20 @@ xform_structure = (
 # (dst, cvt_dict) for properties that are built from multiple source keys.
 # If a function returns 'None', its key is dropped from the result.
 flame_structure = (
-    ('info.author',        'nick', str),
-    ('info.author_url',    'url',  lambda s: 'http://' + str(s)),
-    ('info.name',          'name', str),
+    ('author.name',             'nick', str),
+    ('author.url',              'url',  lambda s: 'http://' + str(s)),
+    ('name',                    'name', str),
 
-    ('camera.center',          'center', pair),
-    ('camera.rotation',        'rotate', float),
-    ('camera.dither_width',    'filter', float),
+    ('camera.center',           'center', pair),
+    ('camera.rotation',         'rotate', float),
+    ('camera.dither_width',     'filter', float),
     ('camera.scale',
      lambda d: float(d['scale']) / float(d['size'].split()[0])),
 
-    ('filters.colorclip.gamma',             'filter', float),
+    ('filters.colorclip.gamma',             'gamma', float),
     ('filters.colorclip.gamma_threshold',   'gamma_threshold', float),
     ('filters.colorclip.highlight_power',   'highlight_power', float),
     ('filters.colorclip.vibrance',          'vibrancy', float),
-    # Not sure about putting this one on colorclip
-    ('filters.colorclip.background',        'background', rgb_triple),
 
     ('filters.de.curve',    'estimator_curve', float),
     ('filters.de.radius',   'estimator_radius', float),
@@ -148,6 +144,8 @@ flame_structure = (
      lambda d: (float(d['estimator_minimum']) /
                 float(d.get('estimator_radius', 11)))
                if 'estimator_minimum' in d else None),
+
+    ('filters.logscale.brightness',         'brightness', float),
 
     ('palette',     'palette', util.palette_encode),
     ('xforms',      convert_xforms),

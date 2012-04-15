@@ -210,7 +210,6 @@ class Renderer(object):
             del self._modrefs[:]
         self._modrefs.append(self.mod)
 
-        # TODO: make these customizable
         self.filts = filters.create(gprof)
         self.out = output.PILOutput()
 
@@ -359,7 +358,8 @@ class RenderManager(ClsMod):
         self._iter(rdr, gnm, gprof, dim, tc)
         if self.copy_evt:
             self.stream_a.wait_for_event(self.copy_evt)
-        for filt, params in zip(rdr.filts, gprof.filters):
+        for filt, name in zip(rdr.filts, gprof.filter_order):
+            params = getattr(gprof.filters, name)
             filt.apply(self.fb, gprof, params, dim, tc, self.stream_a)
         rdr.out.convert(self.fb, gprof, dim, self.stream_a)
         self.filt_evt = cuda.Event().record(self.stream_a)
