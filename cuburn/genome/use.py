@@ -1,7 +1,7 @@
 import numpy as np
 
 from spectypes import Spline, Scalar, RefScalar, Map, List, TypedList
-from spec import toplevels
+from specs import toplevels
 
 class Wrapper(object):
     def __init__(self, val, spec=None, path=()):

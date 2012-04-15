@@ -36,14 +36,14 @@ def blend(src, dst, edit={}):
     for d in src, dst, edit:
         opts.update(d.get('blend', {}))
 
-    blended = merge_nodes(spec.node, src, dst, edit, opts['nloops'])
+    blended = merge_nodes(specs.node, src, dst, edit, opts['nloops'])
     name_map = sort_xforms(src['xforms'], dst['xforms'], opts['xform_sort'],
                            explicit=zip(*opts.get('xform_map', [])))
 
     blended['xforms'] = {}
     for (sxf_key, dxf_key) in name_map:
         bxf_key = (sxf_key or 'pad') + '_' + (dxf_key or 'pad')
-        xf_edits = merge_edits(spec.xform,
+        xf_edits = merge_edits(specs.xform,
                 get(edit, {}, 'xforms', 'src', sxf_key),
                 get(edit, {}, 'xforms', 'dst', dxf_key))
         blended['xforms'][bxf_key] = blend_xform(
@@ -65,7 +65,7 @@ def merge_edits(sv, av, bv):
     """
     Merge the values of ``av`` and ``bv`` according to the spec ``sv``.
     """
-    if isinstance(spec, (dict, spectypes.Map)):
+    if isinstance(sv, (dict, spectypes.Map)):
         av, bv = av or {}, bv or {}
         getsv = lambda k: sv.type if isinstance(sv, spectypes.Map) else sv[k]
         return dict([(k, merge_edits(getsv(k), av.get(k), bv.get(k)))
@@ -142,7 +142,7 @@ def blend_xform(sxf, dxf, edits, loops, isfinal=False):
         sxf = padding_xform(dxf, isfinal)
     if dxf is None:
         dxf = padding_xform(sxf, isfinal)
-    return merge_nodes(spec.xform, sxf, dxf, edits, loops)
+    return merge_nodes(specs.xform, sxf, dxf, edits, loops)
 
 # If xin contains any of these, use the inverse identity
 hole_variations = ('spherical ngon julian juliascope polar '

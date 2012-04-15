@@ -7,7 +7,7 @@ import interp
 from util import Template, devlib, ringbuflib
 from mwc import mwclib
 
-import cuburn.genome.spec
+import cuburn.genome.specs
 
 def precalc_densities(cp):
     # This pattern recurs a few times for precalc segments. Unfortunately,
@@ -417,7 +417,7 @@ def iter_body(cp):
 
 def mkiterlib(gnm):
     packer = interp.GenomePacker('iter_params', 'params',
-                                 cuburn.genome.spec.anim)
+                                 cuburn.genome.specs.anim)
     cp = packer.view(gnm)
 
     iterbody = iter_body(cp)
