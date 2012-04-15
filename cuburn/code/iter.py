@@ -174,8 +174,6 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
 
     {{precalc_camera(cp.camera._precalc())}}
     if (threadIdx.y == 5 && threadIdx.x == 4) {
-        if (blockIdx.x == 0)
-            printf("Hiya %f\n", {{cp.camera.xx}});
         float ditherwidth = {{cp.camera.dither_width}} * 0.5f;
         {{cp.camera.xo}} += ditherwidth * mwc_next_11(rctx);
         {{cp.camera.yo}} += ditherwidth * mwc_next_11(rctx);

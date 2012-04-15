@@ -270,7 +270,7 @@ class RenderManager(ClsMod):
                 256, np.ceil(nts / 256.),
                 self.info_a.d_params, self.src_a.d_times, self.src_a.d_knots,
                 f32(ts), f32(td / nts), i32(nts))
-        self._print_interp_knots(rdr)
+        #self._print_interp_knots(rdr)
 
     def _print_interp_knots(self, rdr, tsidx=5):
         infos = cuda.from_device(self.info_a.d_params,
