@@ -11,7 +11,7 @@ from scipy.ndimage.filters import gaussian_filter1d
 import spectypes
 import specs
 from use import Wrapper
-from util import get, json_encode, resolve_spec
+from util import get, json_encode, resolve_spec, flatten, unflatten
 import variations
 
 def node_to_anim(node, half):
@@ -26,11 +26,11 @@ def node_to_anim(node, half):
 
 def edge_to_anim(gdb, edge):
     edge = resolve(gdb, edge)
-    src, osrc = _split_ref_id(edge.link.src)
-    dst, odst = _split_ref_id(edge.link.dst)
-    src = apply_temporal_offset(resolve(gdb, src), osrc)
-    dst = apply_temporal_offset(resolve(gdb, dst), odst)
-    return blend(src, dst, edit)
+    src, osrc = _split_ref_id(edge['link']['src'])
+    dst, odst = _split_ref_id(edge['link']['dst'])
+    src = apply_temporal_offset(resolve(gdb, gdb.get(src)), osrc)
+    dst = apply_temporal_offset(resolve(gdb, gdb.get(dst)), odst)
+    return blend(src, dst, edge)
 
 def resolve(gdb, item):
     """
@@ -46,16 +46,16 @@ def resolve(gdb, item):
     items = map(flatten, go(item))
     out = {}
 
-    for k in set(ik for i in items for ik in i):
-        sp = _resolve_spec(spec, k)
+    for k in set(ik for i in items for ik in i.keys()):
+        sp = resolve_spec(spec, k.split('.'))
         vs = [i.get(k) for i in items if k in i]
         # TODO: dict and list negation; early-stage removal of negated knots?
-        if is_edge and isinstance(sp, (Spline, List)):
+        if is_edge and isinstance(sp, (spectypes.Spline, spectypes.List)):
             r = sum(vs, [])
         else:
             r = vs[-1]
         out[k] = r
-    return unflatten(out)
+    return unflatten(out.items())
 
 def _split_ref_id(s):
     sp = s.split('@')

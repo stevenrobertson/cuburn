@@ -14,7 +14,7 @@ def get(dct, default, *keys):
             return default
     return dct
 
-def flatten(dct, ctx=()):
+def flatten(src):
     """
     Given a nested dict, return a flattened dict with dot-separated string
     keys. Keys that have dots in them already are treated the same.
@@ -22,14 +22,15 @@ def flatten(dct, ctx=()):
     >>> flatten({'ab': {'xy.zw': 1}, 4: 5}) == {'ab.xy.zw': 1, '4': 5}
     True
     """
-
-    for k, v in dct.items():
-        k = str(k)
-        if isinstance(v, dict):
-            for sk, sv in flatten(v, ctx + (k,)):
-                yield sk, sv
-        else:
-            yield '.'.join(ctx + (k,)), v
+    def go(dct, ctx=()):
+        for k, v in dct.items():
+            k = str(k)
+            if isinstance(v, dict):
+                for sk, sv in go(v, ctx + (k,)):
+                    yield sk, sv
+            else:
+                yield '.'.join(ctx + (k,)), v
+    return dict(go(src))
 
 def unflatten(kvlist):
     """

@@ -105,7 +105,7 @@ def make_symm_xforms(kind, offset):
 def convert_xforms(flame):
     xfs = dict(enumerate(map(convert_xform, flame['xforms'])))
     if 'symmetry' in flame:
-        xfs.update(make_symm_xforms(float(flame['symmetry']), len(xfs)))
+        xfs.update(make_symm_xforms(flame['symmetry'], len(xfs)))
     return xfs
 
 pair = lambda v: dict(zip('xy', map(float, v.split())))

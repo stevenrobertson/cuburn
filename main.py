@@ -40,7 +40,7 @@ def save(out):
 def main(args, prof):
     import pycuda.autoinit
 
-    gdb = db.open(args.genomedb)
+    gdb = db.connect(args.genomedb)
     if os.path.isfile(args.flame) and (args.flame.endswith('.flam3') or
                                        args.flame.endswith('.flame')):
         with open(args.flame) as fp:
@@ -50,7 +50,7 @@ def main(args, prof):
             warnings.warn('%d flames in file, only using one.' % len(flames))
         gnm = convert.flam3_to_node(flames[0])
     else:
-        gnm = gdb.open(args.flame)
+        gnm = gdb.get(args.flame)
 
     if gnm['type'] == 'node':
         gnm = convert.node_to_anim(gnm, half=args.half)
@@ -69,7 +69,7 @@ def main(args, prof):
               for i, t in enumerate(times)]
     if args.end:
         frames = frames[:args.end]
-    frames = frames[args.start::prof['skip']+1]
+    frames = frames[args.start::gprof.skip+1]
     if args.resume:
         m = 0
         if args.flame.name != '-':
@@ -77,7 +77,7 @@ def main(args, prof):
         frames = (f for f in frames
                   if not os.path.isfile(f[0]) or m > os.path.getmtime(f[0]))
 
-    w, h = prof['width'], prof['height']
+    w, h = gprof.width, gprof.height
     gen = rmgr.render(gnm, gprof, frames)
 
     if not args.gfx:
