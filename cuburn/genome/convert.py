@@ -88,18 +88,18 @@ def convert_xform(xf):
 def make_symm_xforms(kind, offset):
     assert kind != 0, 'Pick your own damn symmetry.'
     out = []
-    boring_xf = dict(color=1, color_speed=0, density=1,
+    boring_xf = dict(color=1, color_speed=0, weight=1,
                      variations={'linear': {'weight': 1}})
     if kind < 0:
         out.append(boring_xf.copy())
-        out[-1]['affine'] = dict(angle=135, spread=-45)
+        out[-1]['pre_affine'] = dict(angle=135, spread=-45)
         kind = -kind
     for i in range(1, kind):
         out.append(boring_xf.copy())
         if kind >= 3:
             out[-1]['color'] = (i - 1) / (kind - 2.0)
         ang = (45 + 360 * i / float(kind)) % 360
-        out[-1]['affine'] = dict(angle=ang, spread=-45)
+        out[-1]['pre_affine'] = dict(angle=ang, spread=-45)
     return dict(enumerate(out, offset))
 
 def convert_xforms(flame):

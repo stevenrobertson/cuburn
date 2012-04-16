@@ -29,7 +29,7 @@ profiles = {
     '1080p': dict(width=1920, height=1080),
     '720p': dict(width=1280, height=720),
     '540p': dict(width=960, height=540),
-    'preview': dict(width=640, height=360, quality=800, skip=1)
+    'preview': dict(width=640, height=360, spp=1200, skip=1)
 }
 
 def save(out):
@@ -71,9 +71,7 @@ def main(args, prof):
         frames = frames[:args.end]
     frames = frames[args.start::gprof.skip+1]
     if args.resume:
-        m = 0
-        if args.flame.name != '-':
-            m = os.path.getmtime(args.flame.name)
+        m = os.path.getmtime(args.flame)
         frames = (f for f in frames
                   if not os.path.isfile(f[0]) or m > os.path.getmtime(f[0]))
 
