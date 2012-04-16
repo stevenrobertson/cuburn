@@ -181,6 +181,13 @@ __device__ uint32_t trunca(float f) {
     asm("cvt.rni.s32.f32    %0,     %1;" : "=r"(ret) : "f"(f));
     return ret;
 }
+
+__device__ void scale_float4(float4& pix, float scale) {
+    pix.x *= scale;
+    pix.y *= scale;
+    pix.z *= scale;
+    pix.w *= scale;
+}
 ''')
 
 def mkbinsearchlib(rounds):

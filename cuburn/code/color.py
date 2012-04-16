@@ -28,6 +28,17 @@ __device__ float3 yuv2rgb(float3 yuv) {
         yuv.x - 0.34414f * yuv.y - 0.71414f * yuv.z,
         yuv.x + 1.772f   * yuv.y);
 }
+
+// As used in the various cliplibs.
+__device__ void yuvo2rgb(float4& pix) {
+    pix.y -= 0.5f * pix.w;
+    pix.z -= 0.5f * pix.w;
+    float3 tmp = yuv2rgb(make_float3(pix.x, pix.y, pix.z));
+    pix.x = fmaxf(0.0f, tmp.x);
+    pix.y = fmaxf(0.0f, tmp.y);
+    pix.z = fmaxf(0.0f, tmp.z);
+}
+
 ''')
 
 hsvlib = devlib(decls='''

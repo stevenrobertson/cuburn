@@ -241,17 +241,9 @@ haloclip(float4 *pixbuf, const float *denbuf, float gamma) {
 
     float ls = powf(pix.z, gamma) / fmaxf(1.0f, areaval);
 
-    pix.x *= ls;
-    pix.y *= ls;
-    pix.z *= ls;
-    pix.w *= ls;
+    scale_float4(pix, ls);
 
-    pix.y -= 0.5f * pix.w;
-    pix.z -= 0.5f * pix.w;
-    float3 tmp = yuv2rgb(make_float3(pix.x, pix.y, pix.z));
-    pix.x = fmaxf(0.0f, tmp.x);
-    pix.y = fmaxf(0.0f, tmp.y);
-    pix.z = fmaxf(0.0f, tmp.z);
+    yuvo2rgb(pix);
 
     pixbuf[i] = pix;
 }
@@ -269,17 +261,7 @@ colorclip(float4 *pixbuf, float gamma, float vibrance, float highpow,
         pixbuf[i] = make_float4(0, 0, 0, 0);
         return;
     }
-    pix.y -= 0.5f * pix.w;
-    pix.z -= 0.5f * pix.w;
-    float3 tmp = yuv2rgb(make_float3(pix.x, pix.y, pix.z));
-    pix.x = tmp.x;
-    pix.y = tmp.y;
-    pix.z = tmp.z;
-
-    pix.x = fmaxf(0.0f, pix.x);
-    pix.y = fmaxf(0.0f, pix.y);
-    pix.z = fmaxf(0.0f, pix.z);
-
+    yuvo2rgb(pix);
     float4 opix = pix;
 
     float alpha = powf(pix.w, gamma);
