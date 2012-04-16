@@ -73,6 +73,7 @@ class Framebuffers(object):
 
     def __init__(self):
         self.stream = cuda.Stream()
+        self.pool = pycuda.tools.PageLockedMemoryPool()
         self._clear()
 
         # These resources rely on the slots/ringbuffer mechanism for sharing,
@@ -218,8 +219,6 @@ class RenderManager(ClsMod):
 
     def __init__(self):
         super(RenderManager, self).__init__()
-        self.pool = pycuda.tools.PageLockedMemoryPool()
-
         self.fb = Framebuffers()
         self.src_a, self.src_b = DevSrc(), DevSrc()
         self.info_a, self.info_b = DevInfo(), DevInfo()
@@ -234,15 +233,15 @@ class RenderManager(ClsMod):
         Note that for now, this is broken! It ignores ``gnm``, and only packs
         the genome that was used when creating the renderer.
         """
-        times, knots = rdr.packer.pack(gnm, self.pool)
+        times, knots = rdr.packer.pack(gnm, self.fb.pool)
         cuda.memcpy_htod_async(self.src_a.d_times, times, self.stream_a)
         cuda.memcpy_htod_async(self.src_a.d_knots, knots, self.stream_a)
 
         palsrc = dict([(v[0], palette_decode(v[1:])) for v in gnm['palette']])
         ptimes, pvals = zip(*sorted(palsrc.items()))
-        palettes = self.pool.allocate((len(palsrc), 256, 4), f32)
+        palettes = self.fb.pool.allocate((len(palsrc), 256, 4), f32)
         palettes[:] = pvals
-        palette_times = self.pool.allocate((self.src_a.max_knots,), f32)
+        palette_times = self.fb.pool.allocate((self.src_a.max_knots,), f32)
         palette_times.fill(1e9)
         palette_times[:len(ptimes)] = ptimes
         cuda.memcpy_htod_async(self.src_a.d_pals, palettes, self.stream_a)
@@ -253,7 +252,7 @@ class RenderManager(ClsMod):
 
     def _interp(self, rdr, gnm, dim, ts, td):
         d_acc_size = rdr.mod.get_global('acc_size')[0]
-        p_dim = self.pool.allocate((len(dim),), u32)
+        p_dim = self.fb.pool.allocate((len(dim),), u32)
         p_dim[:] = dim
         cuda.memcpy_htod_async(d_acc_size, p_dim, self.stream_a)
 
@@ -363,7 +362,7 @@ class RenderManager(ClsMod):
             filt.apply(self.fb, gprof, params, dim, tc, self.stream_a)
         rdr.out.convert(self.fb, gprof, dim, self.stream_a)
         self.filt_evt = cuda.Event().record(self.stream_a)
-        h_out = rdr.out.copy(self.fb, dim, self.pool, self.stream_a)
+        h_out = rdr.out.copy(self.fb, dim, self.fb.pool, self.stream_a)
         self.copy_evt = cuda.Event().record(self.stream_a)
 
         self.info_a, self.info_b = self.info_b, self.info_a

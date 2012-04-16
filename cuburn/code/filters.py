@@ -71,6 +71,7 @@ denblurlib = devlib(deps=[texshearlib], decls='''
 texture<float4, cudaTextureType2D> chan4_src;
 texture<float,  cudaTextureType2D> chan1_src;
 
+// Call the Python function set_blur_width() to override these defaults.
 __constant__ float gauss_coefs[7] = {
     0.00443305f,  0.05400558f,  0.24203623f,  0.39905028f,
     0.24203623f,  0.05400558f,  0.00443305f

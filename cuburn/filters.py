@@ -8,6 +8,13 @@ from pycuda.gpuarray import vec
 import code.filters
 from code.util import ClsMod, argset, launch2
 
+def set_blur_width(mod, pool, stdev=1, stream=None):
+    coefs = pool.allocate((7,), f32)
+    coefs[:] = np.exp(np.float32(np.arange(-3, 4))**2/(-2*stdev**2))
+    coefs /= np.sum(coefs)
+    ptr, size = mod.get_global('gauss_coefs')
+    cuda.memcpy_htod_async(ptr, coefs, stream)
+
 def mktref(mod, n):
     tref = mod.get_texref(n)
     tref.set_filter_mode(cuda.filter_mode.POINT)
@@ -44,6 +51,7 @@ class Bilateral(Filter, ClsMod):
         tref = mktref(self.mod, 'chan4_src')
         grad_dsc = mkdsc(dim, 1)
         grad_tref = mktref(self.mod, 'chan1_src')
+        set_blur_width(self.mod, fb.pool, stream=stream)
 
         for pattern in range(self.directions):
             # Scale spatial parameter so that a "pixel" is equivalent to an
@@ -89,6 +97,7 @@ class HaloClip(Filter, ClsMod):
         dsc = mkdsc(dim, 1)
         tref = mktref(self.mod, 'chan1_src')
 
+        set_blur_width(self.mod, fb.pool, stream=stream)
         launch2('apply_gamma', self.mod, stream, dim,
                 fb.d_side, fb.d_front, gam)
         tref.set_address_2d(fb.d_side, dsc, 4 * params.astride)
@@ -104,7 +113,6 @@ class HaloClip(Filter, ClsMod):
 class ColorClip(Filter, ClsMod):
     lib = code.filters.colorcliplib
     def apply(self, fb, gprof, params, dim, tc, stream=None):
-        # TODO: implement integration over cubic splines?
         gam = f32(1 / params.gamma(tc))
         vib = f32(params.vibrance(tc))
         hipow = f32(params.highlight_power(tc))
