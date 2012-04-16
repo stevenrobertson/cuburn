@@ -51,7 +51,8 @@ filters = (
     , 'minimum': scalespline(0, max=1, d='Proportional min radius')
     , 'curve': scalespline(0.6, d='Power of filter radius with density')
     }
-  , 'haloclip': {'gamma': scalespline(4)}
+  , 'haloclip': {}
+  , 'smearclip': {'width': scalespline(0.75, d='Spatial stdev of filter')}
   , 'logscale': {'brightness': scalespline(4, d='Log-scale brightness')}
   })
 
@@ -96,7 +97,7 @@ edge.update(type='edge', author=author, blend=blend, link=link, time=time,
 anim = dict(base)
 anim.update(type='animation', authors=list_(author), link=link, time=time)
 
-default_filters = ['bilateral', 'logscale', 'colorclip']
+default_filters = ['bilateral', 'logscale', 'smearclip']
 # Yeah, now I'm just messing around.
 prof_filters = dict([(fk, dict([(k, refscalar(1, '.'.join(['filters', fk, k])))
                            for k in fv])) for fk, fv in filters.items()])

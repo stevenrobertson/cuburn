@@ -28,6 +28,8 @@ def mkdsc(dim, ch):
                   format=cuda.array_format.FLOAT)
 
 class Filter(object):
+    # Set to True if the filter requires a full 4-channel side buffer
+    full_side = False
     def apply(self, fb, gprof, params, dim, tc, stream=None):
         """
         Queue the application of this filter. When the live stream finishes
@@ -92,23 +94,43 @@ class Logscale(Filter, ClsMod):
 class HaloClip(Filter, ClsMod):
     lib = code.filters.halocliplib
     def apply(self, fb, gprof, params, dim, tc, stream=None):
-        gam = f32(1 / params.gamma(tc) - 1)
+        gam = f32(1 / gprof.filters.colorclip.gamma(tc) - 1)
 
         dsc = mkdsc(dim, 1)
         tref = mktref(self.mod, 'chan1_src')
 
         set_blur_width(self.mod, fb.pool, stream=stream)
         launch2('apply_gamma', self.mod, stream, dim,
-                fb.d_side, fb.d_front, gam)
-        tref.set_address_2d(fb.d_side, dsc, 4 * params.astride)
+                fb.d_side, fb.d_front, f32(0.1))
+        tref.set_address_2d(fb.d_side, dsc, 4 * dim.astride)
         launch2('den_blur_1c', self.mod, stream, dim,
-               fb.d_back, i32(0), i32(0), texrefs=[tref])
-        tref.set_address_2d(fb.d_back, dsc, 4 * params.astride)
+               fb.d_back, i32(2), i32(0), texrefs=[tref])
+        tref.set_address_2d(fb.d_back, dsc, 4 * dim.astride)
         launch2('den_blur_1c', self.mod, stream, dim,
-               fb.d_side, i32(1), i32(0), texrefs=[tref])
+               fb.d_side, i32(3), i32(0), texrefs=[tref])
 
         launch2('haloclip', self.mod, stream, dim,
-                fb.d_front, fb.d_side)
+                fb.d_front, fb.d_side, gam)
+
+class SmearClip(Filter, ClsMod):
+    full_side = True
+    lib = code.filters.smearcliplib
+    def apply(self, fb, gprof, params, dim, tc, stream=None):
+        gam = f32(1 / gprof.filters.colorclip.gamma(tc) - 1)
+        dsc = mkdsc(dim, 4)
+        tref = mktref(self.mod, 'chan4_src')
+
+        set_blur_width(self.mod, fb.pool, params.width(tc), stream)
+        launch2('apply_gamma_full_hi', self.mod, stream, dim,
+                fb.d_side, fb.d_front, gam)
+        tref.set_address_2d(fb.d_side, dsc, 16 * dim.astride)
+        launch2('full_blur', self.mod, stream, dim,
+               fb.d_back, i32(2), i32(0), texrefs=[tref])
+        tref.set_address_2d(fb.d_back, dsc, 16 * dim.astride)
+        launch2('full_blur', self.mod, stream, dim,
+               fb.d_side, i32(3), i32(0), texrefs=[tref])
+        launch2('smearclip', self.mod, stream, dim,
+                fb.d_front, fb.d_side, gam)
 
 class ColorClip(Filter, ClsMod):
     lib = code.filters.colorcliplib
@@ -124,6 +146,6 @@ class ColorClip(Filter, ClsMod):
 
 # Ungainly but practical.
 filter_map = dict(bilateral=Bilateral, logscale=Logscale, haloclip=HaloClip,
-                  colorclip=ColorClip)
+                  colorclip=ColorClip, smearclip=SmearClip)
 def create(gprof):
     return [filter_map[f]() for f in gprof.filter_order]

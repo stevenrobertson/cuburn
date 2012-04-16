@@ -113,7 +113,7 @@ class Framebuffers(object):
         try:
             self.d_front = cuda.mem_alloc(16 * nbins)
             self.d_back  = cuda.mem_alloc(16 * nbins)
-            self.d_side  = cuda.mem_alloc(8 * nbins)
+            self.d_side  = cuda.mem_alloc(16 * nbins)
             self.nbins = nbins
         except cuda.MemoryError, e:
             # If a frame that's too large sneaks by the task distributor, we

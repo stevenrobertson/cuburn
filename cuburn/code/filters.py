@@ -108,6 +108,26 @@ __global__ void den_blur_1c(float *dst, int pattern, int upsample) {
 }
 ''')
 
+
+fullblurlib = devlib(deps=[denblurlib], defs=r'''
+__global__ void full_blur(float4 *dst, int pattern, int upsample) {
+    GET_IDX_2(xi, yi, gi);
+    float x = xi, y = yi;
+
+    float4 val = make_float4(0, 0, 0, 0);
+
+    #pragma unroll
+    for (int i = 0; i < 7; i++) {
+        float4 pix = tex_shear(chan4_src, pattern, x, y, (i - 3) << upsample);
+        val.x += pix.x * gauss_coefs[i];
+        val.y += pix.y * gauss_coefs[i];
+        val.z += pix.z * gauss_coefs[i];
+        val.w += pix.w * gauss_coefs[i];
+    }
+    dst[gi] = val;
+}
+''')
+
 bilaterallib = devlib(deps=[logscalelib, texshearlib, denblurlib], defs=r'''
 /* sstd:    spatial standard deviation (Gaussian filter)
  * cstd:    color standard deviation (Gaussian on the range [0, 1], where 1
@@ -225,12 +245,11 @@ halocliplib = devlib(deps=[yuvlib, denblurlib], defs=r'''
 __global__ void apply_gamma(float *dst, float4 *src, float gamma) {
     GET_IDX(i);
     float4 pix = src[i];
-    float ls = powf(fmaxf(0.0f, src[i].z), gamma);
-    dst[i] = ls * pix.x;
+    dst[i] = powf(pix.x, gamma);
 }
 
 __global__ void
-haloclip(float4 *pixbuf, const float *denbuf, float gamma) {
+haloclip(float4 *pixbuf, const float *denbuf, float gamma_m_1) {
     GET_IDX(i);
     float4 pix = pixbuf[i];
     float areaval = denbuf[i];
@@ -240,12 +259,45 @@ haloclip(float4 *pixbuf, const float *denbuf, float gamma) {
         return;
     }
 
-    float ls = powf(pix.z, gamma) / fmaxf(1.0f, areaval);
-
+    float ls = powf(pix.w, gamma_m_1) / fmaxf(1.0f, areaval);
     scale_float4(pix, ls);
-
     yuvo2rgb(pix);
+    pixbuf[i] = pix;
+}
+''')
 
+smearcliplib = devlib(deps=[yuvlib, fullblurlib], defs=r'''
+// Apply gamma to all four pixels. Subtract one from the result, and clamp at
+// a minimum of 0.
+__global__ void apply_gamma_full_hi(float4 *dst, float4 *src, float gamma_m_1) {
+    GET_IDX(i);
+    float4 pix = src[i];
+    float ls = 0.0f;
+    if (pix.w > 0.0f)
+        ls = fmaxf(0.0f, pix.w - 1.0f) / pix.w;
+    scale_float4(pix, ls);
+    dst[i] = pix;
+}
+
+__global__ void
+smearclip(float4 *pixbuf, const float4 *smearbuf, float gamma_m_1) {
+    GET_IDX(i);
+    float4 pix = pixbuf[i];
+    float4 areaval = smearbuf[i];
+
+    pix.x += areaval.x;
+    pix.y += areaval.y;
+    pix.z += areaval.z;
+    pix.w += areaval.w;
+
+    if (pix.w <= 0) {
+        pixbuf[i] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        return;
+    }
+
+    float ls = powf(pix.w, gamma_m_1);
+    scale_float4(pix, ls);
+    yuvo2rgb(pix);
     pixbuf[i] = pix;
 }
 ''')
