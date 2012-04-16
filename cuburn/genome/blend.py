@@ -55,7 +55,7 @@ def resolve(gdb, item):
         else:
             r = vs[-1]
         out[k] = r
-    return unflatten(out.items())
+    return unflatten(out)
 
 def _split_ref_id(s):
     sp = s.split('@')

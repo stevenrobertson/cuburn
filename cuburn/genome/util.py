@@ -32,12 +32,12 @@ def flatten(src):
                 yield '.'.join(ctx + (k,)), v
     return dict(go(src))
 
-def unflatten(kvlist):
+def unflatten(dct):
     """
     Given a flattened dict, return a nested dict, where every dot-separated
     key is converted into a sub-dict.
 
-    >>> (unflatten([('ab.xy.zw', 1), ('4', 5)) ==
+    >>> (unflatten({'ab.xy.zw': 1, '4': 5}) ==
     ...  {'ab': {'xy': {'zw': 1}}, '4': 5})
     True
     """
@@ -47,7 +47,7 @@ def unflatten(kvlist):
         else:
             go(d.setdefault(k[0], {}), k[1:], v)
     out = {}
-    for k, v in kvlist:
+    for k, v in dct.items():
         go(out, k.split('.'), v)
     return out
 
