@@ -22,6 +22,7 @@ from itertools import ifilter
 import numpy as np
 import pycuda.driver as cuda
 
+sys.path.insert(0, os.path.dirname(__file__))
 from cuburn import render, filters, output
 from cuburn.genome import convert, use, db
 
