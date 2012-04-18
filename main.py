@@ -76,7 +76,6 @@ def main(args, prof):
         frames = (f for f in frames
                   if not os.path.isfile(f[0]) or m > os.path.getmtime(f[0]))
 
-    w, h = gprof.width, gprof.height
     gen = rmgr.render(gnm, gprof, frames)
 
     if not args.gfx:
@@ -85,6 +84,7 @@ def main(args, prof):
         return
 
     import pyglet
+    w, h = gprof.width, gprof.height
     window = pyglet.window.Window(w, h, vsync=False)
     image = pyglet.image.CheckerImagePattern().create_image(w, h)
     label = pyglet.text.Label('Rendering first frame', x=5, y=h-5,
@@ -190,7 +190,7 @@ if __name__ == "__main__":
     prof = dict(profiles[args.prof])
     if args.pfile:
         prof = json.load(open(args.pfile))
-    for k in ['duration', 'skip', 'quality', 'fps']:
+    for k in ['duration', 'skip', 'quality', 'fps', 'width', 'height']:
         if getattr(args, k) is not None:
             prof[k] = getattr(args, k)
     if args.still:
