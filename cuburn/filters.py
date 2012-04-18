@@ -112,17 +112,23 @@ class HaloClip(Filter, ClsMod):
         launch2('haloclip', self.mod, stream, dim,
                 fb.d_front, fb.d_side, gam)
 
+def calc_lingam(params, tc):
+    gam = f32(1 / params.gamma(tc))
+    lin = f32(params.gamma_threshold(tc))
+    lingam = f32(lin ** (gam-1.0) if lin > 0 else 0)
+    return gam, lin, lingam
+
 class SmearClip(Filter, ClsMod):
     full_side = True
     lib = code.filters.smearcliplib
     def apply(self, fb, gprof, params, dim, tc, stream=None):
-        gam = f32(1 / gprof.filters.colorclip.gamma(tc) - 1)
+        gam, lin, lingam = calc_lingam(gprof.filters.colorclip, tc)
         dsc = mkdsc(dim, 4)
         tref = mktref(self.mod, 'chan4_src')
 
         set_blur_width(self.mod, fb.pool, params.width(tc), stream)
         launch2('apply_gamma_full_hi', self.mod, stream, dim,
-                fb.d_side, fb.d_front, gam)
+                fb.d_side, fb.d_front, f32(gam-1))
         tref.set_address_2d(fb.d_side, dsc, 16 * dim.astride)
         launch2('full_blur', self.mod, stream, dim,
                fb.d_back, i32(2), i32(0), texrefs=[tref])
@@ -130,19 +136,17 @@ class SmearClip(Filter, ClsMod):
         launch2('full_blur', self.mod, stream, dim,
                fb.d_side, i32(3), i32(0), texrefs=[tref])
         launch2('smearclip', self.mod, stream, dim,
-                fb.d_front, fb.d_side, gam)
+                fb.d_front, fb.d_side, f32(gam-1), lin, lingam)
 
 class ColorClip(Filter, ClsMod):
     lib = code.filters.colorcliplib
     def apply(self, fb, gprof, params, dim, tc, stream=None):
-        gam = f32(1 / params.gamma(tc))
         vib = f32(params.vibrance(tc))
         hipow = f32(params.highlight_power(tc))
-        lin = f32(params.gamma_threshold(tc))
-        lingam = f32(lin ** (gam-1.0) if lin > 0 else 0)
+        gam, lin, lingam = calc_lingam(params, tc)
 
         launch2('colorclip', self.mod, stream, dim,
-                fb.d_front, gam, vib, hipow, lin, lingam)
+                fb.d_front, vib, hipow, gam, lin, lingam)
 
 # Ungainly but practical.
 filter_map = dict(bilateral=Bilateral, logscale=Logscale, haloclip=HaloClip,

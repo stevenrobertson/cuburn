@@ -280,7 +280,8 @@ __global__ void apply_gamma_full_hi(float4 *dst, float4 *src, float gamma_m_1) {
 }
 
 __global__ void
-smearclip(float4 *pixbuf, const float4 *smearbuf, float gamma_m_1) {
+smearclip(float4 *pixbuf, const float4 *smearbuf,
+          float gamma_m_1, float linrange, float lingam) {
     GET_IDX(i);
     float4 pix = pixbuf[i];
     float4 areaval = smearbuf[i];
@@ -296,6 +297,10 @@ smearclip(float4 *pixbuf, const float4 *smearbuf, float gamma_m_1) {
     }
 
     float ls = powf(pix.w, gamma_m_1);
+    if (pix.w < linrange) {
+        float frac = pix.w / linrange;
+        ls = (1.0f - frac) * lingam + frac * ls;
+    }
     scale_float4(pix, ls);
     yuvo2rgb(pix);
     pixbuf[i] = pix;
@@ -304,8 +309,8 @@ smearclip(float4 *pixbuf, const float4 *smearbuf, float gamma_m_1) {
 
 colorcliplib = devlib(deps=[yuvlib], defs=r'''
 __global__ void
-colorclip(float4 *pixbuf, float gamma, float vibrance, float highpow,
-          float linrange, float lingam)
+colorclip(float4 *pixbuf, float vibrance, float highpow,
+          float gamma, float linrange, float lingam)
 {
     GET_IDX(i);
     float4 pix = pixbuf[i];
