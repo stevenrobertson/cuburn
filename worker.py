@@ -9,13 +9,16 @@ import uuid
 import json
 import socket
 import itertools
-from subprocess import check_output
+from collections import namedtuple
+from subprocess import check_call, check_output
 from cStringIO import StringIO
 
 import scipy
 import redis
 
-from cuburn import render, genome
+sys.path.insert(0, os.path.dirname(__file__))
+from cuburn import render
+from cuburn.genome import convert, db, use
 
 import pycuda.driver as cuda
 
@@ -110,15 +113,9 @@ def work(server):
         copy = False
         sid, sidx, pid, gid, ftime, ftag = task[1].split(' ', 5)
         if pid != last_pid or gid != last_gid or not rdr:
-            gnm = genome.Genome(json.loads(r.get(gid)))
-            prof = json.loads(r.get(pid))
-            gnm.set_profile(prof)
-            rdr = render.Renderer(gnm)
-            # Temporarily use animation filter settings for the bilateral
-            # filter. TODO: specify these in profiles.
-            rdr.filts[0].sstd = 10.0
-            rdr.filts[0].dstd = 2.0
-            rdr.filts[0].gspeed = 2.0
+            gnm = json.loads(r.get(gid))
+            gprof, ignored_times = use.wrap_genome(json.loads(r.get(pid)), gnm)
+            rdr = render.Renderer(gnm, gprof)
             last_pid, last_gid = pid, gid
             copy = True
 
@@ -126,8 +123,7 @@ def work(server):
             # Create a dummy event for timing
             last_evt = cuda.Event().record(mgr.stream_a)
 
-        w, h = prof['width'], prof['height']
-        evt, buf = mgr.queue_frame(rdr, gnm, float(ftime), w, h, copy)
+        evt, buf = mgr.queue_frame(rdr, gnm, gprof, float(ftime), copy)
         idx = sid, sidx, ftag
 
 def iter_genomes(prof, gpaths, pname='540p'):
@@ -135,16 +131,18 @@ def iter_genomes(prof, gpaths, pname='540p'):
     Walk a list of genome paths, yielding them in an order suitable for
     the `genomes` argument of `create_jobs()`.
     """
+    gdb = db.connect('.')
 
     for gpath in gpaths:
         gname = os.path.basename(gpath).rsplit('.', 1)[0]
-        odir = 'out/%s/%s/untracked' % (pname, gname)
+        odir = 'out/%s/%s' % (pname, gname)
         if os.path.isfile(os.path.join(odir, 'COMPLETE')):
             continue
         with open(gpath) as fp:
             gsrc = fp.read()
-        gnm = genome.Genome(json.loads(gsrc))
-        err, times = gnm.set_profile(prof)
+        gnm = convert.edge_to_anim(gdb, json.loads(gsrc))
+        gsrc = json.dumps(gnm)
+        gprof, times = use.wrap_genome(prof, gnm)
         gtimes = []
         for i, t in enumerate(times):
             opath = os.path.join(odir, '%05d.jpg' % (i+1))
@@ -155,9 +153,6 @@ def iter_genomes(prof, gpaths, pname='540p'):
                 os.makedirs(odir)
             with open(os.path.join(odir, 'NFRAMES'), 'w') as fp:
                 fp.write(str(len(times)) + '\n')
-            latest = odir.rsplit('/', 1)[0] + '/latest'
-            if not os.path.isdir(latest):
-                os.symlink('untracked', latest)
             yield gsrc, gtimes
 
 def create_jobs(r, psrc, genomes):
