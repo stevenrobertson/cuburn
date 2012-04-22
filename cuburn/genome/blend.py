@@ -98,7 +98,7 @@ def blend(src, dst, edit={}):
         opts.update(d.get('blend', {}))
     opts = Wrapper(opts, specs.blend)
 
-    blended = merge_nodes(specs.node, src, dst, edit, opts.nloops)
+    blended = merge_nodes(specs.node, src, dst, edit, opts.duration)
     name_map = sort_xforms(src['xforms'], dst['xforms'], opts.xform_sort,
                            explicit=zip(*opts.xform_map))
 
@@ -111,11 +111,12 @@ def blend(src, dst, edit={}):
         blended['xforms'][bxf_key] = blend_xform(
                 src['xforms'].get(sxf_key),
                 dst['xforms'].get(dxf_key),
-                xf_edits, opts.nloops)
+                xf_edits, opts.duration)
 
     if 'final_xform' in src or 'final_xform' in dst:
         blended['final_xform'] = blend_xform(src.get('final_xform'),
-                dst.get('final_xform'), edit.get('final_xform'), 0, True)
+                dst.get('final_xform'), edit.get('final_xform'),
+                opts.duration, True)
 
     # TODO: write 'info' section
     # TODO: palflip
@@ -144,7 +145,7 @@ def split_node_val(spl, val):
         return val, 0
     return val
 
-def tospline(spl, src, dst, edit, loops):
+def tospline(spl, src, dst, edit, duration):
     sp, sv = split_node_val(spl, src)    # position, velocity
     dp, dv = split_node_val(spl, dst)
 
@@ -163,8 +164,11 @@ def tospline(spl, src, dst, edit, loops):
         # Periodic extension: compute an appropriate number of loops based on
         # the angular velocities at the endpoints, and extend the destination
         # position by the appropriate number of periods.
-        avg_vel = round(float(sv + dv) * loops / spl.period)
-        dp = dp % spl.period + avg_vel * spl.period
+        sign = lambda x: 1. if x >= 0 else -1.
+
+        movement = duration * (sv + dv) / (2.0 * spl.period)
+        angdiff = ((dp - sp) / spl.period) % (sign(movement))
+        dp = sp + (round(movement - angdiff) + angdiff) * spl.period
 
         # Endpoint override: allow adjusting the number of loops as calculated
         # above by locking to the nearest value with the same mod (i.e. the
@@ -183,14 +187,14 @@ def trace(k):
     print k,
     return k
 
-def merge_nodes(sp, src, dst, edit, loops):
+def merge_nodes(sp, src, dst, edit, duration):
     if isinstance(sp, dict):
         src, dst, edit = [x or {} for x in src, dst, edit]
         return dict([(k, merge_nodes(sp[k], src.get(k),
-                                     dst.get(k), edit.get(k), loops))
+                                     dst.get(k), edit.get(k), duration))
             for k in set(src.keys() + dst.keys() + edit.keys()) if k in sp])
     elif isinstance(sp, spectypes.Spline):
-        return tospline(sp, src, dst, edit, loops)
+        return tospline(sp, src, dst, edit, duration)
     elif isinstance(sp, spectypes.List):
         if isinstance(sp.type, spectypes.Palette):
             if src is not None: src = [[0] + src]
@@ -199,12 +203,12 @@ def merge_nodes(sp, src, dst, edit, loops):
     else:
         return edit if edit is not None else dst if dst is not None else src
 
-def blend_xform(sxf, dxf, edits, loops, isfinal=False):
+def blend_xform(sxf, dxf, edits, duration, isfinal=False):
     if sxf is None:
         sxf = padding_xform(dxf, isfinal)
     if dxf is None:
         dxf = padding_xform(sxf, isfinal)
-    return merge_nodes(specs.xform, sxf, dxf, edits, loops)
+    return merge_nodes(specs.xform, sxf, dxf, edits, duration)
 
 # If xin contains any of these, use the inverse identity
 hole_variations = ('spherical ngon julian juliascope polar '

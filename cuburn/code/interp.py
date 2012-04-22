@@ -204,6 +204,8 @@ class GenomePacker(object):
             times, knots = np.empty((2, len(self.genome), width), 'f4')
         times.fill(1e9)
 
+        # TODO: do a nicer job of finding the value of scale
+        scale = gnm.get('time', {}).get('duration', 1)
         for idx, path in enumerate(self.genome):
             attr = gnm
             for name in path:
@@ -211,7 +213,7 @@ class GenomePacker(object):
                     attr = resolve_spec(specs.anim, path).default
                     break
                 attr = attr[name]
-            attr = SplineEval.normalize(attr)
+            attr = SplineEval.normalize(attr, scale)
             times[idx,:len(attr[0])] = attr[0]
             knots[idx,:len(attr[1])] = attr[1]
         return times, knots
