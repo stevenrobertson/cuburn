@@ -100,38 +100,34 @@ class Wrapper(object):
 class RefWrapper(Wrapper):
     """
     Wrapper that handles RefScalars, as with profile objects.
+    Must provide an 'other' object as a kwarg to __init__.
     """
-    # Turns out (somewhat intentionally) that every spline parameter used on
-    # the host has a matching parameter in the profile, so this
-    def __init__(self, val, other, spec=None, path=()):
-        super(RefWrapper, self).__init__(val, spec, path)
-        self.other = other
-
-    def wrap_dict(self, path, spec, val):
-        return type(self)(val or {}, self.other, spec, path)
-
     def wrap_refscalar(self, path, spec, val):
-        spev = self.other
+        spev = self._params['other']
         for part in spec.ref.split('.'):
             spev = spev[part]
         spev *= val if val is not None else spec.default
         return spev
 
 class SplineWrapper(Wrapper):
+    """
+    Wrapper that handles splines. Must provide a 'scale' object
+    (normally, equal to duration) as a kwarg to __init__.
+    """
     def wrap_spline(self, path, spec, val):
         return SplineEval(val if val is not None else spec.default,
-                          spec.interp)
+                          self._params['scale'], spec.interp)
 
 class SplineEval(object):
     _mat = np.matrix([[1.,-2, 1, 0], [2,-3, 0, 1],
                       [1,-1, 0, 0], [-2, 3, 0, 0]])
     _deriv = np.matrix(np.diag([3,2,1], 1))
 
-    def __init__(self, knots, interp='linear'):
-        self.knots, self.interp = self.normalize(knots), interp
+    def __init__(self, knots, scale, interp='linear'):
+        self.knots, self.interp = self.normalize(knots, scale), interp
 
     @staticmethod
-    def normalize(knots):
+    def normalize(knots, scale):
         if isinstance(knots, (int, float)):
             v0, v1 = 0, 0
             knots = [(0, knots), (1, knots)]
@@ -143,6 +139,8 @@ class SplineEval(object):
         else:
             p0, v0, p1, v1 = knots[:4]
             knots = [(0, p0), (1, p1)] + zip(knots[4::2], knots[5::2])
+        v0 *= scale
+        v1 *= scale
 
         knots = sorted(knots)
 
@@ -205,7 +203,9 @@ class SplineEval(object):
 def wrap_genome(prof, gnm):
     # It's not obvious that this is what needs to happen, so we wrap. The
     # timing is simplistic, and may get expanded or moved later.
-    gprof = RefWrapper(prof, SplineWrapper(gnm), toplevels['profile'])
+    scale = gnm.get('time', {}).get('duration', 1)
+    gprof = RefWrapper(prof, toplevels['profile'],
+                       other=SplineWrapper(gnm, scale=scale))
     nframes = round(gprof.fps * gprof.duration)
     times = np.linspace(0, 1, nframes + 1)
     times = times[:-1] + 0.5 * (times[1] - times[0])
