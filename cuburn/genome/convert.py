@@ -8,8 +8,9 @@ import numpy as np
 from variations import var_params
 import util
 
-# Re-exported
+# Re-exported, since it makes the namespace nice and regular
 from blend import node_to_anim, edge_to_anim
+from util import json_encode as to_json
 
 class XMLGenomeParser(object):
     """
@@ -182,4 +183,4 @@ def convert_file(path):
 
 if __name__ == "__main__":
     import sys
-    print '\n\n'.join(map(util.json_encode, convert_file(sys.argv[1])))
+    print '\n\n'.join(map(to_json, convert_file(sys.argv[1])))
