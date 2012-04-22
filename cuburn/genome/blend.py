@@ -248,34 +248,6 @@ def padding_xform(xf, isfinal):
 
     return xout
 
-def blend_genomes(left, right, nloops=2, align='weightflip', seed=None,
-        stagger=False, blur=None, palflip=True):
-    align_xforms(left, right, align)
-    name = '%s=%s' % (left.info.get('name', ''), right.info.get('name', ''))
-    if seed is None:
-        seed = map(ord, name)
-    rng = np.random.RandomState(seed)
-
-    blend = blend_splines(left, right, nloops, rng, stagger)
-    # TODO: licenses; check license compatibility when merging
-    # TODO: add URL and flockutil revision to authors
-    blend['info'] = {
-            'name': name,
-            'authors': sum([g.info.get('authors', []) for g in left, right], [])
-        }
-    blend['info']['authors'].append('flockutil')
-    blend['palettes'] = [get_palette(left, False), get_palette(right, True)]
-    blend['color']['palette_times'] = [0, "0", 1, "1"]
-
-    if palflip:
-        checkpalflip(blend)
-
-    if blur:
-        blur_palettes(blend, blur)
-
-    return blend
-
-
 def halfhearted_human_sort_key(key):
     try:
         return int(key)
