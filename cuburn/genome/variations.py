@@ -21,7 +21,7 @@ def var(num, name, **params):
     # of reading the default value.
     for k, v in params.items():
         params[k] = v._replace(var=True)
-    params['weight'] = scalespline(0)
+    params['weight'] = s
     var_params[name] = params
 
 # TODO: review all parameter splines, possibly programmatically
