@@ -19,7 +19,7 @@ class GenomeDB(object):
 
 class OneFileDB(object):
     def __init__(self, dct):
-        assert dct.get(type) == 'onefiledb', "Doesn't look like a OneFileDB."
+        assert dct.get('type') == 'onefiledb', "Doesn't look like a OneFileDB."
         self.dct = dct
 
     @classmethod
