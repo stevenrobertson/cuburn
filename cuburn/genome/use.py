@@ -10,12 +10,17 @@ class Wrapper(object):
     returned representation of the underlying genome according to the provided
     spec without imposing flow control.
     """
-    def __init__(self, val, spec=None, path=()):
+    def __init__(self, val, spec=None, path=(), **params):
+        """
+        ``**params`` are passed to any instances of this class constructed
+        during traversal. It's not used in this class but may be used by
+        deriving classes.
+        """
         if spec is None:
             assert val.get('type') in toplevels, 'Unrecognized dict type'
             spec = toplevels[val['type']]
         # plain 'val' would conflict with some variation property names
-        self._val, self.spec, self.path = val, spec, path
+        self._val, self.spec, self.path, self._params = val, spec, path, params
 
     def wrap(self, name, spec, val):
         path = self.path + (name,)
@@ -48,8 +53,9 @@ class Wrapper(object):
         return val if val is not None else spec.default
 
     def wrap_dict(self, path, spec, val):
-        return type(self)(val or {}, spec, path)
+        return type(self)(val or {}, spec, path, **self._params)
 
+    # I switched to uppercase for containers. I Don't Know Why.
     def wrap_Map(self, path, spec, val):
         return self.wrap_dict(path, spec, val)
 

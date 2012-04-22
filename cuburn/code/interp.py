@@ -27,12 +27,7 @@ class PackerWrapper(Wrapper):
     mechanism, so you can easily nest objects by saying, for instance,
     {{pcp.camera.rotation}} from within templated code.
     """
-    def __init__(self, packer, val, spec=None, path=()):
-        super(PackerWrapper, self).__init__(val, spec)
-        self.packer, self.path = packer, path
-
-    def wrap_dict(self, path, spec, val):
-        return type(self)(self.packer, val or {}, spec, path)
+    packer = property(lambda s: s._params['packer'])
 
     def wrap_spline(self, path, spec, val):
         return PackerSpline(self.packer, path, spec)
@@ -45,7 +40,8 @@ class PackerWrapper(Wrapper):
 
     def _precalc(self):
         """Create a GenomePackerPrecalc object. See that class for details."""
-        return PrecalcWrapper(self.packer, self._val, self.spec, self.path)
+        return PrecalcWrapper(self._val, self.spec, self.path,
+                              packer=self.packer)
 
 class PackerSpline(object):
     def __init__(self, packer, path, spec):
@@ -151,7 +147,7 @@ class GenomePacker(object):
 
     def view(self, val={}):
         """Create a DataPacker view. See DataPackerView class for details."""
-        return PackerWrapper(self, val, self.spec)
+        return PackerWrapper(val, self.spec, packer=self)
 
     def _require(self, spec, path):
         """
