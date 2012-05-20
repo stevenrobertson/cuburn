@@ -1,5 +1,6 @@
 import base64
 import numpy as np
+from hashlib import sha1
 
 from cuburn.code.util import crep
 import spectypes
@@ -50,6 +51,18 @@ def unflatten(dct):
     for k, v in dct.items():
         go(out, k.split('.'), v)
     return out
+
+def hash(gnm):
+    """
+    Produce a genome hash. Genome hashes only consider parameters that affect
+    compilation; if two genomes has equally, their iteration kernels may be
+    shared.
+    """
+    # For now, this has to be kept in sync with the code manually. This is
+    # easy, since the only thing which we depend on when compiling is the
+    # presence or absence of certain keys, but enumerated parameters may play
+    # into it at some point in the future.
+    return sha1('\n'.join(flatten(gnm).keys())).hexdigest()
 
 def resolve_spec(sp, path):
     for name in path:
