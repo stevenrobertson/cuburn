@@ -42,27 +42,12 @@ def main(args, prof):
     import pycuda.autoinit
 
     gdb = db.connect(args.genomedb)
-    if os.path.isfile(args.flame) and (args.flame.endswith('.flam3') or
-                                       args.flame.endswith('.flame')):
-        with open(args.flame) as fp:
-            gnm_str = fp.read()
-        flames = convert.XMLGenomeParser.parse(gnm_str)
-        if len(flames) != 1:
-            warnings.warn('%d flames in file, only using one.' % len(flames))
-        gnm = convert.flam3_to_node(flames[0])
-    else:
-        gnm = gdb.get(args.flame)
 
-    if gnm['type'] == 'node':
-        gnm = convert.node_to_anim(gnm, half=args.half)
-    elif gnm['type'] == 'edge':
-        gnm = convert.edge_to_anim(gdb, gnm)
-    assert gnm['type'] == 'animation', 'Unrecognized genome type.'
-
+    gnm, basename = gdb.get_anim(args.flame, args.half)
     gprof, times = use.wrap_genome(prof, gnm)
     rmgr = render.RenderManager()
 
-    basename = os.path.basename(args.flame).rsplit('.', 1)[0] + '_'
+    basename += '_'
     if args.name is not None:
         basename = args.name
     prefix = os.path.join(args.dir, basename)
