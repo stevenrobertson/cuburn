@@ -43,6 +43,7 @@ class PILOutput(Output, ClsMod):
 
     @staticmethod
     def save(buf, name, type=None, quality=98):
+        type = dict(jpg='jpeg', tif='tiff').get(type, type)
         if type == 'jpeg' or (type is None and name.endswith('.jpg')):
             buf = buf[:,:,:3]
         img = scipy.misc.toimage(buf, cmin=0, cmax=1)
