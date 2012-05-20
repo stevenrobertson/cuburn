@@ -200,17 +200,26 @@ class Renderer(object):
     # asynchronous, and avoid expensive CPU polling, this hangs on to
     # a number of (relatively small) CUDA modules and flushes them together.
     MAX_MODREFS = 20
-    _modrefs = []
+    _modrefs = {}
+
+    @classmethod
+    def compile(cls, gnm, arch=None):
+        packer, lib = iter.mkiterlib(gnm)
+        cubin = util.compile('iter', assemble_code(lib), arch=arch)
+        return packer, lib, cubin
+
+    def load(self, cubin):
+        if cubin in self._modrefs:
+            return self._modrefs[cubin]
+        mod = cuda.module_from_buffer(self.cubin)
+        if len(self._modrefs) > self.MAX_MODREFS:
+            self._modrefs.clear()
+        self._modrefs[cubin] = mod
+        return mod
 
     def __init__(self, gnm, gprof):
-        self.packer, self.lib = iter.mkiterlib(gnm)
-        cubin = util.compile('iter', assemble_code(self.lib))
-        self.mod = cuda.module_from_buffer(cubin)
-
-        if len(self._modrefs) > self.MAX_MODREFS:
-            del self._modrefs[:]
-        self._modrefs.append(self.mod)
-
+        self.packer, self.lib, self.cubin = self.compile(gnm)
+        self.mod = self.load(self.cubin)
         self.filts = filters.create(gprof)
         self.out = output.PILOutput()
 
