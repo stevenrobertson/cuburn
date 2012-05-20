@@ -199,14 +199,3 @@ class SplineEval(object):
         plt.xlim(0.0, 1.0)
         if show:
             plt.show()
-
-def wrap_genome(prof, gnm):
-    # It's not obvious that this is what needs to happen, so we wrap. The
-    # timing is simplistic, and may get expanded or moved later.
-    scale = gnm.get('time', {}).get('duration', 1)
-    gprof = RefWrapper(prof, toplevels['profile'],
-                       other=SplineWrapper(gnm, scale=scale))
-    nframes = round(gprof.fps * gprof.duration)
-    times = np.linspace(0, 1, nframes + 1)
-    times = times[:-1] + 0.5 * (times[1] - times[0])
-    return gprof, times

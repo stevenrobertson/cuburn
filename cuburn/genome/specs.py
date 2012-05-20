@@ -109,13 +109,21 @@ prof_filters['logscale']['scale'] = refscalar(1, 'camera.scale')
 profile = (
   { 'duration': RefScalar(30, 'time.duration', 'Base duration in seconds')
   , 'fps': Scalar(24, 'Frames per second')
+  , 'frame_width': refscalar(1, 'time.frame_width')
+
+  , 'start': Scalar(None, 'First frame to render (1-indexed, inclusive)')
+  , 'end': Scalar(None, 'Last frame to render (1-indexed, exclusive; '
+                  'negative indexes from the end)')
+  , 'skip': Scalar(0, 'Skip this many frames between each rendered frame')
+
   , 'height': Scalar(1920, 'Output height in pixels')
   , 'width': Scalar(1080, 'Output width in pixels')
-  , 'frame_width': refscalar(1, 'time.frame_width')
   , 'spp': RefScalar(2000, 'camera.spp', 'Base samples per pixel')
-  , 'skip': Scalar(0, 'Skip this many frames between each rendered frame')
+
   , 'filter_order': list_(enum(filters.keys()), default_filters)
   , 'filters': prof_filters
+
+  , 'output_format': enum('jpg png tif', 'jpg')
   })
 
 # Types recognized as independent units with a 'type' key

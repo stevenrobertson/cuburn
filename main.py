@@ -23,15 +23,8 @@ import numpy as np
 import pycuda.driver as cuda
 
 sys.path.insert(0, os.path.dirname(__file__))
-from cuburn import render, filters, output
+from cuburn import render, filters, output, profile
 from cuburn.genome import convert, use, db
-
-profiles = {
-    '1080p': dict(width=1920, height=1080),
-    '720p': dict(width=1280, height=720),
-    '540p': dict(width=960, height=540),
-    'preview': dict(width=640, height=360, spp=1200, skip=1)
-}
 
 def save(out):
     # Temporary! TODO: fix this
@@ -44,23 +37,20 @@ def main(args, prof):
     gdb = db.connect(args.genomedb)
 
     gnm, basename = gdb.get_anim(args.flame, args.half)
-    gprof, times = use.wrap_genome(prof, gnm)
-    rmgr = render.RenderManager()
+    gprof = profile.wrap(prof, gnm)
 
     basename += '_'
     if args.name is not None:
         basename = args.name
     prefix = os.path.join(args.dir, basename)
     frames = [('%s%05d%s.jpg' % (prefix, (i+1), args.suffix), t)
-              for i, t in enumerate(times)]
-    if args.end:
-        frames = frames[:args.end]
-    frames = frames[args.start::gprof.skip+1]
+              for i, t in profile.enumerate_times(gprof)]
     if args.resume:
         m = os.path.getmtime(args.flame)
         frames = (f for f in frames
                   if not os.path.isfile(f[0]) or m > os.path.getmtime(f[0]))
 
+    rmgr = render.RenderManager()
     gen = rmgr.render(gnm, gprof, frames)
 
     if not args.gfx:
@@ -110,8 +100,6 @@ def main(args, prof):
             label.text = '%s (%g fps)' % (out.idx, 1./real_dt)
         else:
             label.text += '.'
-        if args.sync:
-            cuda.Context.synchronize()
 
     pyglet.clock.set_fps_limit(30)
     pyglet.clock.schedule_interval(poll, 1/30.)
@@ -138,49 +126,10 @@ if __name__ == "__main__":
     parser.add_argument('--genomedb', '-d', metavar='PATH', type=str,
         help="Path to genome database (file or directory, default '.')",
         default='.')
-
-    parser.add_argument('--sync', action='store_true', dest='sync',
-        help='Use synchronous launches whenever possible')
-
-    parser.add_argument('--duration', type=float, metavar='TIME',
-        help="Set base duration in seconds (30)", default=30)
-    parser.add_argument('--start', metavar='FRAME_NO', type=int,
-        default=0, help="First frame to render (inclusive)")
-    parser.add_argument('--end', metavar='FRAME_NO', type=int,
-        help="Last frame to render (exclusive, negative OK)")
-
-    prof = parser.add_argument_group('Profile options')
-    prof.add_argument('-p', dest='prof', choices=profiles.keys(),
-        default='preview', help='Set profile, specifying defaults for all '
-        'options below. (default: "preview")')
-    prof.add_argument('--pfile', type=argparse.FileType(), metavar='PROFILE',
-        help='Set profile using a JSON file, overriding -p.')
-    prof.add_argument('--skip', dest='skip', metavar='N', type=int,
-        help="Skip N frames between each rendered frame")
-    prof.add_argument('--quality', type=int, metavar='SPP',
-        help="Set base samples per pixel")
-    prof.add_argument('--fps', type=float, dest='fps',
-        help="Set frames per second (24)")
-    prof.add_argument('--width', type=int, metavar='PX')
-    prof.add_argument('--height', type=int, metavar='PX')
-
-    node = parser.add_argument_group('Node options')
-    node.add_argument('--half', action='store_true',
-        help='Use a half-loop when rendering a node.')
-    node.add_argument('--still', action='store_true',
-        help='Override start, end, and temporal frame width to render one '
-             'frame without motion blur. (Works on edges too)')
+    parser.add_argument('--half', action='store_true',
+        help='Use half-loops when converting nodes to animations')
+    profile.add_args(parser)
 
     args = parser.parse_args()
-    prof = dict(profiles[args.prof])
-    if args.pfile:
-        prof = json.load(open(args.pfile))
-    for k in ['duration', 'skip', 'quality', 'fps', 'width', 'height']:
-        if getattr(args, k) is not None:
-            prof[k] = getattr(args, k)
-    if args.still:
-        args.start = 0
-        args.end = 1
-        prof['frame_width'] = 0
-
+    pname, prof = profile.get_from_args(args)
     main(args, prof)
