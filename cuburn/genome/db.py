@@ -17,7 +17,7 @@ class GenomeDB(object):
     def stash(self, id, gnm):
         self.stashed[id] = gnm
 
-class OneFileDB(object):
+class OneFileDB(GenomeDB):
     def __init__(self, dct):
         assert dct.get('type') == 'onefiledb', "Doesn't look like a OneFileDB."
         self.dct = dct
@@ -30,7 +30,7 @@ class OneFileDB(object):
     def get(self, id):
         return self.dct[id]
 
-class FilesystemDB(object):
+class FilesystemDB(GenomeDB):
     def __init__(self, path):
         self.path = path
 
