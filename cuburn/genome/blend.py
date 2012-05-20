@@ -228,7 +228,7 @@ def padding_xform(xf, isfinal):
     if get(xf, 45, 'post_affine', 'spread') > 90:
         xout['post_affine'] = {'angle': 135, 'spread': 135}
 
-    for k in xf['variations']:
+    for k in xf.get('variations', {}):
         if k in hole_variations:
             # Attempt to correct for some known-ugly variations.
             xout['pre_affine']['angle'] += 180
