@@ -229,7 +229,7 @@ def padding_xform(xf, isfinal):
         xout['post_affine'] = {'angle': 135, 'spread': 135}
 
     for k in xf.get('variations', {}):
-        if k in hole_variations:
+        if k in hole_variations and not isfinal:
             # Attempt to correct for some known-ugly variations.
             xout['pre_affine']['angle'] += 180
             vars['linear'] = dict(weight=-1)
