@@ -167,7 +167,7 @@ def tospline(spl, src, dst, edit, duration):
         sign = lambda x: 1. if x >= 0 else -1.
 
         movement = duration * (sv + dv) / (2.0 * spl.period)
-        angdiff = ((dp - sp) / spl.period) % (sign(movement))
+        angdiff = (float(dp - sp) / spl.period) % (sign(movement))
         dp = sp + (round(movement - angdiff) + angdiff) * spl.period
 
         # Endpoint override: allow adjusting the number of loops as calculated
