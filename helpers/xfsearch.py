@@ -11,9 +11,7 @@ from copy import deepcopy
 
 sys.path.insert(0, '.')
 
-from cuburn import genome, render
-
-prof = dict(fps=24, width=1280, height=720, quality=2500, skip=0, duration=30)
+from cuburn import genome, profile, render
 
 from main import save
 
@@ -21,10 +19,9 @@ def main(gnm_path, time):
     basename = os.path.basename(gnm_path).rsplit('.', 1)[0]
     rmgr = render.RenderManager()
     def go(gj, name):
-        gnm = genome.Genome(gj)
-        gnm.set_profile(prof)
+        gprof = profile.wrap(profile.BUILTIN['720p'], gj)
         rt = [('out/%s_%s_%04d.jpg' % (name, basename, time * 10000), time)]
-        for out in rmgr.render(gnm, rt, 1280, 720):
+        for out in rmgr.render(gnm, gprof, rt):
             save(out)
 
     gnm = json.load(open(gnm_path))
