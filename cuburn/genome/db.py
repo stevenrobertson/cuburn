@@ -80,3 +80,9 @@ def connect(path):
     if os.path.isfile(path):
         return OneFileDB.read(path)
     return FilesystemDB(path)
+
+if __name__ == "__main__":
+    import sys
+    gdb = connect(sys.argv[1])
+    for i in sys.argv[2:]:
+        print convert.to_json(gdb.get_anim(i)[0])
