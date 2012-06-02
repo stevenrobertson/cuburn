@@ -1,5 +1,7 @@
-import numpy as np
+import os
+import json
 import argparse
+import numpy as np
 
 from genome.specs import toplevels
 from genome.use import RefWrapper, SplineWrapper
@@ -54,7 +56,7 @@ def get_from_args(args):
     Get profile from an ArgumentParser result. Returns `(name, prof)`.
     """
     if args.profile:
-        name = args.profile.name
+        name = os.path.basename(args.profile.name).rsplit('.', 1)[0]
         base = json.load(args.profile)
     else:
         name = args.builtin_profile
