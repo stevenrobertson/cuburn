@@ -72,12 +72,12 @@ def setup_worker_listener(addrs, tq, rq):
             worker_addr = readyq.get()
             wsock.send_multipart([worker_addr, '', pickle.dumps(ctask)])
 
-    @spawn 
+    @spawn
     def read_rsps():
         while True:
             rsp = wsock.recv_multipart(copy=False)
             if rsp[2].bytes != '':
-                print '< ', ' '.join([r.bytes for r in rsp[1:-1]])
+                print '< ', ' '.join([r.bytes for r in rsp[2:-1]])
                 rq.put(rsp[2:])
             readyq.put(rsp[0])
 
