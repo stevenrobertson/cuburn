@@ -1,5 +1,11 @@
+#!/usr/bin/python2
+
 import os
+import sys
 import random
+
+if len(sys.argv) > 1:
+    random.seed(sys.argv[1])
 
 edges = {}
 
@@ -12,11 +18,11 @@ seen = set()
 
 src = random.choice(edges.keys())
 for i in range(1000):
-    print src
+    print 'edges/' + src
     dsts = edges.get(src, set()).difference(seen)
     if not dsts:
         src = random.choice(edges.keys())
     else:
         dst = random.choice(list(dsts))[1]
-        print '='.join([src, dst])
+        print 'edges/' + '='.join([src, dst])
         src = dst
