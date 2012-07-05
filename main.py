@@ -39,10 +39,15 @@ def main(args, prof):
     gnm, basename = gdb.get_anim(args.flame, args.half)
     gprof = profile.wrap(prof, gnm)
 
-    basename += '_'
     if args.name is not None:
         basename = args.name
     prefix = os.path.join(args.dir, basename)
+    if args.subdir:
+        if not os.path.isdir(prefix):
+            os.mkdir(prefix)
+        prefix += '/'
+    else:
+        prefix += '_'
     frames = [('%s%05d%s.jpg' % (prefix, (i+1), args.suffix), t)
               for i, t in profile.enumerate_times(gprof)]
     if args.resume:
@@ -123,9 +128,11 @@ if __name__ == "__main__":
         help="Don't overwrite output files that are newer than the input")
     parser.add_argument('--pause', action='store_true',
         help="Don't close the preview window after rendering is finished")
-    parser.add_argument('--genomedb', '-d', metavar='PATH', type=str,
+    parser.add_argument('-d', '--genomedb', metavar='PATH', type=str,
         help="Path to genome database (file or directory, default '.')",
         default='.')
+    parser.add_argument('--subdir', action='store_true',
+        help="Use basename as subdirectory of out dir, instead of prefix")
     parser.add_argument('--half', action='store_true',
         help='Use half-loops when converting nodes to animations')
     profile.add_args(parser)
