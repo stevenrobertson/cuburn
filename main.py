@@ -32,11 +32,11 @@ def save(out):
     print out.idx, out.gpu_time
 
 def main(args, prof):
-    import pycuda.autoinit
-
     gdb = db.connect(args.genomedb)
-
     gnm, basename = gdb.get_anim(args.flame, args.half)
+    if getattr(args, 'print'):
+        print convert.to_json(gnm)
+        return
     gprof = profile.wrap(prof, gnm)
 
     if args.name is not None:
@@ -55,6 +55,7 @@ def main(args, prof):
         frames = (f for f in frames
                   if not os.path.isfile(f[0]) or m > os.path.getmtime(f[0]))
 
+    import pycuda.autoinit
     rmgr = render.RenderManager()
     gen = rmgr.render(gnm, gprof, frames)
 
@@ -135,6 +136,8 @@ if __name__ == "__main__":
         help="Use basename as subdirectory of out dir, instead of prefix")
     parser.add_argument('--half', action='store_true',
         help='Use half-loops when converting nodes to animations')
+    parser.add_argument('--print', action='store_true',
+        help="Print the blended animation and exit.")
     profile.add_args(parser)
 
     args = parser.parse_args()
