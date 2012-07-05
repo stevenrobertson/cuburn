@@ -9,14 +9,16 @@ import os, sys, json, scipy, pycuda.autoinit
 import numpy as np
 from copy import deepcopy
 
-sys.path.insert(0, '.')
+from os.path import abspath, join, dirname
+sys.path.insert(0, abspath(join(dirname(__file__), '..')))
 
 from cuburn import genome, profile, render
 
 from main import save
 
 def main(gnm_path, time):
-    basename = os.path.basename(gnm_path).rsplit('.', 1)[0]
+    gdb = genome.db.connect('.')
+    gnm, basename = gdb.get_anim(gnm_path)
     rmgr = render.RenderManager()
     def go(gj, name):
         gprof = profile.wrap(profile.BUILTIN['720p'], gj)
@@ -24,12 +26,15 @@ def main(gnm_path, time):
         for out in rmgr.render(gnm, gprof, rt):
             save(out)
 
-    gnm = json.load(open(gnm_path))
-
     for i in gnm['xforms']:
         xf = gnm['xforms'].pop(i)
         go(gnm, 'noxf_' + i)
         gnm['xforms'][i] = xf
+
+    if 'final_xform' in gnm:
+        xf = gnm.pop('final_xform')
+        go(gnm, 'noxf_final')
+        gnm['final_xform'] = xf
 
     vars = set([v for g in gnm['xforms'].values() for v in g['variations']])
     for v in vars:
