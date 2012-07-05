@@ -52,7 +52,7 @@ filters = (
     , 'curve': scalespline(0.6, d='Power of filter radius with density')
     }
   , 'haloclip': {}
-  , 'smearclip': {'width': scalespline(1, d='Spatial stdev of filter')}
+  , 'smearclip': {'width': scalespline(0.7, d='Spatial stdev of filter')}
   , 'logscale': {'brightness': scalespline(4, d='Log-scale brightness')}
   })
 

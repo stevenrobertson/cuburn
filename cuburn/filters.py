@@ -135,6 +135,12 @@ class SmearClip(Filter, ClsMod):
         tref.set_address_2d(fb.d_back, dsc, 16 * dim.astride)
         launch2('full_blur', self.mod, stream, dim,
                fb.d_side, i32(3), i32(0), texrefs=[tref])
+        tref.set_address_2d(fb.d_side, dsc, 16 * dim.astride)
+        launch2('full_blur', self.mod, stream, dim,
+               fb.d_back, i32(0), i32(0), texrefs=[tref])
+        tref.set_address_2d(fb.d_back, dsc, 16 * dim.astride)
+        launch2('full_blur', self.mod, stream, dim,
+               fb.d_side, i32(1), i32(0), texrefs=[tref])
         launch2('smearclip', self.mod, stream, dim,
                 fb.d_front, fb.d_side, f32(gam-1), lin, lingam)
 
