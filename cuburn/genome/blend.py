@@ -242,7 +242,7 @@ def padding_xform(xf, isfinal):
     if vars:
         n = float(len(vars))
         for k in vars:
-            vars[k]['weight'] /= n
+            vars[k]['weight'] = 1 / n
     else:
         vars['linear'] = dict(weight=1)
 
