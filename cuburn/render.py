@@ -23,6 +23,20 @@ from cuburn.genome.util import palette_decode
 RenderedImage = namedtuple('RenderedImage', 'buf idx gpu_time')
 Dimensions = namedtuple('Dimensions', 'w h aw ah astride')
 
+class DurationEvent(cuda.Event):
+    """
+    A CUDA event which is implicitly aware of a prior event for time
+    calculations.
+
+    Note that instances retain a reference to their prior, so an unbroken
+    chain of DurationEvents will leak. Use normal events as priors.
+    """
+    def __init__(self, prior):
+        super(DurationEvent, self).__init__()
+        self._prior = prior
+    def time(self):
+        return self.time_since(self._prior)
+
 class Framebuffers(object):
     """
     The largest memory allocations, and a stream to serialize their use.
@@ -340,13 +354,17 @@ class RenderManager(ClsMod):
         leave ``copy`` to True every time for now.
 
         The return value is a 2-tuple ``(evt, h_out)``, where ``evt`` is a
-        CUDA event and ``h_out`` is the return value of the output module's
+        DurationEvent and ``h_out`` is the return value of the output module's
         ``copy`` function. In the typical case, ``h_out`` will be a host
         allocation containing data in an appropriate format for the output
         module's file writer, and ``evt`` indicates when the asynchronous
         DMA copy which will populate ``h_out`` is complete. This can vary
         depending on the output module in use, though.
+
+        This method is absolutely _not_ threadsafe, but it's fine to use it
+        alongside non-threaded approaches to concurrency like coroutines.
         """
+        timing_event = cuda.Event().record(self.stream_b)
         # Note: we synchronize on the previous stream if buffers need to be
         # reallocated, which implicitly also syncs the current stream.
         dim = self.fb.set_dim(gprof.width, gprof.height, self.stream_b)
@@ -372,7 +390,7 @@ class RenderManager(ClsMod):
         rdr.out.convert(self.fb, gprof, dim, self.stream_a)
         self.filt_evt = cuda.Event().record(self.stream_a)
         h_out = rdr.out.copy(self.fb, dim, self.fb.pool, self.stream_a)
-        self.copy_evt = cuda.Event().record(self.stream_a)
+        self.copy_evt = DurationEvent(timing_event).record(self.stream_a)
 
         self.info_a, self.info_b = self.info_b, self.info_a
         self.stream_a, self.stream_b = self.stream_b, self.stream_a
