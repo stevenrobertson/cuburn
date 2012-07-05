@@ -215,7 +215,7 @@ hole_variations = ('spherical ngon julian juliascope polar '
                    'wedge_sph wedge_julia bipolar').split()
 
 # These variations are identity functions at their default values
-ident_variations = ('rectangles rings2 fan2 blob perspective curl '
+ident_variations = ('rectangles rings2 fan2 blob perspective '
                     'super_shape').split()
 
 def padding_xform(xf, isfinal):
