@@ -20,10 +20,10 @@ def add_args(parser=None):
     """
     parser = argparse.ArgumentParser() if parser is None else parser
     prof = parser.add_argument_group('Profile options')
-    prof.add_argument('--builtin-profile', '-P', choices=BUILTIN.keys(),
+    prof.add_argument('-P', '--builtin-profile', choices=BUILTIN.keys(),
         help='Set parameters below from a builtin profile. (default: 720p)',
         default='720p')
-    prof.add_argument('--profile', '-p', type=argparse.FileType(),
+    prof.add_argument('-p', '--profile', type=argparse.FileType(),
         metavar='PROFILE', help='Set profile from a JSON file.')
 
     tmp = parser.add_argument_group('Temporal options')
