@@ -65,9 +65,11 @@ def main(args, prof):
         return
 
     import pyglet
+    import pyglet.gl as gl
     w, h = gprof.width, gprof.height
     window = pyglet.window.Window(w, h, vsync=False)
     image = pyglet.image.CheckerImagePattern().create_image(w, h)
+    tex = image.texture
     label = pyglet.text.Label('Rendering first frame', x=5, y=h-5,
                               width=w, anchor_y='top', font_size=16,
                               bold=True, multiline=True)
@@ -75,7 +77,7 @@ def main(args, prof):
     @window.event
     def on_draw():
         window.clear()
-        image.texture.blit(0, 0)
+        tex.blit(0, 0, 0)
         label.draw()
 
     @window.event
@@ -101,8 +103,20 @@ def main(args, prof):
             real_dt = time.time() - last_time[0]
             last_time[0] = time.time()
             save(out)
-            imgbuf = np.uint8(out.buf.flatten() * 255)
-            image.set_data('RGBA', -w*4, imgbuf.tostring())
+            if out.buf.dtype == np.uint8:
+                fmt = gl.GL_UNSIGNED_BYTE
+            elif out.buf.dtype == np.uint16:
+                fmt = gl.GL_UNSIGNED_SHORT
+            else:
+                label.text = 'Unsupported format: ' + out.buf.dtype
+                return
+
+            h, w, ch = out.buf.shape
+            gl.glEnable(tex.target)
+            gl.glBindTexture(tex.target, tex.id)
+            gl.glTexImage2D(tex.target, 0, gl.GL_RGB8, w, h, 0, gl.GL_RGBA,
+                            fmt, out.buf.tostring())
+            gl.glDisable(tex.target)
             label.text = '%s (%g fps)' % (out.idx, 1./real_dt)
         else:
             label.text += '.'
