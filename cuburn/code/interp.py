@@ -1,4 +1,3 @@
-from collections import OrderedDict
 from itertools import cycle
 import numpy as np
 
@@ -7,9 +6,25 @@ from cuburn.genome.util import resolve_spec
 from cuburn.genome.use import Wrapper, SplineEval
 
 import util
-from util import Template, assemble_code, devlib, binsearchlib, ringbuflib
+from util import Template, assemble_code, devlib, binsearchlib, ringbuflib, snd
 from color import yuvlib
 from mwc import mwclib
+
+class _OrderedSet(object):
+    """
+    A set that tracks the order in which items are added to it. Items cannot
+    be removed. Iterating over the set returns items in order of addition.
+    """
+    def __init__(self):
+        self._vals = {}
+    def add(self, val):
+        return self._vals.setdefault(val, len(self._vals))
+    def __iter__(self):
+        return (k for k, v in sorted(self._vals.items(), key=snd))
+    def __len__(self):
+        return len(self._vals)
+    def __contains__(self, val):
+        return val in self._vals
 
 class PackerWrapper(Wrapper):
     """
@@ -123,13 +138,12 @@ class GenomePacker(object):
         # to be able to treat the direct stuff as a list so this function
         # doesn't unroll any more than it has to. So we separate things into
         # direct requests, and those that need precalculation.
-        # Values of OrderedDict are unused; basically, it's just OrderedSet.
-        self.packed_direct = OrderedDict()
+        self.packed_direct = _OrderedSet()
         # Feel kind of bad about this, but it's just under the threshold of
         # being worth refactoring to be agnostic to interpolation types
-        self.packed_direct_mag = OrderedDict()
-        self.genome_precalc = OrderedDict()
-        self.packed_precalc = OrderedDict()
+        self.packed_direct_mag = _OrderedSet()
+        self.genome_precalc = _OrderedSet()
+        self.packed_precalc = _OrderedSet()
         self.precalc_code = []
 
         self._len = None
@@ -155,19 +169,18 @@ class GenomePacker(object):
         must be available during interpolation.
         """
         if spec.interp == 'mag':
-            self.packed_direct_mag[path] = None
+            self.packed_direct_mag.add(path)
         else:
-            self.packed_direct[path] = None
+            self.packed_direct.add(path)
         return self.devname(path)
 
     def _require_pre(self, spec, path):
-        i = len(self.genome_precalc) << self.search_rounds
-        self.genome_precalc[path] = None
+        i = self.genome_precalc.add(path) << self.search_rounds
         func = 'catmull_rom_mag' if spec.interp == 'mag' else 'catmull_rom'
         return '%s(&times[%d], &knots[%d], time)' % (func, i, i)
 
     def _pre_alloc(self, path):
-        self.packed_precalc[path] = None
+        self.packed_precalc.add(path)
         return '%s->%s' % (self.ptr_name, '_'.join(path))
 
     def devname(self, path):
@@ -180,9 +193,9 @@ class GenomePacker(object):
         # At the risk of packing a few things more than once, we don't
         # uniquify the overall precalc order, sparing us the need to implement
         # recursive code generation
-        direct = self.packed_direct.keys() + self.packed_direct_mag.keys()
-        self.packed = direct + self.packed_precalc.keys()
-        self.genome = direct + self.genome_precalc.keys()
+        direct = list(self.packed_direct) + list(self.packed_direct_mag)
+        self.packed = direct + list(self.packed_precalc)
+        self.genome = direct + list(self.genome_precalc)
 
         self._len = len(self.packed)
 

@@ -10,6 +10,9 @@ import pycuda.compiler
 import numpy as np
 import tempita
 
+fst = lambda (a,b): a
+snd = lambda (a,b): b
+
 def argset(obj, **kwargs):
     """
     Allow an object with many properties to be set using one call.
