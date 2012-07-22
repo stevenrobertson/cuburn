@@ -172,7 +172,7 @@ def flam3_to_node(flame):
     n['type'] = 'node'
     return n
 
-def convert_file(path):
+def nodes_from_xml_path(path):
     """Quick one-shot conversion for an XML genome."""
     flames = XMLGenomeParser.parse(open(path).read())
     if len(flames) > 10:
@@ -183,4 +183,4 @@ def convert_file(path):
 
 if __name__ == "__main__":
     import sys
-    print '\n\n'.join(map(to_json, convert_file(sys.argv[1])))
+    print '\n\n'.join(map(to_json, nodes_from_xml_path(sys.argv[1])))
