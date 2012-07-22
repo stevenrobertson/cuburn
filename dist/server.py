@@ -1,4 +1,5 @@
 #!/usr/bin/env python2
+from itertools import takewhile
 
 import gevent
 from gevent import spawn, queue, event
@@ -29,7 +30,6 @@ def setup_task_listeners(addrs, tq, rq):
                 # losock to be added to the queue.
                 loevt.set()
             task = hisock.recv_pyobj()
-            print 'OOOOOH! Got a hiprio evt'
             loevt.clear() # Got message; pause listen_lo().
             tq.put(task)
             hisock.send('')
@@ -77,7 +77,7 @@ def setup_worker_listener(addrs, tq, rq):
         while True:
             rsp = wsock.recv_multipart(copy=False)
             if rsp[2].bytes != '':
-                print '< ', ' '.join([r.bytes for r in rsp[2:-1]])
+                print '< ', rsp[2].bytes, rsp[3].bytes
                 rq.put(rsp[2:])
             readyq.put(rsp[0])
 

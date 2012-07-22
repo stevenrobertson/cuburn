@@ -26,44 +26,16 @@ sys.path.insert(0, os.path.dirname(__file__))
 from cuburn import render, filters, output, profile
 from cuburn.genome import convert, use, db
 
-def save(out):
-    # Temporary! TODO: fix this
-    output.PILOutput.save(out.buf, out.idx)
-    print out.idx, out.gpu_time
+def save(output_module, name, rendered_frame):
+    out, log = output_module.encode(rendered_frame)
+    for suffix, file_like in out.items():
+        with open(name + suffix, 'w') as fp:
+            fp.write(file_like.read())
+    for key, val in log:
+        print '\n=== %s ===' % key
+        print val
 
-def main(args, prof):
-    gdb = db.connect(args.genomedb)
-    gnm, basename = gdb.get_anim(args.flame, args.half)
-    if getattr(args, 'print'):
-        print convert.to_json(gnm)
-        return
-    gprof = profile.wrap(prof, gnm)
-
-    if args.name is not None:
-        basename = args.name
-    prefix = os.path.join(args.dir, basename)
-    if args.subdir:
-        if not os.path.isdir(prefix):
-            os.mkdir(prefix)
-        prefix += '/'
-    else:
-        prefix += '_'
-    frames = [('%s%05d%s.jpg' % (prefix, (i+1), args.suffix), t)
-              for i, t in profile.enumerate_times(gprof)]
-    if args.resume:
-        m = os.path.getmtime(args.flame)
-        frames = (f for f in frames
-                  if not os.path.isfile(f[0]) or m > os.path.getmtime(f[0]))
-
-    import pycuda.autoinit
-    rmgr = render.RenderManager()
-    gen = rmgr.render(gnm, gprof, frames)
-
-    if not args.gfx:
-        for out in gen:
-            save(out)
-        return
-
+def pyglet_preview(args, gprof, itr):
     import pyglet
     import pyglet.gl as gl
     w, h = gprof.width, gprof.height
@@ -92,39 +64,89 @@ def main(args, prof):
     last_time = [time.time()]
 
     def poll(dt):
-        out = next(gen, False)
+        out = next(itr, False)
         if out is False:
             if args.pause:
                 label.text = "Done. ('q' to quit)"
-                #pyglet.clock.unschedule(poll)
             else:
                 pyglet.app.exit()
         elif out is not None:
+            name, buf = out
             real_dt = time.time() - last_time[0]
             last_time[0] = time.time()
-            save(out)
-            if out.buf.dtype == np.uint8:
+            if buf.dtype == np.uint8:
                 fmt = gl.GL_UNSIGNED_BYTE
-            elif out.buf.dtype == np.uint16:
+            elif buf.dtype == np.uint16:
                 fmt = gl.GL_UNSIGNED_SHORT
             else:
-                label.text = 'Unsupported format: ' + out.buf.dtype
+                label.text = 'Unsupported format: ' + buf.dtype
                 return
 
-            h, w, ch = out.buf.shape
+            h, w, ch = buf.shape
             gl.glEnable(tex.target)
             gl.glBindTexture(tex.target, tex.id)
             gl.glTexImage2D(tex.target, 0, gl.GL_RGB8, w, h, 0, gl.GL_RGBA,
-                            fmt, out.buf.tostring())
+                            fmt, buf.tostring())
             gl.glDisable(tex.target)
-            label.text = '%s (%g fps)' % (out.idx, 1./real_dt)
+            label.text = '%s (%g fps)' % (name, 1./real_dt)
         else:
             label.text += '.'
 
-    pyglet.clock.set_fps_limit(30)
-    pyglet.clock.schedule_interval(poll, 1/30.)
+    pyglet.clock.set_fps_limit(20)
+    pyglet.clock.schedule_interval(poll, 1/20.)
     pyglet.app.run()
 
+def main(args, prof):
+    gdb = db.connect(args.genomedb)
+    gnm, basename = gdb.get_anim(args.flame, args.half)
+    if getattr(args, 'print'):
+        print convert.to_json(gnm)
+        return
+    gprof = profile.wrap(prof, gnm)
+
+    if args.name is not None:
+        basename = args.name
+    prefix = os.path.join(args.dir, basename)
+    if args.subdir:
+        if not os.path.isdir(prefix):
+            os.mkdir(prefix)
+        prefix_plus = prefix + '/'
+    else:
+        prefix_plus = prefix + '_'
+
+    frames = [('%s%05d%s' % (prefix_plus, i, args.suffix), t)
+              for i, t in profile.enumerate_times(gprof)]
+
+    # We don't initialize a CUDA context until here. This keeps other
+    # functions like --help and --print snappy.
+    import pycuda.autoinit
+    rmgr = render.RenderManager()
+    rdr = render.Renderer(gnm, gprof)
+
+    def render_iter():
+        m = os.path.getmtime(args.flame)
+        first = True
+        for name, times in frames:
+            if args.resume:
+                fp = name + rdr.out.suffix
+                if os.path.isfile(fp) and m < os.path.getmtime(f[0]+ext):
+                    continue
+
+            for t in times:
+                evt, buf = rmgr.queue_frame(rdr, gnm, gprof, t, first)
+                first = False
+                while not evt.query():
+                    time.sleep(0.01)
+                    yield None
+                save(rdr.out, name, buf)
+                print name, evt.time()
+                yield name, buf
+            save(rdr.out, name, None)
+
+    if args.gfx:
+        pyglet_preview(args, gprof, render_iter())
+    else:
+        for i in render_iter(): pass
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Render fractal flames.')

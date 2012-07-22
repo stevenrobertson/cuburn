@@ -1,5 +1,6 @@
 #!/usr/bin/env python2
 import sys
+import socket
 from cStringIO import StringIO
 
 import gevent
@@ -37,20 +38,29 @@ def main(worker_addr):
 
         hash = None
         while True:
+            log = [('worker', socket.gethostname() + ':' +
+                    cuda.Context.get_current().get_device().pci_bus_id())]
             addr, task, cubin, packer = sock.recv_pyobj()
             gprof = profile.wrap(task.profile, task.anim)
             if hash != task.hash:
                 rdr = PrecompiledRenderer(task.anim, gprof, packer, cubin)
-            evt, buf = rmgr.queue_frame(rdr, task.anim, gprof, task.time)
-            while not evt.query():
-                gevent.sleep(0.01)
-            ofile = StringIO()
-            output.PILOutput.save(buf, ofile, task.id[-3:])
-            ofile.seek(0)
-            sock.send_multipart(addr + [ofile.read()])
-            hash = task.hash
+            for t in task.times:
+                evt, buf = rmgr.queue_frame(rdr, task.anim, gprof, t)
+                while not evt.query():
+                    gevent.sleep(0.01)
+                out, frame_log = rdr.out.encode(buf)
+                log += frame_log
+                print 'Rendered', task.id, 'in', int(evt.time()), 'ms'
+            final_out, final_log = rdr.out.encode(None)
+            assert not (out and final_out), 'Got output from two sources!'
+            out = out or final_out
+            log += final_log
+            log = '\0'.join([k + ' ' + v for k, v in log])
 
-            print 'Rendered', task.id, 'in', int(evt.time()), 'ms'
+            suffixes, files = zip(*[(k, v.read())
+                                    for k, v in sorted(out.items())])
+            # TODO: reduce copies, generally spruce up the memory usage here
+            sock.send_multipart(addr + [log, '\0'.join(suffixes)] + list(files))
 
     # Spawn two request loops to take advantage of CUDA pipelining.
     spawn(request_loop)

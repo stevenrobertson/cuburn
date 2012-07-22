@@ -37,6 +37,13 @@ def add_args(parser=None):
         help="Last frame to render (1-indexed, exclusive, negative from end)")
     tmp.add_argument('--skip', dest='skip', metavar='N', type=int,
         help="Skip N frames between each rendered frame")
+    # TODO: eliminate the 'silently overwritten' bit.
+    tmp.add_argument('--shard', dest='shard', metavar='SECS', type=float,
+        help="Write SECS of output into each file, instead of one frame per "
+             "file. If set, causes 'start', 'end', and 'skip' to be ignored. "
+             "If output codecs don't support multi-file writing, files will "
+             "be silently overwritten.")
+
     tmp.add_argument('--still', action='store_true',
         help='Override start, end, and temporal frame width to render one '
              'frame without motion blur.')
@@ -48,7 +55,7 @@ def add_args(parser=None):
     spa.add_argument('--height', type=int, metavar='PX')
 
     out = parser.add_argument_group('Output options')
-    out.add_argument('--codec', choices=['jpg', 'png', 'tiff'])
+    out.add_argument('--codec', choices=['jpg', 'png', 'tiff', 'x264'])
     return parser
 
 def get_from_args(args):
@@ -64,9 +71,11 @@ def get_from_args(args):
 
     if args.still:
         base.update(frame_width=0, start=1, end=2)
-    for arg in 'duration fps start end skip spp width height'.split():
+    for arg in 'duration fps start end skip shard spp width height'.split():
         if getattr(args, arg, None) is not None:
             base[arg] = getattr(args, arg)
+    if args.codec is not None:
+        base.setdefault('output', {})['type'] = args.codec
 
     return name, base
 
@@ -82,13 +91,20 @@ def wrap(prof, gnm):
 
 def enumerate_times(gprof):
     """
-    Given a profile, return a list of `(frame_no, center_time)` pairs. Note
+    Given a profile, return a list of `(frame_no, center_times)` pairs. Note
     that the enumeration is applied before `start`, `end`, and `skip`, and so
     `frame_no` may be non-contiguous.
     """
     nframes = round(gprof.fps * gprof.duration)
     times = np.linspace(0, 1, nframes + 1)
-    times = list(enumerate(times[:-1] + 0.5 * (times[1] - times[0]), 1))
+    times = times[:-1] + 0.5 * (times[1] - times[0])
+    if gprof.shard:
+        s = max(1, int(round(gprof.fps * gprof.shard)))
+        return [(i, times[t:t+s])
+                for i, t in enumerate(range(0, len(times), s), 1)]
+    else:
+        times = [[t] for t in times]
+    times = list(enumerate(times, 1))
     if gprof.end is not None:
         times = times[:gprof.end]
     if gprof.start is not None:

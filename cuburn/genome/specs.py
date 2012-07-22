@@ -115,6 +115,8 @@ profile = (
   , 'end': Scalar(None, 'Last frame to render (1-indexed, exclusive; '
                   'negative indexes from the end)')
   , 'skip': Scalar(0, 'Skip this many frames between each rendered frame')
+  , 'shard': Scalar(0, 'Pack this many frames in each output file '
+                    '(causing start, end, and skip to be ignored)')
 
   , 'height': Scalar(1920, 'Output height in pixels')
   , 'width': Scalar(1080, 'Output width in pixels')
@@ -123,7 +125,9 @@ profile = (
   , 'filter_order': list_(enum(filters.keys()), default_filters)
   , 'filters': prof_filters
 
-  , 'output_format': enum('jpg png tif', 'jpg')
+  # The other keys in the 'output' dictionary are format-specific and not
+  # documented here.
+  , 'output': {'type': enum('jpeg png tiff x264', 'jpeg')}
   })
 
 # Types recognized as independent units with a 'type' key

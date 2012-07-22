@@ -10,10 +10,14 @@ from gevent import spawn, queue, coros
 import zmq.green as zmq
 
 import _importhack
-from cuburn import profile
+from cuburn import profile, output
 from cuburn.genome import db, util
 
 from messages import *
+
+# TODO: remove this dependency (loading the output module to get the suffix
+# requires a compiler / default instance)
+import pycuda.autoinit
 
 class RenderClient(object):
     def __init__(self, task_addr, rsp_addr, ctx=None, start=True):
@@ -56,12 +60,12 @@ class RenderClient(object):
     def _deal_rsps(self):
         while True:
             rsp = self.rsock.recv_multipart(copy=False)
-            assert len(rsp) == 2
             rq = self.taskmap.get(rsp[0].bytes, None)
-            if rq: rq.put(rsp[1])
+            if rq: rq.put((rsp[1].bytes, rsp[2].bytes.split('\0'), rsp[3:]))
 
 # Time (in seconds) before a job times out
-TIMEOUT=240
+# TODO: replace timeout mechanism with polling?
+TIMEOUT=2400
 
 # Max. queue length before request considered lost, as a multiple of the
 # number of in-flight requests
@@ -92,21 +96,27 @@ def iter_genomes(prof, outpath, gpaths):
             os.makedirs(odir)
         with open(os.path.join(odir, 'NFRAMES'), 'w') as fp:
             fp.write(str(len(times)))
+        outmod = output.get_output_for_profile(gprof)
         for i, t in times:
-            opath = os.path.join(odir, '%05d.%s' % (i, gprof.output_format))
-            if not os.path.isfile(opath):
+            opath = os.path.join(odir, '%05d' % i)
+            if not os.path.isfile(opath + outmod.suffix):
                 yield Task(opath, ghash, prof, gnm, t)
 
 def get_result(cli, task, rq):
     try:
-        rsp = rq.get(timeout=TIMEOUT)
+        log, names, bufs = rq.get(timeout=TIMEOUT)
     except queue.Empty:
         cli.put(task, rq)
         print '>>', task.id
-        rsp = rq.get()
+        log, names, bufs = rq.get()
 
-    with open(task.id, 'wb') as fp:
-        fp.write(buffer(rsp))
+    with open(task.id + '.log', 'wb') as fp:
+        fp.write(log)
+
+    for name in reversed(names):
+        buf = bufs.pop()
+        with open(task.id + name, 'wb') as fp:
+            fp.write(buffer(buf))
     print '< ', task.id
 
 def main(addrs):
@@ -128,6 +138,8 @@ def main(addrs):
 
     while cli.taskmap:
         print 'Still waiting on %d tasks...' % len(cli.taskmap)
+        for i in cli.taskmap.items():
+            print i
         gevent.sleep(3)
 
 if __name__ == "__main__":

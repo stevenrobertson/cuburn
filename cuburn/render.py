@@ -235,7 +235,7 @@ class Renderer(object):
         self.packer, self.lib, self.cubin = self.compile(gnm)
         self.mod = self.load(self.cubin)
         self.filts = filters.create(gprof)
-        self.out = output.PILOutput()
+        self.out = output.get_output_for_profile(gprof)
 
 class RenderManager(ClsMod):
     lib = devlib(deps=[interp.palintlib, filldptrlib, iter.flushatomlib])
@@ -395,26 +395,3 @@ class RenderManager(ClsMod):
         self.info_a, self.info_b = self.info_b, self.info_a
         self.stream_a, self.stream_b = self.stream_b, self.stream_a
         return self.copy_evt, h_out
-
-    def render(self, gnm, gprof, times):
-        """
-        A port of the old rendering function, retained for backwards
-        compatibility. Some of this will be pulled into as-yet-undecided
-        methods for more DRY.
-        """
-        rdr = Renderer(gnm, gprof)
-        last_evt = cuda.Event().record(self.stream_a)
-        last_idx = None
-        def wait(): # Times like these where you wish for a macro
-            while not last_evt.query():
-                time.sleep(0.01)
-            gpu_time = last_evt.time_since(two_evts_ago)
-            return RenderedImage(last_buf, last_idx, gpu_time)
-        for idx, tc in times:
-            evt, h_buf = self.queue_frame(rdr, gnm, gprof, tc, last_idx is None)
-            if last_idx:
-                yield wait()
-            two_evts_ago, last_evt = last_evt, evt
-            last_buf, last_idx = h_buf, idx
-        if last_idx:
-            yield wait()
