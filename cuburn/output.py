@@ -16,6 +16,11 @@ if not hasattr(scipy.misc, 'toimage'):
     raise ImportError("Could not find scipy.misc.toimage. "
                       "Are scipy and PIL installed?")
 
+try:
+    import gevent
+except ImportError:
+    gevent = None
+
 def launchC(name, mod, stream, dim, fb, *args):
     launch(name, mod, stream,
             (32, 8, 1), (int(np.ceil(dim.w/32.)), int(np.ceil(dim.h/8.))),
@@ -168,10 +173,20 @@ class X264Output(Output, ClsMod):
             self.zeros.fill(32767)
 
     def _flush_sub(self, subp):
-        (stdout, stderr) = subp.communicate()
+        if gevent is not None:
+            # Use non-blocking poll to allow applications to continue
+            # rendering in other coros
+            subp.stdin.close()
+            log = ''
+            while subp.poll() is None:
+                log += subp.stderr.read()
+                gevent.sleep(0.1)
+            log += subp.stderr.read()
+        else:
+            (stdout, log) = subp.communicate()
         if subp.returncode:
             raise IOError("x264 exited with an error")
-        return stderr
+        return log
 
     def _flush(self):
         if self.subp is None:
@@ -185,7 +200,7 @@ class X264Output(Output, ClsMod):
             self.asubp = None
             return ({'_color.h264': self.outf, '_alpha.h264': self.aoutf},
                     [('x264_color', log), ('x264_alpha', alog)])
-        return {'.h264': self.outf}, [('x264_color', stderr)]
+        return {'.h264': self.outf}, [('x264_color', log)]
 
     def _write(self, buf, subp):
         try:
