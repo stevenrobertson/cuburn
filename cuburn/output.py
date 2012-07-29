@@ -159,8 +159,7 @@ class X264Output(Output, ClsMod):
             extras += ['--output-csp', 'i420', '--chroma-qp-offset', '24']
         else:
             extras += ['--output-csp', self.csp]
-        subp = Popen(self.args + extras, stdin=PIPE, stderr=PIPE,
-                     stdout=os.dup(outf.fileno()))
+        subp = Popen(self.args + extras, stdin=PIPE, stderr=PIPE, stdout=outf)
         return outf, subp
 
     def _spawn(self, framesize):
