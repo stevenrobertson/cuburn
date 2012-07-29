@@ -74,7 +74,7 @@ blend = (
         'affects the periodic extension of angular parameters (values are '
         'extended to minimize deviation from average velocity), and also '
         'sets the default value for `time.duration` in an animation.')
-  , 'xform_sort': enum('weightflip weight natural color')
+  , 'xform_sort': enum('weightflip weight natural color', 'weightflip')
   , 'xform_map': list_(list_(String('xfid'), d='A pair of src, dst IDs'))
   })
 
