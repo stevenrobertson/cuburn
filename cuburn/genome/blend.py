@@ -158,7 +158,7 @@ def tospline(spl, src, dst, edit, duration):
 
     edit = dict(zip(edit[::2], edit[1::2])) if edit else {}
     e0, e1 = edit.pop(0, None), edit.pop(1, None)
-    edit = zip(*[(k, v) for k, v in edit.items() if v is not None])
+    edit = list(sum([(k, v) for k, v in edit.items() if v is not None], ()))
 
     if spl.period:
         # Periodic extension: compute an appropriate number of loops based on
