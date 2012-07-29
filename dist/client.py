@@ -65,7 +65,7 @@ class RenderClient(object):
 
 # Time (in seconds) before a job times out
 # TODO: replace timeout mechanism with polling?
-TIMEOUT=2400
+TIMEOUT=4800
 
 # Max. queue length before request considered lost, as a multiple of the
 # number of in-flight requests
