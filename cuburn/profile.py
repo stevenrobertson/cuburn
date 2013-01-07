@@ -43,6 +43,8 @@ def add_args(parser=None):
              "file. If set, causes 'start', 'end', and 'skip' to be ignored. "
              "If output codecs don't support multi-file writing, files will "
              "be silently overwritten.")
+    tmp.add_argument('--frame_width', metavar='SCALE', type=float,
+        help='Adjustment factor for temporal frame width.')
 
     tmp.add_argument('--still', action='store_true',
         help='Override start, end, and temporal frame width to render one '
@@ -71,7 +73,7 @@ def get_from_args(args):
 
     if args.still:
         base.update(frame_width=0, start=1, end=2)
-    for arg in 'duration fps start end skip shard spp width height'.split():
+    for arg in 'duration fps frame_width start end skip shard spp width height'.split():
         if getattr(args, arg, None) is not None:
             base[arg] = getattr(args, arg)
     if args.codec is not None:
