@@ -22,9 +22,12 @@ def main(gnm_path, time):
     rmgr = render.RenderManager()
     def go(gj, name):
         gprof = profile.wrap(profile.BUILTIN['720p'], gj)
-        rt = [('out/%s_%s_%04d.jpg' % (name, basename, time * 10000), time)]
-        for out in rmgr.render(gnm, gprof, rt):
-            save(out)
+        name = 'out/%s_%s_%04d' % (name, basename, time * 10000)
+        rdr = render.Renderer(gnm, gprof)
+        evt, buf = rmgr.queue_frame(rdr, gnm, gprof, time)
+        evt.synchronize()
+        save(rdr.out, name, buf)
+        print 'Saved', name, evt.time()
 
     for i in gnm['xforms']:
         xf = gnm['xforms'].pop(i)
