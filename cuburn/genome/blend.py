@@ -201,8 +201,7 @@ def merge_nodes(sp, src, dst, edit, duration):
                                      dst.get(k), edit.get(k), duration))
             for k in set(src.keys() + dst.keys() + edit.keys()) if k in sp])
     elif isinstance(sp, spectypes.Spline):
-        return trace(tospline(sp, src, dst, edit, duration),
-                sp.doc and 'Scale' in sp.doc)
+        return tospline(sp, src, dst, edit, duration)
     elif isinstance(sp, spectypes.List):
         if isinstance(sp.type, spectypes.Palette):
             if src is not None: src = [[0] + src]
