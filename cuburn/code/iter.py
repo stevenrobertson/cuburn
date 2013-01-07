@@ -190,8 +190,11 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
 
 {{if not chaos_used}}
     // Shared memory size can be reduced by a factor of four using a slower
-    // 4-stage reduce, but on Fermi hardware shmem use isn't a bottleneck
+    // 4-stage reduce, but on Fermi hardware shmem use isn't a bottleneck.
     __shared__ float swap[{{4*NTHREADS}}];
+
+    // Cooperative branch selection, used for deciding when all threads in a
+    // warp should share a branch.
     __shared__ float cosel[{{2*NWARPS}}];
 
     // This is normally done after the swap-sync in the main loop
