@@ -55,7 +55,7 @@ var(26, 'rings2', val=s)
 var(27, 'eyefish')
 var(28, 'bubble')
 var(29, 'cylinder')
-var(30, 'perspective', angle=s, dist=s) # TODO: period
+var(30, 'perspective', angle=spline(period=4), dist=sz)
 var(31, 'noise')
 var(32, 'julian', power=ss, dist=ss)
 var(33, 'juliascope', power=ss, dist=ss)
