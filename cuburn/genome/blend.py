@@ -6,7 +6,6 @@
 import numpy as np
 from copy import deepcopy
 from itertools import izip_longest
-from scipy.ndimage.filters import gaussian_filter1d
 
 import spectypes
 import specs

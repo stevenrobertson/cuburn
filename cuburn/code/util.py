@@ -5,8 +5,13 @@ import os
 import tempfile
 from collections import namedtuple
 
-import pycuda.driver as cuda
-import pycuda.compiler
+try:
+    import pycuda.driver as cuda
+    import pycuda.compiler
+except ImportError, e:
+    import traceback
+    traceback.print_exc()
+    print 'Continuing without CUDA. Things will break.'
 import numpy as np
 import tempita
 
