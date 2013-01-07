@@ -100,7 +100,7 @@ def blend(src, dst, edit={}):
 
     blended = merge_nodes(specs.node, src, dst, edit, opts.duration)
     name_map = sort_xforms(src['xforms'], dst['xforms'], opts.xform_sort,
-                           explicit=zip(*opts.xform_map))
+                           explicit=opts.xform_map)
 
     blended['xforms'] = {}
     for (sxf_key, dxf_key) in name_map:
@@ -108,6 +108,14 @@ def blend(src, dst, edit={}):
         xf_edits = merge_edits(specs.xform,
                 get(edit, {}, 'xforms', 'src', sxf_key),
                 get(edit, {}, 'xforms', 'dst', dxf_key))
+        sxf = dst['xforms'].get(sxf_key)
+        dxf = dst['xforms'].get(dxf_key)
+        if sxf_key == 'dup':
+            sxf = dxf
+            xf_edits.setdefault('weight', []).extend([0, 0])
+        if dxf_key == 'dup':
+            dxf = sxf
+            xf_edits.setdefault('weight', []).extend([1, 0])
         blended['xforms'][bxf_key] = blend_xform(
                 src['xforms'].get(sxf_key),
                 dst['xforms'].get(dxf_key),
@@ -177,13 +185,13 @@ def tospline(spl, src, dst, edit, duration):
             sp += round(float(e0 - sp) / spl.period) * spl.period
         if e1 is not None:
             dp += round(float(e1 - dp) / spl.period) * spl.period
-    if edit or sv or dv:
+    if edit or sv or dv or e0 or e1:
         return [sp, sv, dp, dv] + edit
     if sp != dp:
         return [sp, dp]
     return sp
 
-def trace(k):
+def trace(k, cond=True):
     print k,
     return k
 
@@ -194,7 +202,8 @@ def merge_nodes(sp, src, dst, edit, duration):
                                      dst.get(k), edit.get(k), duration))
             for k in set(src.keys() + dst.keys() + edit.keys()) if k in sp])
     elif isinstance(sp, spectypes.Spline):
-        return tospline(sp, src, dst, edit, duration)
+        return trace(tospline(sp, src, dst, edit, duration),
+                sp.doc and 'Scale' in sp.doc)
     elif isinstance(sp, spectypes.List):
         if isinstance(sp.type, spectypes.Palette):
             if src is not None: src = [[0] + src]
@@ -259,9 +268,9 @@ def sort_xforms(sxfs, dxfs, sortmethod, explicit=[]):
     # forward (src=>dst) and reverse (dst=>src) maps
     fwd, rev = {}, {}
     for sx, dx in explicit:
-        if sx in fwd:
+        if sx not in ("pad", "dup") and sx in fwd:
             rev.pop(fwd.pop(sx, None), None)
-        if dx in rev:
+        if dx not in ("pad", "dup") and dx in rev:
             fwd.pop(rev.pop(dx, None), None)
         fwd[sx] = dx
         rev[dx] = sx
