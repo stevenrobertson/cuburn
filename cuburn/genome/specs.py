@@ -85,6 +85,7 @@ base = (
   , 'palette': list_(Palette())
   , 'xforms': map_(xform)
   , 'final_xform': xform
+  , 'time': time
   })
 
 # TODO
@@ -93,11 +94,11 @@ node.update(type='node', blend=blend, author=author)
 
 # TODO
 edge = dict(base)
-edge.update(type='edge', author=author, blend=blend, link=link, time=time,
+edge.update(type='edge', author=author, blend=blend, link=link,
             xforms=dict(src=map_(xform), dst=map_(xform)))
 
 anim = dict(base)
-anim.update(type='animation', authors=list_(author), link=link, time=time)
+anim.update(type='animation', authors=list_(author), link=link)
 
 default_filters = ['bilateral', 'logscale', 'smearclip']
 # Yeah, now I'm just messing around.
