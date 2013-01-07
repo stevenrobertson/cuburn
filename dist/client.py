@@ -137,9 +137,10 @@ def main(addrs):
         print 'Interrupt received, flushing'
 
     while cli.taskmap:
+        for k, v in cli.taskmap.items():
+            if not v.getters:
+                cli.taskmap.pop(k)
         print 'Still waiting on %d tasks...' % len(cli.taskmap)
-        for i in cli.taskmap.items():
-            print i
         gevent.sleep(3)
 
 if __name__ == "__main__":
