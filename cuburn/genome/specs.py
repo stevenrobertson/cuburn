@@ -80,6 +80,7 @@ blend = (
 
 base = (
   { 'name': String("Human-readable name of this work")
+  , 'base': String("DB path to base from which this doc inherits")
   , 'camera': camera
   , 'filters': filters
   , 'palette': list_(Palette())
