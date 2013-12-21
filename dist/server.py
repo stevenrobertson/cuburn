@@ -55,7 +55,7 @@ def setup_worker_listener(addrs, tq, rq):
             print ' >', ' '.join(addr)
             if task.hash not in compcache:
                 try:
-                    rsp = Renderer.compile(task.anim, arch='sm_21')
+                    rsp = Renderer.compile(task.anim, arch='sm_35')
                 except:
                     # Store exceptions, so that we don't try to endlessly
                     # recompile bad genomes

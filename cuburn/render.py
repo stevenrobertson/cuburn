@@ -324,7 +324,7 @@ class RenderManager(ClsMod):
         # Split the launch into multiple rounds, possibly (slightly) reducing
         # work overlap but avoiding stalls when working on a device with an
         # active X session. TODO: characterize performance impact, autodetect
-        BLOCK_SIZE = 4
+        BLOCK_SIZE = 16
         for i in range(BLOCK_SIZE-1, nrounds, BLOCK_SIZE):
             launch_iter(BLOCK_SIZE)
         launch_iter(nrounds%BLOCK_SIZE)
