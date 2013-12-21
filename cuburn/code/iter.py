@@ -253,7 +253,7 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
         } else
         {{endfor}}
         {
-            printf("Something went *very* wrong.\n");
+            //printf("Something went *very* wrong.\n");
             asm("trap;");
         }
 
