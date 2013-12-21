@@ -13,7 +13,8 @@ from use import Wrapper
 from util import get, json_encode, resolve_spec, flatten, unflatten
 import variations
 
-def node_to_anim(node, half):
+def node_to_anim(gdb, node, half):
+    node = resolve(gdb, node)
     if half:
         osrc, odst = -0.25, 0.25
     else:

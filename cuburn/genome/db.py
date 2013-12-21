@@ -46,7 +46,7 @@ class GenomeDB(object):
             gnm = self.get(name)
 
         if gnm['type'] == 'node':
-            gnm = convert.node_to_anim(gnm, half=half)
+            gnm = convert.node_to_anim(self, gnm, half=half)
         elif gnm['type'] == 'edge':
             gnm = convert.edge_to_anim(self, gnm)
         assert gnm['type'] == 'animation', 'Unrecognized genome type.'
