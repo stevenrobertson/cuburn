@@ -37,12 +37,12 @@ def make_seeds(nthreads, host_seed=None):
         rand = np.random
 
     # Create the seed structures. TODO: check that struct is 4-byte aligned
-    seeds = np.empty((3, nthreads), dtype=np.uint32, order='F')
-    seeds[0][:] = mults[:nthreads]
+    seeds = np.empty((nthreads, 3), dtype=np.uint32)
+    seeds[:,0] = mults[:nthreads]
 
     # Excludes 0xffffffff for 32-bit compatibility with laziness
-    seeds[1] = rand.randint(1, 0x7fffffff, size=nthreads)
-    seeds[2] = rand.randint(1, 0x7fffffff, size=nthreads)
+    seeds[:,1] = rand.randint(1, 0x7fffffff, size=nthreads)
+    seeds[:,2] = rand.randint(1, 0x7fffffff, size=nthreads)
 
     return seeds
 
