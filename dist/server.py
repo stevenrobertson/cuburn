@@ -93,7 +93,7 @@ def setup_responder(addrs, rq):
 
 def main(addrs):
     # Channel holding (addr, task) pairs.
-    tq = queue.Queue(0)
+    tq = queue.Channel()
     # Queue holding response messages (as a list of raw zmq frames).
     rq = queue.Queue()
 

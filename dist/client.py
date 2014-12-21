@@ -30,7 +30,7 @@ class RenderClient(object):
         self.rsock.setsockopt(zmq.IDENTITY, self.cid)
         self.rsock.connect(rsp_addr)
 
-        self.tq = queue.Queue(0)
+        self.tq = queue.Channel()
 
         self.taskmap = weakref.WeakValueDictionary()
         if start: self.start()
