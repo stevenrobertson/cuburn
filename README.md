@@ -29,6 +29,10 @@ the current home directory. `main.py` is the primary interface to cuburn, and
 it includes built-in help; run `python main.py --help` to find out what it
 supports.
 
+Once the program runs, check out [the sample flock](https://github.com/stevenrobertson/cuburn-sample-flock)
+for more details on the design of the JSON flame format and how to use it to
+manage and render a collection of flames.
+
 ## Differences between flam3 and cuburn
 
 ### Gorgeous, fluid interpolation
