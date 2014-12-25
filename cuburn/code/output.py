@@ -75,4 +75,70 @@ __global__ void f32_to_rgba_u16(
 }
 ''')
 
-pixfmtlib = devlib(deps=[rgba8lib, rgba16lib])
+yuv444plib = devlib(deps=[ringbuflib, mwclib, ditherlib], defs=r'''
+// Convert from rgb444 to planar YUV with no chroma subsampling.
+// Uses JPEG full-range color primaries.
+__global__ void f32_to_yuv444p(
+    char *dst, const float4 *src,
+    int gutter, int dstride, int sstride, int height,
+    ringbuf *rb, mwc_st *rctxs)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x > dstride || y > height) return;
+    int isrc = sstride * (y + gutter) + x + gutter;
+
+    int tid = blockDim.x * threadIdx.y + threadIdx.x;
+    mwc_st rctx = rctxs[rb_incr(rb->head, tid)];
+
+    float4 in = src[isrc];
+    uchar3 out = make_uchar3(
+        dclampf(rctx, 255.0f, 0.299f      * in.x + 0.587f     * in.y + 0.114f     * in.z),
+        dclampf(rctx, 255.0f, -0.168736f  * in.x - 0.331264f  * in.y + 0.5f       * in.z + 0.5f),
+        dclampf(rctx, 255.0f, 0.5f        * in.x - 0.418688f  * in.y - 0.081312f  * in.z + 0.5f)
+    );
+
+    int idst = dstride * y + x;
+    dst[idst] = out.x;
+    idst += dstride * height;
+    dst[idst] = out.y;
+    idst += dstride * height;
+    dst[idst] = out.z;
+    rctxs[rb_incr(rb->tail, tid)] = rctx;
+}
+''')
+
+yuv444p10lib = devlib(deps=[ringbuflib, mwclib, ditherlib], defs=r'''
+// Convert from rgb444 to planar YUV 10-bit, using JPEG full-range primaries.
+// TODO(strobe): Decide how YouTube will handle Rec. 2020, and then do that here.
+__global__ void f32_to_yuv444p10(
+    uint16_t *dst, const float4 *src,
+    int gutter, int dstride, int sstride, int height,
+    ringbuf *rb, mwc_st *rctxs)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x > dstride || y > height) return;
+    int isrc = sstride * (y + gutter) + x + gutter;
+
+    int tid = blockDim.x * threadIdx.y + threadIdx.x;
+    mwc_st rctx = rctxs[rb_incr(rb->head, tid)];
+
+    float4 in = src[isrc];
+    uchar3 out = make_uchar3(
+        dclampf(rctx, 1024.0f, 0.299f      * in.x + 0.587f     * in.y + 0.114f     * in.z),
+        dclampf(rctx, 1024.0f, -0.168736f  * in.x - 0.331264f  * in.y + 0.5f       * in.z + 0.5f),
+        dclampf(rctx, 1024.0f, 0.5f        * in.x - 0.418688f  * in.y - 0.081312f  * in.z + 0.5f)
+    );
+
+    int idst = dstride * y + x;
+    dst[idst] = out.x;
+    idst += dstride * height;
+    dst[idst] = out.y;
+    idst += dstride * height;
+    dst[idst] = out.z;
+    rctxs[rb_incr(rb->tail, tid)] = rctx;
+}
+''')
+
+pixfmtlib = devlib(deps=[rgba8lib, rgba16lib, yuv444plib, yuv444p10lib])
