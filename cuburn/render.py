@@ -71,7 +71,7 @@ class Framebuffers(object):
     # accomodate alignment requirements; when it is, that extension will be
     # applied to the lower-right corner of the buffer. This is asymmetrical,
     # but simplifies trimming logic when it's time for that.
-    gutter = 10
+    gutter = 12
 
     @classmethod
     def calc_dim(cls, width, height):
