@@ -228,6 +228,111 @@ class X264Output(Output, ClsMod):
         if self.alpha: return '_color.h264'
         return '.h264'
 
+class VPxOutput(Output, ClsMod):
+    lib = pixfmtlib
+
+    base = 'vpxenc --end-usage=3 -p 1 --cpu-used=-8 -o - -'
+
+    def __init__(self, codec='vp9', fps=24, crf=15, pix_fmt='yuv420p'):
+        super(VPxOutput, self).__init__()
+        self.codec = codec
+        self.pix_fmt = pix_fmt
+
+        self.framesize = None
+        self.subp = None
+        self.outf = None
+
+        self.args = self.base.split()
+        if pix_fmt == 'yuv420p':
+            self.out_filter = 'f32_to_yuv444p'
+        elif pix_fmt == 'yuv444p':
+            assert codec == 'vp9'
+            self.out_filter = 'f32_to_yuv444p'
+            self.args += ['--profile=1', '-i444']
+        elif pix_fmt == 'yuv444p10':
+            assert codec == 'vp9'
+            self.out_filter = 'f32_to_yuv444p10'
+            self.args += ['-b', '10', '--input-bit-depth=10',
+                          '--profile=3', '-i444']
+        else:
+            raise ValueError('Invalid pix_fmt: ' + pix_fmt)
+        self.args += ['--codec=' + codec, '--cq-level=' + str(crf), '--fps=%d/1' % fps]
+        if codec == 'vp9':
+            self.args += ['-t', '4']
+
+    def convert(self, fb, gnm, dim, stream=None):
+        launchC(self.out_filter, self.mod, stream, dim, fb,
+                fb.d_rb, fb.d_seeds)
+
+    def copy(self, fb, dim, pool, stream=None):
+        fmt = 'u1'
+        if self.out_filter in ('yuv444p10',):
+            fmt = 'u2'
+        h_out = pool.allocate((3, dim.h, dim.w), fmt)
+        cuda.memcpy_dtoh_async(h_out, fb.d_back, stream)
+        return h_out
+
+    def _spawn(self, framesize):
+        self.framesize = framesize
+        extras = ['-w', framesize[1], '-h', framesize[0]]
+        self.outf = tempfile.TemporaryFile(bufsize=0)
+        self.subp = Popen(map(str, self.args + extras),
+                          stdin=PIPE, stderr=PIPE, stdout=self.outf)
+
+    def _flush_sub(self, subp):
+        if gevent is not None:
+            # Use non-blocking poll to allow applications to continue
+            # rendering in other coros
+            subp.stdin.close()
+            log = ''
+            while subp.poll() is None:
+                log += subp.stderr.read()
+                gevent.sleep(0.1)
+            log += subp.stderr.read()
+        else:
+            (stdout, log) = subp.communicate()
+        if subp.returncode:
+            raise IOError("vpxenc exited with an error")
+        return log
+
+    def _flush(self):
+        if self.subp is None:
+            return {}, []
+        log = self._flush_sub(self.subp)
+        self.outf.seek(0)
+        self.subp = None
+        return {'.webm': self.outf}, [('webm', log)]
+
+    def _write(self, buf, subp):
+        try:
+            subp.stdin.write(buffer(buf))
+        except IOError, e:
+            print 'Exception while writing. Log:'
+            print subp.stderr.read()
+            raise e
+
+    def encode(self, buf):
+        out = ({}, [])
+        if buf is None or self.framesize != buf.shape[1:3]:
+            out = self._flush()
+        if buf is None:
+            return out
+        if self.subp is None:
+            self._spawn(buf.shape[1:3])
+        if self.pix_fmt == 'yuv420p':
+            # Perform terrible chroma subsampling
+            self._write(buf[0].tostring(), self.subp)
+            self._write(buf[1,::2,::2].tostring(), self.subp)
+            self._write(buf[2,::2,::2].tostring(), self.subp)
+        else:
+            self._write(buf, self.subp)
+        return out
+
+    @property
+    def suffix(self):
+        return '.webm'
+
+
 def get_output_for_profile(gprof):
     opts = dict(gprof.output._val)
     handler = opts.pop('type', 'jpeg')
@@ -235,4 +340,8 @@ def get_output_for_profile(gprof):
         return PILOutput(codec=handler, **opts)
     elif handler == 'x264':
         return X264Output(**opts)
+    elif handler == 'vp8':
+        return VPxOutput(codec='vp8', fps=gprof.fps, **opts)
+    elif handler == 'vp9':
+        return VPxOutput(codec='vp9', fps=gprof.fps, **opts)
     raise ValueError('Invalid output type "%s".' % handler)
