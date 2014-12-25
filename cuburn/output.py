@@ -231,50 +231,59 @@ class X264Output(Output, ClsMod):
 class VPxOutput(Output, ClsMod):
     lib = pixfmtlib
 
-    base = 'vpxenc --end-usage=3 -p 1 --cpu-used=-8 -o - -'
+    base = ('vpxenc --end-usage=3 -p 1 --cpu-used=-8 --lag-in-frames=4 '
+            '--min-q=2 --disable-kf -o - -')
 
     def __init__(self, codec='vp9', fps=24, crf=15, pix_fmt='yuv420p'):
         super(VPxOutput, self).__init__()
         self.codec = codec
         self.pix_fmt = pix_fmt
 
-        self.framesize = None
+        self.dim = None
         self.subp = None
         self.outf = None
 
         self.args = self.base.split()
         if pix_fmt == 'yuv420p':
             self.out_filter = 'f32_to_yuv444p'
-        elif pix_fmt == 'yuv444p':
-            assert codec == 'vp9'
-            self.out_filter = 'f32_to_yuv444p'
-            self.args += ['--profile=1', '-i444']
-        elif pix_fmt == 'yuv444p10':
-            assert codec == 'vp9'
-            self.out_filter = 'f32_to_yuv444p10'
-            self.args += ['-b', '10', '--input-bit-depth=10',
-                          '--profile=3', '-i444']
         else:
-            raise ValueError('Invalid pix_fmt: ' + pix_fmt)
+            assert codec == 'vp9'
+            if pix_fmt == 'yuv444p':
+                self.out_filter = 'f32_to_yuv444p'
+                self.args += ['--profile=1', '--i444']
+            elif pix_fmt == 'yuv420p10':
+                assert codec == 'vp9'
+                self.out_filter = 'f32_to_yuv420p10'
+                self.args += ['-b', '10', '--input-bit-depth=10', '--profile=2']
+            elif pix_fmt == 'yuv444p10':
+                assert codec == 'vp9'
+                self.out_filter = 'f32_to_yuv444p10'
+                self.args += ['-b', '10', '--input-bit-depth=10',
+                              '--profile=3', '--i444']
+            else:
+                raise ValueError('Invalid pix_fmt: ' + pix_fmt)
         self.args += ['--codec=' + codec, '--cq-level=' + str(crf), '--fps=%d/1' % fps]
         if codec == 'vp9':
             self.args += ['-t', '4']
 
     def convert(self, fb, gnm, dim, stream=None):
+        self.dim = dim
         launchC(self.out_filter, self.mod, stream, dim, fb,
                 fb.d_rb, fb.d_seeds)
 
     def copy(self, fb, dim, pool, stream=None):
         fmt = 'u1'
-        if self.out_filter in ('yuv444p10',):
+        if self.pix_fmt in ('yuv444p10', 'yuv420p10'):
             fmt = 'u2'
-        h_out = pool.allocate((3, dim.h, dim.w), fmt)
+        dims =  (3, dim.h, dim.w)
+        if self.pix_fmt == 'yuv420p10':
+            dims = (dim.h * dim.w * 6 / 4,)
+        h_out = pool.allocate(dims, fmt)
         cuda.memcpy_dtoh_async(h_out, fb.d_back, stream)
         return h_out
 
-    def _spawn(self, framesize):
-        self.framesize = framesize
-        extras = ['-w', framesize[1], '-h', framesize[0]]
+    def _spawn(self):
+        extras = ['-w', self.dim.w, '-h', self.dim.h]
         self.outf = tempfile.TemporaryFile(bufsize=0)
         self.subp = Popen(map(str, self.args + extras),
                           stdin=PIPE, stderr=PIPE, stdout=self.outf)
@@ -313,12 +322,10 @@ class VPxOutput(Output, ClsMod):
 
     def encode(self, buf):
         out = ({}, [])
-        if buf is None or self.framesize != buf.shape[1:3]:
-            out = self._flush()
         if buf is None:
-            return out
+            return self._flush()
         if self.subp is None:
-            self._spawn(buf.shape[1:3])
+            self._spawn()
         if self.pix_fmt == 'yuv420p':
             # Perform terrible chroma subsampling
             self._write(buf[0].tostring(), self.subp)
