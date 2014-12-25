@@ -1,19 +1,17 @@
 from util import devlib, ringbuflib
 from mwc import mwclib
 
-ditherlib = devlib(deps=[mwclib], defs=r'''
+pixfmtlib = devlib(deps=[ringbuflib, mwclib], defs=r'''
 // Clamp an input between 0 and a given peak (inclusive), dithering its output,
 // with full clamping for pixels that are true-black for compressibility.
 __device__ float dclampf(mwc_st &rctx, float peak, float in) {
   float ret = 0.0f;
   if (in > 0.0f) {
-    ret = fminf(peak, fmaxf(0.0f, in * peak + 0.49f * mwc_next_11(rctx)));
+    ret = fminf(peak, in * peak + 0.99f * mwc_next_01(rctx));
   }
   return ret;
 }
-''')
 
-rgba8lib = devlib(deps=[ringbuflib, mwclib, ditherlib], defs=r'''
 // Perform a conversion from float32 values to uint8 ones, applying
 // pixel- and channel-independent dithering to reduce suprathreshold banding
 // artifacts. Clamps values larger than 1.0f.
@@ -44,9 +42,7 @@ __global__ void f32_to_rgba_u8(
     dst[idst] = out;
     rctxs[rb_incr(rb->tail, tid)] = rctx;
 }
-''')
 
-rgba16lib = devlib(deps=[ringbuflib, mwclib, ditherlib], defs=r'''
 // Perform a conversion from float32 values to uint16 ones, as above.
 __global__ void f32_to_rgba_u16(
     ushort4 *dst, const float4 *src,
@@ -73,9 +69,7 @@ __global__ void f32_to_rgba_u16(
     dst[idst] = out;
     rctxs[rb_incr(rb->tail, tid)] = rctx;
 }
-''')
 
-yuv444plib = devlib(deps=[ringbuflib, mwclib, ditherlib], defs=r'''
 // Convert from rgb444 to planar YUV with no chroma subsampling.
 // Uses JPEG full-range color primaries.
 __global__ void f32_to_yuv444p(
@@ -106,9 +100,7 @@ __global__ void f32_to_yuv444p(
     dst[idst] = out.z;
     rctxs[rb_incr(rb->tail, tid)] = rctx;
 }
-''')
 
-yuv444p10lib = devlib(deps=[ringbuflib, mwclib, ditherlib], defs=r'''
 // Convert from rgb444 to planar YUV 10-bit, using JPEG full-range primaries.
 // TODO(strobe): Decide how YouTube will handle Rec. 2020, and then do that here.
 __global__ void f32_to_yuv444p10(
@@ -125,20 +117,76 @@ __global__ void f32_to_yuv444p10(
     mwc_st rctx = rctxs[rb_incr(rb->head, tid)];
 
     float4 in = src[isrc];
-    uchar3 out = make_uchar3(
-        dclampf(rctx, 1024.0f, 0.299f      * in.x + 0.587f     * in.y + 0.114f     * in.z),
-        dclampf(rctx, 1024.0f, -0.168736f  * in.x - 0.331264f  * in.y + 0.5f       * in.z + 0.5f),
-        dclampf(rctx, 1024.0f, 0.5f        * in.x - 0.418688f  * in.y - 0.081312f  * in.z + 0.5f)
+    ushort3 out = make_ushort3(
+        dclampf(rctx, 1023.0f, 0.299f      * in.x + 0.587f     * in.y + 0.114f     * in.z),
+        dclampf(rctx, 1023.0f, -0.168736f  * in.x - 0.331264f  * in.y + 0.5f       * in.z + 0.5f),
+        dclampf(rctx, 1023.0f, 0.5f        * in.x - 0.418688f  * in.y - 0.081312f  * in.z + 0.5f)
     );
 
     int idst = dstride * y + x;
     dst[idst] = out.x;
     idst += dstride * height;
-    dst[idst] = out.y;
+    dst[idst] = 1023.0f * (-0.168736f  * in.x - 0.331264f  * in.y + 0.5f       * in.z + 0.5f);
     idst += dstride * height;
     dst[idst] = out.z;
+
+    rctxs[rb_incr(rb->tail, tid)] = rctx;
+}
+
+// Convert from rgb444 to planar YUV 10-bit, using JPEG full-range primaries.
+// Perform subsampling of chroma using weighted averages.
+__global__ void f32_to_yuv420p10(
+    uint16_t *dst, const float4 *src,
+    int gutter, int dstride, int sstride, int height,
+    ringbuf *rb, mwc_st *rctxs)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x > dstride || y > height) return;
+    int tid = blockDim.x * threadIdx.y + threadIdx.x;
+    mwc_st rctx = rctxs[rb_incr(rb->head, tid)];
+
+    // Perform luma using real addressing
+    int isrc = sstride * (y + gutter) + x + gutter;
+    int idst = dstride * y + x;
+    float4 in = src[isrc];
+    dst[idst] = dclampf(rctx, 1023.0f, 0.299f      * in.x + 0.587f     * in.y + 0.114f     * in.z);
+
+    // Drop into subsampling mode for chroma components
+    if (x * 2 > dstride || y * 2 > height) return;
+
+    // Recompute addressing and collect weighted averages
+    // TODO(strobe): characterize overflow here
+    isrc = sstride * (y * 2 + gutter) + x * 2 + gutter;
+    in = src[isrc];
+    float sum = in.w + 1e-12;
+    float cb = in.w * (-0.168736f  * in.x - 0.331264f  * in.y + 0.5f       * in.z);
+    float cr = in.w * (0.5f        * in.x - 0.418688f  * in.y - 0.081312f  * in.z);
+
+    in = src[isrc + 1];
+    sum += in.w;
+    cb += in.w * (-0.168736f  * in.x - 0.331264f  * in.y + 0.5f       * in.z);
+    cr += in.w * (0.5f        * in.x - 0.418688f  * in.y - 0.081312f  * in.z);
+
+    isrc += sstride;
+    in = src[isrc];
+    sum += in.w;
+    cb += in.w * (-0.168736f  * in.x - 0.331264f  * in.y + 0.5f       * in.z);
+    cr += in.w * (0.5f        * in.x - 0.418688f  * in.y - 0.081312f  * in.z);
+
+    in = src[isrc + 1];
+    sum += in.w;
+    cb += in.w * (-0.168736f  * in.x - 0.331264f  * in.y + 0.5f       * in.z);
+    cr += in.w * (0.5f        * in.x - 0.418688f  * in.y - 0.081312f  * in.z);
+
+    // For this to work, dstride must equal the output frame width
+    // and be a multiple of four.
+    idst = dstride * height + dstride / 2 * y + x;
+    dst[idst] = dclampf(rctx, 1023.0f, cb / sum + 0.5f);
+    idst += dstride * height / 4;
+    dst[idst] = dclampf(rctx, 1023.0f, cr / sum + 0.5f);
+
     rctxs[rb_incr(rb->tail, tid)] = rctx;
 }
 ''')
 
-pixfmtlib = devlib(deps=[rgba8lib, rgba16lib, yuv444plib, yuv444p10lib])
