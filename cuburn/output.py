@@ -284,6 +284,10 @@ class VPxOutput(Output, ClsMod):
 
     def _spawn(self):
         extras = ['-w', self.dim.w, '-h', self.dim.h]
+        num_columns = int(max(0, min(3, np.log2(self.dim.w) - 8.9)))
+        if num_columns:
+            extras.append('--tile-columns=%d' % num_columns)
+
         self.outf = tempfile.TemporaryFile(bufsize=0)
         self.subp = Popen(map(str, self.args + extras),
                           stdin=PIPE, stderr=PIPE, stdout=self.outf)
