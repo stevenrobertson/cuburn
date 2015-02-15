@@ -128,17 +128,17 @@ def main(args, prof):
         for name, times in frames:
             if args.resume:
                 fp = name + rdr.out.suffix
-                if os.path.isfile(fp) and m < os.path.getmtime(f[0]+ext):
+                if os.path.isfile(fp) and m < os.path.getmtime(fp):
                     continue
 
-            for t in times:
+            for idx, t in enumerate(times):
                 evt, buf = rmgr.queue_frame(rdr, gnm, gprof, t, first)
                 first = False
                 while not evt.query():
                     time.sleep(0.01)
                     yield None
                 save(rdr.out, name, buf)
-                print name, evt.time()
+                print '%s (%3d/%3d), %dms' % (name, idx, len(times), evt.time())
                 yield name, buf
             save(rdr.out, name, None)
 
