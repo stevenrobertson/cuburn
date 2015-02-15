@@ -231,8 +231,8 @@ class X264Output(Output, ClsMod):
 class VPxOutput(Output, ClsMod):
     lib = pixfmtlib
 
-    base = ('vpxenc --end-usage=3 -p 1 --cpu-used=-8 --lag-in-frames=4 '
-            '--min-q=2 --disable-kf -o - -')
+    base = ('vpxenc --end-usage=3 -p 1 -q --cpu-used=-8 --lag-in-frames=5 '
+            '--min-q=2 --disable-kf --arnr-maxframes=3 -o - -')
 
     def __init__(self, codec='vp9', fps=24, crf=15, pix_fmt='yuv420p'):
         super(VPxOutput, self).__init__()
