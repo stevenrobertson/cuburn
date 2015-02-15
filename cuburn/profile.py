@@ -57,7 +57,7 @@ def add_args(parser=None):
     spa.add_argument('--height', type=int, metavar='PX')
 
     out = parser.add_argument_group('Output options')
-    out.add_argument('--codec', choices=['jpg', 'png', 'tiff', 'x264', 'vp8', 'vp9'])
+    out.add_argument('--codec', choices=['jpeg', 'png', 'tiff', 'x264', 'vp8', 'vp9'])
     return parser
 
 def get_from_args(args):
