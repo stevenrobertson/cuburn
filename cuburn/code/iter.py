@@ -346,17 +346,17 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
     cvt.u64.u32         ptr,    off;
     add.u64             ptr,    ptr,    %4;
 
-    // 97% of the time, do an atomic add, then jump to the end without
+    // 80% of the time, do an atomic add, then jump to the end without
     // stalling the thread waiting for the data value
-    setp.le.f32         p,      %5,     0.97;
+    setp.le.f32         p,      %5,     0.80;
 @p  red.global.add.u64  [ptr],  val;
 @p  bra                 oflow_end;
 
-    // 3% of the time, do the atomic add, and wait for the results
+    // 20% of the time, do the atomic add, and wait for the results
     atom.global.add.u64 val,    [ptr],  val;
     mov.b64             {lo, hi},       val;
 
-    // If the density is less than 256, jump to the end
+    // If the density is less than 32, jump to the end
     setp.lo.u32         p,      hi,     (256 << 22);
 @p  bra                 oflow_end;
 
