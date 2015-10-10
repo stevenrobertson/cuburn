@@ -260,6 +260,11 @@ class VPxOutput(Output, ClsMod):
                 self.out_filter = 'f32_to_yuv444p10'
                 self.args += ['-b', '10', '--input-bit-depth=10',
                               '--profile=3', '--i444']
+            elif pix_fmt == 'yuv444p12':
+                assert codec == 'vp9'
+                self.out_filter = 'f32_to_yuv444p12'
+                self.args += ['-b', '12', '--input-bit-depth=12',
+                              '--profile=3', '--i444']
             else:
                 raise ValueError('Invalid pix_fmt: ' + pix_fmt)
         self.args += ['--codec=' + codec, '--cq-level=' + str(crf), '--fps=%d/1' % fps]
@@ -273,7 +278,7 @@ class VPxOutput(Output, ClsMod):
 
     def copy(self, fb, dim, pool, stream=None):
         fmt = 'u1'
-        if self.pix_fmt in ('yuv444p10', 'yuv420p10'):
+        if self.pix_fmt in ('yuv444p10', 'yuv420p10', 'yuv444p12'):
             fmt = 'u2'
         dims =  (3, dim.h, dim.w)
         if self.pix_fmt == 'yuv420p10':

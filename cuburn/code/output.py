@@ -188,5 +188,37 @@ __global__ void f32_to_yuv420p10(
 
     rctxs[rb_incr(rb->tail, tid)] = rctx;
 }
+
+// Convert from rgb444 to planar YUV 10-bit, using JPEG full-range primaries.
+// TODO(strobe): Share more code.
+__global__ void f32_to_yuv444p12(
+    uint16_t *dst, const float4 *src,
+    int gutter, int dstride, int sstride, int height,
+    ringbuf *rb, mwc_st *rctxs)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x > dstride || y > height) return;
+    int isrc = sstride * (y + gutter) + x + gutter;
+
+    int tid = blockDim.x * threadIdx.y + threadIdx.x;
+    mwc_st rctx = rctxs[rb_incr(rb->head, tid)];
+
+    float4 in = src[isrc];
+    ushort3 out = make_ushort3(
+        dclampf(rctx, 4095.0f, 0.299f      * in.x + 0.587f     * in.y + 0.114f     * in.z),
+        dclampf(rctx, 4095.0f, -0.168736f  * in.x - 0.331264f  * in.y + 0.5f       * in.z + 0.5f),
+        dclampf(rctx, 4095.0f, 0.5f        * in.x - 0.418688f  * in.y - 0.081312f  * in.z + 0.5f)
+    );
+
+    int idst = dstride * y + x;
+    dst[idst] = out.x;
+    idst += dstride * height;
+    dst[idst] = out.y;
+    idst += dstride * height;
+    dst[idst] = out.z;
+
+    rctxs[rb_incr(rb->tail, tid)] = rctx;
+}
 ''')
 
