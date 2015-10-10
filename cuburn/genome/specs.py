@@ -121,8 +121,8 @@ profile = (
   , 'shard': Scalar(0, 'Pack this many frames in each output file '
                     '(causing start, end, and skip to be ignored)')
 
-  , 'height': Scalar(1920, 'Output height in pixels')
-  , 'width': Scalar(1080, 'Output width in pixels')
+  , 'height': Scalar(720, 'Output height in pixels')
+  , 'width': Scalar(1280, 'Output width in pixels')
   , 'spp': RefScalar(2000, 'camera.spp', 'Base samples per pixel')
 
   , 'filter_order': list_(enum(filters.keys()), default_filters)
