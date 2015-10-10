@@ -67,6 +67,16 @@ fma_buf(float4 *dst, const float4 *src, float scale) {
 }
 ''')
 
+yuvfilterlib = devlib(deps=[yuvlib], defs=r'''
+__global__ void
+yuv_to_rgb(float4 *dst, const float4 *src) {
+    GET_IDX(i);
+    float4 pix = src[i];
+    yuvo2rgb(pix);
+    dst[i] = pix;
+}
+''')
+
 denblurlib = devlib(deps=[texshearlib], decls='''
 texture<float4, cudaTextureType2D> chan4_src;
 texture<float,  cudaTextureType2D> chan1_src;
@@ -261,7 +271,6 @@ haloclip(float4 *pixbuf, const float *denbuf, float gamma_m_1) {
 
     float ls = powf(pix.w, gamma_m_1) / fmaxf(1.0f, areaval);
     scale_float4(pix, ls);
-    yuvo2rgb(pix);
     pixbuf[i] = pix;
 }
 ''')
@@ -302,7 +311,6 @@ smearclip(float4 *pixbuf, const float4 *smearbuf,
         ls = (1.0f - frac) * lingam + frac * ls;
     }
     scale_float4(pix, ls);
-    yuvo2rgb(pix);
     pixbuf[i] = pix;
 }
 ''')
@@ -319,7 +327,6 @@ colorclip(float4 *pixbuf, float vibrance, float highpow,
         pixbuf[i] = make_float4(0, 0, 0, 0);
         return;
     }
-    yuvo2rgb(pix);
     float4 opix = pix;
 
     float alpha = powf(pix.w, gamma);

@@ -50,6 +50,16 @@ class Filter(object):
         return register_
 
 
+@Filter.register('yuv')
+class YuvFilterLib(Filter, ClsMod):
+    lib = code.filters.yuvfilterlib
+
+    def apply(self, fb, gprof, params, dim, tc, stream=None):
+        launch2('yuv_to_rgb', self.mod, stream, dim,
+                fb.d_back, fb.d_front)
+        fb.flip()
+
+
 @Filter.register('bilateral')
 class Bilateral(Filter, ClsMod):
     lib = code.filters.bilaterallib
@@ -171,4 +181,5 @@ class ColorClip(Filter, ClsMod):
                 fb.d_front, vib, hipow, gam, lin, lingam)
 
 def create(gprof):
-    return [Filter.filter_map[f]() for f in gprof.filter_order]
+    order = ['yuv'] + gprof.filter_order
+    return [Filter.filter_map[f]() for f in order]
