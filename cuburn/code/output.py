@@ -205,6 +205,9 @@ __global__ void f32_to_yuv444p12(
     mwc_st rctx = rctxs[rb_incr(rb->head, tid)];
 
     float4 in = src[isrc];
+    in.x = fminf(1.0f, in.x);
+    in.y = fminf(1.0f, in.y);
+    in.z = fminf(1.0f, in.z);
     ushort3 out = make_ushort3(
         dclampf(rctx, 4095.0f, 0.299f      * in.x + 0.587f     * in.y + 0.114f     * in.z),
         dclampf(rctx, 4095.0f, -0.168736f  * in.x - 0.331264f  * in.y + 0.5f       * in.z + 0.5f),
