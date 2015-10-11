@@ -138,6 +138,12 @@ def main(args, prof):
                     time.sleep(0.01)
                     yield None
                 save(rdr.out, name, buf)
+                if args.rawfn:
+                    try:
+                        buf.tofile(args.rawfn + '.tmp')
+                        os.rename(args.rawfn + '.tmp', args.rawfn)
+                    except e:
+                        print 'Failed to write %s: %s' % (args.rawfn, e)
                 print '%s (%3d/%3d), %dms' % (name, idx, len(times), evt.time())
                 yield name, buf
             save(rdr.out, name, None)
@@ -169,6 +175,8 @@ if __name__ == "__main__":
         default='.')
     parser.add_argument('--subdir', action='store_true',
         help="Use basename as subdirectory of out dir, instead of prefix")
+    parser.add_argument('--raw', metavar='PATH', type=str, dest='rawfn',
+        help="Target file for raw buffer, to enable previews.")
     parser.add_argument('--half', action='store_true',
         help='Use half-loops when converting nodes to animations')
     parser.add_argument('--print', action='store_true',
