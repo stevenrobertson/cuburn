@@ -77,6 +77,19 @@ yuv_to_rgb(float4 *dst, const float4 *src) {
 }
 ''')
 
+logencodelib = devlib(defs=r'''
+__global__ void
+logencode(float4 *dst, const float4 *src, float degamma) {
+    GET_IDX(i);
+    float4 pix = src[i];
+    pix.x = log2f(powf(pix.x, degamma)) / 12.0f + 1.0f;
+    pix.y = log2f(powf(pix.y, degamma)) / 12.0f + 1.0f;
+    pix.z = log2f(powf(pix.z, degamma)) / 12.0f + 1.0f;
+    pix.w = log2f(powf(pix.w, degamma)) / 12.0f + 1.0f;
+    dst[i] = pix;
+}
+''')
+
 denblurlib = devlib(deps=[texshearlib], decls='''
 texture<float4, cudaTextureType2D> chan4_src;
 texture<float,  cudaTextureType2D> chan1_src;

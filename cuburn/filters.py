@@ -180,6 +180,17 @@ class ColorClip(Filter, ClsMod):
         launch2('colorclip', self.mod, stream, dim,
                 fb.d_front, vib, hipow, gam, lin, lingam)
 
+
+@Filter.register('logencode')
+class LogEncode(Filter, ClsMod):
+    lib = code.filters.logencodelib
+    def apply(self, fb, gprof, params, dim, tc, stream=None):
+        degamma = f32(params.degamma(tc))
+
+        launch2('logencode', self.mod, stream, dim,
+                fb.d_back, fb.d_front, degamma)
+        fb.flip()
+
 def create(gprof):
     order = ['yuv'] + gprof.filter_order
     return [Filter.filter_map[f]() for f in order]
