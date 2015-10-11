@@ -332,5 +332,5 @@ __device__ uint32_t rb_incr(uint32_t &rb_base, int tidx) {
 # done when I get my hands on a Kepler device. The fixed size assumes blocks
 # of 256 threads, although even at that size there are pathological cases that
 # could break the assumption.
-DEFAULT_RB_SIZE = 64
+DEFAULT_RB_SIZE = 256
 ringbuflib = mkringbuflib(DEFAULT_RB_SIZE)
