@@ -1,6 +1,7 @@
 #!/usr/bin/env python2
 
 import base64
+import binascii
 import warnings
 import xml.parsers.expat
 import numpy as np
@@ -28,9 +29,17 @@ class XMLGenomeParser(object):
             assert self._flame is None
             self._flame = dict(attrs)
             self._flame['xforms'] = []
-            self._flame['palette'] = np.ones((256, 4), dtype=np.float32)
+            if attrs.get('palette'):
+                pal = XMLPaletteParser.lookup(int(attrs['palette']))
+            else:
+                pal = np.ones((256, 4), dtype=np.float32)
+            self._flame['palette'] = pal
         elif name == 'xform':
+            if 'color' in attrs:
+                # Color sometimes has an extra param that is unused by flam3
+                attrs['color'] = attrs['color'].strip().split()[0]
             self._flame['xforms'].append(dict(attrs))
+            self._flame['xforms']
         elif name == 'finalxform':
             self._flame['finalxform'] = dict(attrs)
         elif name == 'color':
@@ -49,6 +58,58 @@ class XMLGenomeParser(object):
         parser = cls()
         parser.parser.Parse(src, True)
         return parser.flames
+
+class XMLPaletteParser(object):
+    _names, _numbers = None, None
+
+    _locations = [
+            '/usr/local/share/flam3/flam3-palettes.xml',
+            '/usr/share/flam3/flam3-palettes.xml',
+        ]
+
+    def __init__(self, src):
+        self.names, self.numbers = {}, {}
+        self.parser = xml.parsers.expat.ParserCreate()
+        self.parser.StartElementHandler = self.start_element
+        self.parser.EndElementHandler = self.end_element
+        self.parser.Parse(src, True)
+
+    def start_element(self, name, attrs):
+        if name == 'palette':
+            data = binascii.a2b_hex(
+                    attrs['data'].replace('\n', '').replace(' ', ''))
+            pal = np.fromstring(data, 'u1').reshape((256, 4)) / 255.0
+            if 'number' in attrs:
+                self.numbers[int(attrs['number'])] = pal
+            if 'name' in attrs:
+                self.names[attrs['name']] = pal
+
+    def end_element(self, name):
+        pass
+
+    @classmethod
+    def _load(cls):
+        src = None
+        for loc in cls._locations:
+            try:
+                with open(loc) as fp:
+                    src = fp.read()
+                break
+            except:
+                pass
+        if not src:
+            raise IOError("Couldn't find a palettes XML file")
+        parser = cls(src)
+        cls._names, cls._numbers = parser.names, parser.numbers
+
+    @classmethod
+    def lookup(cls, key, isname=False):
+        if not cls._names:
+            cls._load()
+        if isname:
+            return np.array(cls._names[key])
+        else:
+            return np.array(cls._numbers[key])
 
 def convert_affine(aff, animate=False):
     xx, yx, xy, yy, xo, yo = vals = map(float, aff.split())
