@@ -118,42 +118,48 @@ def main(args, prof):
     frames = [('%s%05d%s' % (prefix_plus, i, args.suffix), t)
               for i, t in profile.enumerate_times(gprof)]
 
-    # We don't initialize a CUDA context until here. This keeps other
-    # functions like --help and --print snappy.
-    import pycuda.autoinit
-    rmgr = render.RenderManager()
-    rdr = render.Renderer(gnm, gprof)
+    import pycuda.driver as cuda
+    cuda.init()
+    dev = cuda.Device(args.device or 0)
+    cuctx = dev.make_context()
 
-    def render_iter():
-        m = os.path.getmtime(args.flame)
-        first = True
-        for name, times in frames:
-            if args.resume:
-                fp = name + rdr.out.suffix
-                if os.path.isfile(fp) and m < os.path.getmtime(fp):
-                    continue
+    try:
+      rmgr = render.RenderManager()
+      rdr = render.Renderer(gnm, gprof)
 
-            for idx, t in enumerate(times):
-                evt, buf = rmgr.queue_frame(rdr, gnm, gprof, t, first)
-                first = False
-                while not evt.query():
-                    time.sleep(0.01)
-                    yield None
-                save(rdr.out, name, buf)
-                if args.rawfn:
-                    try:
-                        buf.tofile(args.rawfn + '.tmp')
-                        os.rename(args.rawfn + '.tmp', args.rawfn)
-                    except e:
-                        print 'Failed to write %s: %s' % (args.rawfn, e)
-                print '%s (%3d/%3d), %dms' % (name, idx, len(times), evt.time())
-                yield name, buf
-            save(rdr.out, name, None)
+      def render_iter():
+          m = os.path.getmtime(args.flame)
+          first = True
+          for name, times in frames:
+              if args.resume:
+                  fp = name + rdr.out.suffix
+                  if os.path.isfile(fp) and m < os.path.getmtime(fp):
+                      continue
 
-    if args.gfx:
-        pyglet_preview(args, gprof, render_iter())
-    else:
-        for i in render_iter(): pass
+              for idx, t in enumerate(times):
+                  evt, buf = rmgr.queue_frame(rdr, gnm, gprof, t, first)
+                  first = False
+                  while not evt.query():
+                      time.sleep(0.01)
+                      yield None
+                  save(rdr.out, name, buf)
+                  if args.rawfn:
+                      try:
+                          buf.tofile(args.rawfn + '.tmp')
+                          os.rename(args.rawfn + '.tmp', args.rawfn)
+                      except e:
+                          print 'Failed to write %s: %s' % (args.rawfn, e)
+                  print '%s (%3d/%3d), %dms' % (name, idx, len(times), evt.time())
+                  yield name, buf
+              save(rdr.out, name, None)
+
+      if args.gfx:
+          pyglet_preview(args, gprof, render_iter())
+      else:
+          for i in render_iter(): pass
+    finally:
+      cuda.Context.pop()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Render fractal flames.')
@@ -183,6 +189,8 @@ if __name__ == "__main__":
         help='Use half-loops when converting nodes to animations')
     parser.add_argument('--print', action='store_true',
         help="Print the blended animation and exit.")
+    parser.add_argument('--device', metavar='NUM', type=int,
+                        help="GPU device number to use (from nvidia-smi).")
     profile.add_args(parser)
 
     args = parser.parse_args()
