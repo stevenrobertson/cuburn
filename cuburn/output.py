@@ -117,6 +117,60 @@ class PILOutput(Output, ClsMod):
             return '.jpg'
         return '.'+self.type
 
+class ProResOutput(Output, ClsMod):
+    lib = pixfmtlib
+
+    def __init__(self, fps=24):
+        super(ProResOutput, self).__init__()
+        self.fps = fps
+        self._outf = None
+        self._subp = None
+        self._dim = None
+
+    def convert(self, fb, gnm, dim, stream=None):
+        self._dim = dim
+        launchC('f32_to_yuv444p12', self.mod, stream, dim, fb,
+                fb.d_rb, fb.d_seeds)
+
+    def copy(self, fb, dim, pool, stream=None):
+        h_out = pool.allocate((3, dim.h, dim.w), 'u2')
+        cuda.memcpy_dtoh_async(h_out, fb.d_back, stream)
+        return h_out
+
+    def _spawn(self):
+        self._outf = tempfile.NamedTemporaryFile(bufsize=0, suffix='mov')
+        cmd = ('ffmpeg -loglevel panic -f rawvideo -pix_fmt yuv444p12le '
+               '-s {w}x{h} -r {fps} -i - -c:v prores -f mov -y {fn}').format(
+                       w=self._dim.w, h=self._dim.h, fps=self.fps,
+                       fn=self._outf.name)
+        self._subp = Popen(cmd.split(), stdin=PIPE)
+
+    def _flush(self):
+        if not self._subp:
+            return {}, []
+        self._subp.stdin.close()
+        self._subp.wait()
+        if self._subp.returncode:
+            raise IOError("ffmpeg exited with an error")
+        # get a new handle, delete the named file
+        outf = open(self._outf.name)
+        self._outf.close()
+        self._outf, self._subp = None, None
+        return {'.mov': outf}, []
+
+    def encode(self, host_frame):
+        if host_frame is None:
+            return self._flush()
+        if not self._subp:
+            self._spawn()
+        self._subp.stdin.write(buffer(host_frame))
+        return {}, []
+
+    @property
+    def suffix(self):
+        return '.mov'
+
+
 class X264Output(Output, ClsMod):
     lib = pixfmtlib
 
@@ -360,4 +414,6 @@ def get_output_for_profile(gprof):
         return VPxOutput(codec='vp8', fps=gprof.fps, **opts)
     elif handler == 'vp9':
         return VPxOutput(codec='vp9', fps=gprof.fps, **opts)
+    elif handler == 'prores':
+        return ProResOutput(fps=gprof.fps, **opts)
     raise ValueError('Invalid output type "%s".' % handler)
