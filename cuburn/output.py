@@ -1,3 +1,4 @@
+import io
 import os
 import tempfile
 from cStringIO import StringIO
@@ -10,11 +11,6 @@ import pycuda.driver as cuda
 from code.util import ClsMod, launch
 from code.output import pixfmtlib
 
-import scipy.misc
-
-if not hasattr(scipy.misc, 'toimage'):
-    raise ImportError("Could not find scipy.misc.toimage. "
-                      "Are scipy and PIL installed?")
 
 try:
     import gevent
@@ -81,6 +77,11 @@ class PILOutput(Output, ClsMod):
     lib = pixfmtlib
 
     def __init__(self, codec='jpeg', quality=100, alpha=False):
+        import scipy.misc
+        if not hasattr(scipy.misc, 'toimage'):
+            raise ImportError("Could not find scipy.misc.toimage. "
+                              "Are scipy and PIL installed?")
+
         super(PILOutput, self).__init__()
         self.type, self.quality, self.alpha = codec, quality, alpha
 
@@ -94,6 +95,7 @@ class PILOutput(Output, ClsMod):
         return h_out
 
     def _convert_buf(self, buf):
+        import scipy.misc
         out = StringIO()
         img = scipy.misc.toimage(buf, cmin=0, cmax=1)
         img.save(out, self.type, quality=self.quality)
@@ -116,6 +118,41 @@ class PILOutput(Output, ClsMod):
             if self.alpha: return '_color.jpg'
             return '.jpg'
         return '.'+self.type
+
+class TiffOutput(Output, ClsMod):
+    lib = pixfmtlib
+
+    def __init__(self, alpha=False):
+        import tifffile
+        if 'filename' in tifffile.TiffWriter.__init__.__func__.func_doc:
+            raise EnvironmentError('tifffile version too old!')
+        super(TiffOutput, self).__init__()
+        self.alpha = alpha
+
+    def convert(self, fb, gnm, dim, stream=None):
+        launchC('f32_to_rgba_u16', self.mod, stream, dim, fb,
+                fb.d_rb, fb.d_seeds)
+
+    def copy(self, fb, dim, pool, stream=None):
+        h_out = pool.allocate((dim.h, dim.w, 4), 'u2')
+        cuda.memcpy_dtoh_async(h_out, fb.d_back, stream)
+        return h_out
+
+    def encode(self, buf):
+        import tifffile
+
+        if buf is None: return {}, []
+        if not self.alpha:
+            buf = buf[:,:,:3]
+        out = io.BytesIO()
+        tifffile.imsave(out, buf)
+        out.seek(0)
+        return {'.tiff': out}, []
+
+    @property
+    def suffix(self):
+        return '.tiff'
+
 
 class ProResOutput(Output, ClsMod):
     lib = pixfmtlib
@@ -406,8 +443,10 @@ class VPxOutput(Output, ClsMod):
 def get_output_for_profile(gprof):
     opts = dict(gprof.output._val)
     handler = opts.pop('type', 'jpeg')
-    if handler in ('jpeg', 'png', 'tiff'):
+    if handler in ('jpeg', 'png'):
         return PILOutput(codec=handler, **opts)
+    elif handler == 'tiff':
+        return TiffOutput(**opts)
     elif handler == 'x264':
         return X264Output(**opts)
     elif handler == 'vp8':
