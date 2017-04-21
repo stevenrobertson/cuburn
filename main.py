@@ -30,6 +30,8 @@ def save(output_module, name, rendered_frame):
     for suffix, file_like in out.items():
         with open(name + suffix, 'w') as fp:
             fp.write(file_like.read())
+        if getattr(file_like, 'close', None):
+            file_like.close()
     for key, val in log:
         print '\n=== %s ===' % key
         print val
