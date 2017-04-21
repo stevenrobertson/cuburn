@@ -328,6 +328,28 @@ smearclip(float4 *pixbuf, const float4 *smearbuf,
 }
 ''')
 
+plaincliplib = devlib(deps=[yuvlib], defs=r'''
+__global__ void
+plainclip(float4 *pixbuf, float gamma_m_1, float linrange, float lingam,
+        float brightness) {
+    GET_IDX(i);
+    float4 pix = pixbuf[i];
+
+    if (pix.w <= 0) {
+        pixbuf[i] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        return;
+    }
+
+    float ls = powf(pix.w, gamma_m_1);
+    if (pix.w < linrange) {
+        float frac = pix.w / linrange;
+        ls = (1.0f - frac) * lingam + frac * ls;
+    }
+    scale_float4(pix, ls * brightness);
+    pixbuf[i] = pix;
+}
+''')
+
 colorcliplib = devlib(deps=[yuvlib], defs=r'''
 __global__ void
 colorclip(float4 *pixbuf, float vibrance, float highpow,

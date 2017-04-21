@@ -53,6 +53,7 @@ filters = (
     }
   , 'haloclip': {}
   , 'smearclip': {'width': scalespline(0.7, d='Spatial stdev of filter')}
+  , 'plainclip': {'brightness': scalespline(1.0, d='Linear brightness')}
   , 'logscale': {'brightness': scalespline(4, d='Log-scale brightness')}
   , 'logencode': {'degamma': scalespline(2.2)}
   , 'yuv': {}

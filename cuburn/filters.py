@@ -180,6 +180,15 @@ class ColorClip(Filter, ClsMod):
         launch2('colorclip', self.mod, stream, dim,
                 fb.d_front, vib, hipow, gam, lin, lingam)
 
+@Filter.register('plainclip')
+class PlainClip(Filter, ClsMod):
+    lib = code.filters.plaincliplib
+    def apply(self, fb, gprof, params, dim, tc, stream=None):
+        gam, lin, lingam = calc_lingam(gprof.filters.colorclip, tc)
+        launch2('plainclip', self.mod, stream, dim,
+                fb.d_front, f32(gam-1), lin, lingam,
+                f32(gprof.filters.plainclip.brightness(tc)))
+
 
 @Filter.register('logencode')
 class LogEncode(Filter, ClsMod):
