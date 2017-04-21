@@ -189,8 +189,8 @@ __global__ void f32_to_yuv420p10(
     rctxs[rb_incr(rb->tail, tid)] = rctx;
 }
 
-// Convert from rgb444 to planar YUV 10-bit, using JPEG full-range primaries.
-// TODO(strobe): Share more code.
+// Convert from rgb444 to planar YUV 12-bit studio swing,
+// using the Rec. 709 matrix.
 __global__ void f32_to_yuv444p12(
     uint16_t *dst, const float4 *src,
     int gutter, int dstride, int sstride, int height,
@@ -209,9 +209,9 @@ __global__ void f32_to_yuv444p12(
     in.y = fminf(1.0f, fmaxf(0.0f, in.y));
     in.z = fminf(1.0f, fmaxf(0.0f, in.z));
     ushort3 out = make_ushort3(
-        dclampf(rctx, 4095.0f, 0.299f      * in.x + 0.587f     * in.y + 0.114f     * in.z),
-        dclampf(rctx, 4095.0f, -0.168736f  * in.x - 0.331264f  * in.y + 0.5f       * in.z + 0.5f),
-        dclampf(rctx, 4095.0f, 0.5f        * in.x - 0.418688f  * in.y - 0.081312f  * in.z + 0.5f)
+        dclampf(rctx, 3504.0f, 0.2126f   * in.x + 0.7152f  * in.y + 0.0722f   * in.z) + 256.0f,
+        dclampf(rctx, 3584.0f, -0.11457f * in.x - 0.38543f * in.y + 0.5f      * in.z + 0.5f) + 256.0f,
+        dclampf(rctx, 3584.0f, 0.5f      * in.x - 0.45416f * in.y - 0.04585f  * in.z + 0.5f) + 256.0f
     );
 
     int idst = dstride * y + x;
