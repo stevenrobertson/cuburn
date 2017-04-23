@@ -106,8 +106,6 @@ def apply_affine(names, packer):
 NTHREADS = 256
 
 iter_decls = """
-// Note: for normalized lookups, uchar4 actually returns floats
-texture<uchar4, cudaTextureType2D, cudaReadModeNormalizedFloat> palTex;
 __shared__ iter_params params;
 
 typedef struct {
