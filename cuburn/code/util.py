@@ -93,7 +93,7 @@ def assemble_code(*libs):
     map(go, libs)
     return ''.join(sum(zip(*out), ()))
 
-DEFAULT_CMP_OPTIONS = ('-use_fast_math',)
+DEFAULT_CMP_OPTIONS = ('-use_fast_math', '-lineinfo')
 DEFAULT_SAVE_KERNEL = True
 def compile(name, src, opts=DEFAULT_CMP_OPTIONS, save=DEFAULT_SAVE_KERNEL,
             arch=None):
