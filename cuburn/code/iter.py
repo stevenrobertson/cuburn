@@ -157,7 +157,7 @@ def iter_xf_body(cp, xfid, px):
 iter_body_code = r'''
 __global__ void
 iter(uint64_t out_ptr, uint64_t atom_ptr,
-     ringbuf *rb, mwc_st *msts, float4 *points,
+     ringbuf *rb, mwc_st *msts, float4 *points, uint32_t *hotspots,
      const iter_params *all_params)
 {
     // load params to shared memory cooperatively
@@ -325,10 +325,27 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
     // threshold, it zeros that cell in the integer buffer, converts the
     // former contents to floats, and adds them to the float4 buffer.
 
-    .reg .pred  p;
-    .reg .u32   off, color, hi, lo, d, y, u, v;
-    .reg .f32   colorf, yf, uf, vf, df;
-    .reg .u64   ptr, val;
+    .reg .pred  p, h;
+    .reg .u32   off, hotmap, color, hi, lo, d, y, u, v;
+    .reg .f32   colorf, yf, uf, vf, df, mult;
+    .reg .u64   hptr, ptr, val;
+
+    // Calculate the address of the hotspot indicator
+    shr.b32             off,    %3,     3;
+    and.b32             off,    off,    0xfffffffc;
+    cvt.u64.u32         hptr,   off;
+    add.u64             hptr,   hptr,   %7;
+
+    // Load the hotspot map, and use it to set the hotflag predicate.
+    ld.cg.global.b32    hotmap, [hptr];
+    and.b32             off,    %3,     0x1f;
+    shl.b32             off,    1,      off;
+    and.b32             hotmap, hotmap, off;
+    setp.gt.u32         h,      hotmap, 0;
+
+    // If the hotflag is set, skip this whole section 15/16 of the time.
+    setp.gt.and.f32     p,      %8,     0.0625, h;
+@p  bra                 oflow_end;
 
     // TODO: coord dithering better, or pre-supersampled palette?
     fma.rn.ftz.f32      colorf, %0,     255.0,  %1;
@@ -358,6 +375,11 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
     setp.lo.u32         p,      hi,     (256 << 23);
 @p  bra                 oflow_end;
 
+    // Set the hotflag.
+    and.b32             off,    %3,     0x1f;
+    shl.b32             off,    1,      off;
+    red.global.or.b32   [hptr],   off;
+
     // Atomically swap the integer cell with 0 and read its current value
     atom.global.exch.b64 val,   [ptr],  0;
     mov.b64             {lo, hi},       val;
@@ -379,9 +401,14 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
     cvt.rn.f32.u32      uf,     u;
     cvt.rn.f32.u32      vf,     v;
     cvt.rn.f32.u32      df,     d;
-    mul.rn.ftz.f32      yf,     yf,     (1.0/255.0);
-    mul.rn.ftz.f32      uf,     uf,     (1.0/255.0);
-    mul.rn.ftz.f32      vf,     vf,     (1.0/255.0);
+
+    // If we already hotspotted, each point is worth 64 times as much.
+    selp.f32            mult,   16.0,   1.0,   h;
+    mul.rn.ftz.f32      df,     df,     mult;
+    mul.rn.ftz.f32      mult,   mult,   (1.0/255.0);
+    mul.rn.ftz.f32      yf,     yf,     mult;
+    mul.rn.ftz.f32      uf,     uf,     mult;
+    mul.rn.ftz.f32      vf,     vf,     mult;
     shl.b32             off,    %3,     4;
     cvt.u64.u32         ptr,    off;
     add.u64             ptr,    ptr,    %6;
@@ -393,7 +420,7 @@ oflow_end:
 }
         """)}}  ::  "f"(cc), "f"(color_dither), "r"(time), "r"(i),
                     "l"(atom_ptr), "f"(cosel[threadIdx.y + {{NWARPS}}]),
-                    "l"(out_ptr));
+                    "l"(out_ptr), "l"(hotspots), "f"(mwc_next_01(rctx)));
     }
 
     this_rb_idx = rb_incr(rb->tail, blockDim.x * threadIdx.y + threadIdx.x);
@@ -440,7 +467,8 @@ __global__ void flush_atom(uint64_t out_ptr, uint64_t atom_ptr, int nbins) {
 {
     .reg .u32   off, hi, lo, d, y, u, v;
     .reg .u64   val, ptr;
-    .reg .f32   yf, uf, vf, df, yg, ug, vg, dg;
+    .reg .f32   yf, uf, vf, df, yg, ug, vg, dg, mult;
+    .reg .pred  p;
 
     // TODO: use explicit movs to handle this
     shl.b32             off,    %0,     3;
@@ -451,6 +479,8 @@ __global__ void flush_atom(uint64_t out_ptr, uint64_t atom_ptr, int nbins) {
     cvt.u64.u32         ptr,    off;
     add.u64             ptr,    ptr,    %2;
     ld.global.v4.f32    {yg,ug,vg,dg},  [ptr];
+    setp.gt.f32         p,      dg,     0.0;
+    selp.f32            mult,   16.0,   1.0,    p;
     shr.u32             d,      hi,     22;
     bfe.u32             y,      hi,     4,      18;
     bfe.u32             u,      lo,     18,     14;
@@ -460,9 +490,11 @@ __global__ void flush_atom(uint64_t out_ptr, uint64_t atom_ptr, int nbins) {
     cvt.rn.f32.u32      uf,     u;
     cvt.rn.f32.u32      vf,     v;
     cvt.rn.f32.u32      df,     d;
-    fma.rn.ftz.f32      yg,     yf,     (1.0/255.0),    yg;
-    fma.rn.ftz.f32      ug,     uf,     (1.0/255.0),    ug;
-    fma.rn.ftz.f32      vg,     vf,     (1.0/255.0),    vg;
+    mul.rn.ftz.f32      df,     df,     mult;
+    mul.rn.ftz.f32      mult,   mult,   (1.0/255.0);
+    fma.rn.ftz.f32      yg,     yf,     mult,    yg;
+    fma.rn.ftz.f32      ug,     uf,     mult,    ug;
+    fma.rn.ftz.f32      vg,     vf,     mult,    vg;
 
     add.rn.ftz.f32      dg,     df,     dg;
     st.global.v4.f32    [ptr],  {yg,ug,vg,dg};

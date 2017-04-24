@@ -101,14 +101,14 @@ class Framebuffers(object):
         self.d_points = cuda.mem_alloc(self._len_d_points)
 
     def _clear(self):
-        self.nbins = self.d_front = self.d_back = self.d_side = None
+        self.nbins = self.d_front = self.d_back = self.d_side = self.d_uchar = None
 
     def free(self, stream=None):
         if stream is not None:
             stream.synchronize()
         else:
             cuda.Context.synchronize()
-        for p in (self.d_front, self.d_back, self.d_side):
+        for p in (self.d_front, self.d_back, self.d_side, self.d_uchar):
             if p is not None:
                 p.free()
         self._clear()
@@ -128,6 +128,7 @@ class Framebuffers(object):
             self.d_front = cuda.mem_alloc(16 * nbins)
             self.d_back  = cuda.mem_alloc(16 * nbins)
             self.d_side  = cuda.mem_alloc(16 * nbins)
+            self.d_uchar = cuda.mem_alloc(nbins)
             self.nbins = nbins
         except cuda.MemoryError, e:
             # If a frame that's too large sneaks by the task distributor, we
@@ -308,8 +309,9 @@ class RenderManager(ClsMod):
         fill = lambda b, s, v=i32(0): util.fill_dptr(
                 self.mod, b, s, stream=self.stream_a, value=v)
         fill(self.fb.d_front,  4 * nbins)
-        fill(self.fb.d_side,   2 * nbins)
+        fill(self.fb.d_side,   4 * nbins)
         fill(self.fb.d_points, self.fb._len_d_points / 4, f32(np.nan))
+        fill(self.fb.d_uchar,  nbins / 4)
 
         nts = self.info_a.ntemporal_samples
         nsamps = (gprof.spp(tc) * dim.w * dim.h)
@@ -318,9 +320,10 @@ class RenderManager(ClsMod):
         def launch_iter(n):
             if n == 0: return
             launch('iter', rdr.mod, self.stream_a, (32, 8, 1), (nts, n),
-                    self.fb.d_front, self.fb.d_side,
-                    self.fb.d_rb, self.fb.d_seeds, self.fb.d_points,
-                    self.info_a.d_params)
+                   self.fb.d_front, self.fb.d_side,
+                   self.fb.d_rb, self.fb.d_seeds, self.fb.d_points,
+                   self.fb.d_uchar, self.info_a.d_params)
+
         # Split the launch into multiple rounds, possibly (slightly) reducing
         # work overlap but avoiding stalls when working on a device with an
         # active X session. TODO: characterize performance impact, autodetect
