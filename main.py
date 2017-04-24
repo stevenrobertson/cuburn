@@ -125,7 +125,10 @@ def main(args, prof):
 
     try:
       rmgr = render.RenderManager()
-      rdr = render.Renderer(gnm, gprof)
+      arch = 'sm_{}{}'.format(
+          dev.get_attribute(cuda.device_attribute.COMPUTE_CAPABILITY_MAJOR),
+          dev.get_attribute(cuda.device_attribute.COMPUTE_CAPABILITY_MINOR))
+      rdr = render.Renderer(gnm, gprof, keep=args.keep, arch=arch)
 
       def render_iter():
           m = os.path.getmtime(args.flame)
@@ -191,6 +194,8 @@ if __name__ == "__main__":
         help="Print the blended animation and exit.")
     parser.add_argument('--device', metavar='NUM', type=int,
                         help="GPU device number to use (from nvidia-smi).")
+    parser.add_argument('--keep', action='store_true',
+                        help="Keep compiled kernels to help with profiling")
     profile.add_args(parser)
 
     args = parser.parse_args()

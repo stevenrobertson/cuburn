@@ -96,7 +96,7 @@ def assemble_code(*libs):
 DEFAULT_CMP_OPTIONS = ('-use_fast_math', '-lineinfo')
 DEFAULT_SAVE_KERNEL = True
 def compile(name, src, opts=DEFAULT_CMP_OPTIONS, save=DEFAULT_SAVE_KERNEL,
-            arch=None):
+            arch=None, keep=False):
     """
     Compile a module. Returns a copy of the source (for inspection or
     display) and the compiled cubin.
@@ -105,7 +105,8 @@ def compile(name, src, opts=DEFAULT_CMP_OPTIONS, save=DEFAULT_SAVE_KERNEL,
     if save:
         with open(os.path.join(dir, name + '_kern.cu'), 'w') as fp:
             fp.write(src)
-    cubin = pycuda.compiler.compile(src, options=list(opts), arch=arch)
+    cubin = pycuda.compiler.compile(src, options=list(opts), arch=arch,
+                                    keep=keep)
     if save:
         with open(os.path.join(dir, name + '_kern.cubin'), 'w') as fp:
             fp.write(cubin)

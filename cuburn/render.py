@@ -218,9 +218,9 @@ class Renderer(object):
     _modrefs = {}
 
     @classmethod
-    def compile(cls, gnm, arch=None):
+    def compile(cls, gnm, arch=None, keep=False):
         packer, lib = iter.mkiterlib(gnm)
-        cubin = util.compile('iter', assemble_code(lib), arch=arch)
+        cubin = util.compile('iter', assemble_code(lib), arch=arch, keep=keep)
         return packer, lib, cubin
 
     def load(self, cubin):
@@ -232,8 +232,8 @@ class Renderer(object):
         self._modrefs[cubin] = mod
         return mod
 
-    def __init__(self, gnm, gprof):
-        self.packer, self.lib, self.cubin = self.compile(gnm)
+    def __init__(self, gnm, gprof, keep=False, arch=None):
+        self.packer, self.lib, self.cubin = self.compile(gnm, keep=keep, arch=arch)
         self.mod = self.load(self.cubin)
         self.filts = filters.create(gprof)
         self.out = output.get_output_for_profile(gprof)
