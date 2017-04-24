@@ -6,7 +6,7 @@ import pycuda.compiler
 from pycuda.gpuarray import vec
 
 import code.filters
-from code.util import ClsMod, argset, launch2
+from code.util import ClsMod, argset, launch2, mktref
 
 def set_blur_width(mod, pool, stdev=1, stream=None):
     coefs = pool.allocate((7,), f32)
@@ -14,13 +14,6 @@ def set_blur_width(mod, pool, stdev=1, stream=None):
     coefs /= np.sum(coefs)
     ptr, size = mod.get_global('gauss_coefs')
     cuda.memcpy_htod_async(ptr, coefs, stream)
-
-def mktref(mod, n):
-    tref = mod.get_texref(n)
-    tref.set_filter_mode(cuda.filter_mode.POINT)
-    tref.set_address_mode(0, cuda.address_mode.WRAP)
-    tref.set_address_mode(1, cuda.address_mode.WRAP)
-    return tref
 
 def mkdsc(dim, ch):
     return argset(cuda.ArrayDescriptor(), height=dim.ah,

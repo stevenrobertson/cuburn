@@ -52,6 +52,13 @@ def launch2(name, mod, stream, dim, *args, **kwargs):
     block, grid = (32, 8, 1), (dim.astride / 32, dim.ah / 8)
     launch(name, mod, stream, block, grid, *args, **kwargs)
 
+def mktref(mod, n):
+    tref = mod.get_texref(n)
+    tref.set_filter_mode(cuda.filter_mode.POINT)
+    tref.set_address_mode(0, cuda.address_mode.WRAP)
+    tref.set_address_mode(1, cuda.address_mode.WRAP)
+    return tref
+
 def crep(s):
     """Multiline literal escape for inline PTX assembly."""
     if isinstance(s, unicode):
