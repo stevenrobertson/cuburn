@@ -83,8 +83,8 @@ class Bilateral(Filter, ClsMod):
                     fb.d_back, i32(pattern), i32(0), texrefs=[tref])
             grad_tref.set_address_2d(fb.d_back, grad_dsc, sb / 4)
             launch2('den_blur_1c', self.mod, stream, dim,
-                    fb.d_side, i32(pattern), i32(1), texrefs=[grad_tref])
-            grad_tref.set_address_2d(fb.d_side, grad_dsc, sb / 4)
+                    fb.d_left, i32(pattern), i32(1), texrefs=[grad_tref])
+            grad_tref.set_address_2d(fb.d_left, grad_dsc, sb / 4)
 
             launch2('bilateral', self.mod, stream, dim,
                     fb.d_back, i32(pattern), i32(self.radius),
@@ -118,16 +118,16 @@ class HaloClip(Filter, ClsMod):
 
         set_blur_width(self.mod, fb.pool, stream=stream)
         launch2('apply_gamma', self.mod, stream, dim,
-                fb.d_side, fb.d_front, f32(0.1))
-        tref.set_address_2d(fb.d_side, dsc, 4 * dim.astride)
+                fb.d_left, fb.d_front, f32(0.1))
+        tref.set_address_2d(fb.d_left, dsc, 4 * dim.astride)
         launch2('den_blur_1c', self.mod, stream, dim,
                fb.d_back, i32(2), i32(0), texrefs=[tref])
         tref.set_address_2d(fb.d_back, dsc, 4 * dim.astride)
         launch2('den_blur_1c', self.mod, stream, dim,
-               fb.d_side, i32(3), i32(0), texrefs=[tref])
+               fb.d_left, i32(3), i32(0), texrefs=[tref])
 
         launch2('haloclip', self.mod, stream, dim,
-                fb.d_front, fb.d_side, gam)
+                fb.d_front, fb.d_left, gam)
 
 def calc_lingam(params, tc):
     gam = f32(1 / params.gamma(tc))
@@ -146,21 +146,21 @@ class SmearClip(Filter, ClsMod):
 
         set_blur_width(self.mod, fb.pool, params.width(tc), stream)
         launch2('apply_gamma_full_hi', self.mod, stream, dim,
-                fb.d_side, fb.d_front, f32(gam-1))
-        tref.set_address_2d(fb.d_side, dsc, 16 * dim.astride)
+                fb.d_left, fb.d_front, f32(gam-1))
+        tref.set_address_2d(fb.d_left, dsc, 16 * dim.astride)
         launch2('full_blur', self.mod, stream, dim,
                fb.d_back, i32(2), i32(0), texrefs=[tref])
         tref.set_address_2d(fb.d_back, dsc, 16 * dim.astride)
         launch2('full_blur', self.mod, stream, dim,
-               fb.d_side, i32(3), i32(0), texrefs=[tref])
-        tref.set_address_2d(fb.d_side, dsc, 16 * dim.astride)
+               fb.d_left, i32(3), i32(0), texrefs=[tref])
+        tref.set_address_2d(fb.d_left, dsc, 16 * dim.astride)
         launch2('full_blur', self.mod, stream, dim,
                fb.d_back, i32(0), i32(0), texrefs=[tref])
         tref.set_address_2d(fb.d_back, dsc, 16 * dim.astride)
         launch2('full_blur', self.mod, stream, dim,
-               fb.d_side, i32(1), i32(0), texrefs=[tref])
+               fb.d_left, i32(1), i32(0), texrefs=[tref])
         launch2('smearclip', self.mod, stream, dim,
-                fb.d_front, fb.d_side, f32(gam-1), lin, lingam)
+                fb.d_front, fb.d_left, f32(gam-1), lin, lingam)
 
 @Filter.register('colorclip')
 class ColorClip(Filter, ClsMod):

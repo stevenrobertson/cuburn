@@ -43,7 +43,7 @@ class Framebuffers(object):
 
     ``d_front`` and ``d_back`` are separate buffers, each large enough to hold
     four float32 components per pixel (including any gutter pixels added for
-    alignment or padding). ``d_side`` is another buffer large enough to hold
+    alignment or padding). ``d_left`` is another buffer large enough to hold
     two float32 components per pixel.
 
     Every user of this set of buffers may use and overwrite the buffers in
@@ -101,14 +101,14 @@ class Framebuffers(object):
         self.d_points = cuda.mem_alloc(self._len_d_points)
 
     def _clear(self):
-        self.nbins = self.d_front = self.d_back = self.d_side = self.d_uchar = None
+        self.nbins = self.d_front = self.d_back = self.d_left = self.d_uchar = None
 
     def free(self, stream=None):
         if stream is not None:
             stream.synchronize()
         else:
             cuda.Context.synchronize()
-        for p in (self.d_front, self.d_back, self.d_side, self.d_uchar):
+        for p in (self.d_front, self.d_back, self.d_left, self.d_uchar):
             if p is not None:
                 p.free()
         self._clear()
@@ -127,7 +127,7 @@ class Framebuffers(object):
         try:
             self.d_front = cuda.mem_alloc(16 * nbins)
             self.d_back  = cuda.mem_alloc(16 * nbins)
-            self.d_side  = cuda.mem_alloc(16 * nbins)
+            self.d_left  = cuda.mem_alloc(16 * nbins)
             self.d_uchar = cuda.mem_alloc(nbins)
             self.nbins = nbins
         except cuda.MemoryError, e:
@@ -309,7 +309,7 @@ class RenderManager(ClsMod):
         fill = lambda b, s, v=i32(0): util.fill_dptr(
                 self.mod, b, s, stream=self.stream_a, value=v)
         fill(self.fb.d_front,  4 * nbins)
-        fill(self.fb.d_side,   4 * nbins)
+        fill(self.fb.d_left,   4 * nbins)
         fill(self.fb.d_points, self.fb._len_d_points / 4, f32(np.nan))
         fill(self.fb.d_uchar,  nbins / 4)
 
@@ -320,7 +320,7 @@ class RenderManager(ClsMod):
         def launch_iter(n):
             if n == 0: return
             launch('iter', rdr.mod, self.stream_a, (32, 8, 1), (nts, n),
-                   self.fb.d_front, self.fb.d_side,
+                   self.fb.d_front, self.fb.d_left,
                    self.fb.d_rb, self.fb.d_seeds, self.fb.d_points,
                    self.fb.d_uchar, self.info_a.d_params)
 
@@ -335,7 +335,7 @@ class RenderManager(ClsMod):
         nblocks = int(np.ceil(np.sqrt(dim.ah*dim.astride/256.)))
         launch('flush_atom', self.mod, self.stream_a,
                 256, (nblocks, nblocks),
-                u64(self.fb.d_front), u64(self.fb.d_side), i32(nbins))
+                u64(self.fb.d_front), u64(self.fb.d_left), i32(nbins))
 
     def queue_frame(self, rdr, gnm, gprof, tc, copy=True):
         """
