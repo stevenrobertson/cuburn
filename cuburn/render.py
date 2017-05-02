@@ -101,14 +101,15 @@ class Framebuffers(object):
         self.d_points = cuda.mem_alloc(self._len_d_points)
 
     def _clear(self):
-        self.nbins = self.d_front = self.d_back = self.d_left = self.d_uchar = None
+        self.nbins = self.d_front = self.d_back = None
+        self.d_left = self.d_right = self.d_uchar = None
 
     def free(self, stream=None):
         if stream is not None:
             stream.synchronize()
         else:
             cuda.Context.synchronize()
-        for p in (self.d_front, self.d_back, self.d_left, self.d_uchar):
+        for p in (self.d_front, self.d_back, self.d_left, self.d_right, self.d_uchar):
             if p is not None:
                 p.free()
         self._clear()
@@ -128,7 +129,8 @@ class Framebuffers(object):
             self.d_front = cuda.mem_alloc(16 * nbins)
             self.d_back  = cuda.mem_alloc(16 * nbins)
             self.d_left  = cuda.mem_alloc(16 * nbins)
-            self.d_uchar = cuda.mem_alloc(nbins)
+            self.d_right = cuda.mem_alloc(16 * nbins)
+            self.d_uchar = cuda.mem_alloc(2  * nbins)
             self.nbins = nbins
         except cuda.MemoryError, e:
             # If a frame that's too large sneaks by the task distributor, we
@@ -156,6 +158,10 @@ class Framebuffers(object):
     def flip(self):
         """Flip the front and back buffers."""
         self.d_front, self.d_back = self.d_back, self.d_front
+
+    def flip_side(self):
+        """Flip the left and right buffers."""
+        self.d_left, self.d_right = self.d_right, self.d_left
 
 class DevSrc(object):
     """
