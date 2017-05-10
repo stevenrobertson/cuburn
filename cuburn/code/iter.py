@@ -157,8 +157,9 @@ def iter_xf_body(cp, xfid, px):
 iter_body_code = r'''
 __global__ void
 iter(uint64_t out_ptr, uint64_t atom_ptr,
-     ringbuf *rb, mwc_st *msts, float4 *points, uint32_t *hotspots,
-     const iter_params *all_params)
+     ringbuf *rb, mwc_st *msts, float4 *points,
+     const __restrict__ uint32_t *hotspots,
+     const __restrict__ iter_params *all_params)
 {
     // load params to shared memory cooperatively
     const iter_params *global_params = &(all_params[blockIdx.x]);
@@ -177,12 +178,9 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
         {{cp.camera.yo}} += ditherwidth * mwc_next_11(rctx);
     }
 
-
-    // TODO: spare the register, reuse at call site?
     int time = blockIdx.x >> 4;
     float color_dither = 0.49f * mwc_next_11(rctx);
 
-    // TODO: 4th channel unused. Kill or use for something helpful
     float4 old_point = points[this_rb_idx];
     float x = old_point.x, y = old_point.y, color = old_point.z;
 
@@ -315,8 +313,19 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
             continue;
         }
 
-        uint32_t i = iy * acc_size.astride + ix;
+        uint32_t hotspot_i = (
+            ((iy >> 4) * acc_size.astride) +
+            (ix & 0xfffffff0) + (iy & 0xf));
+        uint32_t hotspot_rshift = (ix & 0xf) << 1;
+        uint32_t hotspot_value = (hotspots[hotspot_i] >> hotspot_rshift) & 0x3;
+        float hotspot_mult = 1.0f;
+        if (hotspot_value > 0) {
+          hotspot_mult = ((1 << (hotspot_value << 1)) >> 1);
+          float prob = __frcp_rn(hotspot_mult);
+          if (mwc_next_01(rctx) > prob) continue;
+        }
 
+        uint32_t i = iy * acc_size.astride + ix;
         asm volatile ({{crep("""
 {
     // To prevent overflow, we need to flush each pixel before the density
@@ -327,25 +336,8 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
 
     .reg .pred  p, h;
     .reg .u32   off, hotmap, color, hi, lo, d, y, u, v;
-    .reg .f32   colorf, yf, uf, vf, df, mult;
-    .reg .u64   hptr, ptr, val;
-
-    // Calculate the address of the hotspot indicator
-    shr.b32             off,    %3,     3;
-    and.b32             off,    off,    0xfffffffc;
-    cvt.u64.u32         hptr,   off;
-    add.u64             hptr,   hptr,   %7;
-
-    // Load the hotspot map, and use it to set the hotflag predicate.
-    ld.cg.global.b32    hotmap, [hptr];
-    and.b32             off,    %3,     0x1f;
-    shl.b32             off,    1,      off;
-    and.b32             hotmap, hotmap, off;
-    setp.gt.u32         h,      hotmap, 0;
-
-    // If the hotflag is set, skip this whole section 15/16 of the time.
-    setp.gt.and.f32     p,      %8,     0.0625, h;
-@p  bra                 oflow_end;
+    .reg .f32   colorf, yf, uf, vf, df, mult, prob;
+    .reg .u64   ptr, val;
 
     // TODO: coord dithering better, or pre-supersampled palette?
     fma.rn.ftz.f32      colorf, %0,     255.0,  %1;
@@ -375,11 +367,6 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
     setp.lo.u32         p,      hi,     (256 << 23);
 @p  bra                 oflow_end;
 
-    // Set the hotflag.
-    and.b32             off,    %3,     0x1f;
-    shl.b32             off,    1,      off;
-    red.global.or.b32   [hptr],   off;
-
     // Atomically swap the integer cell with 0 and read its current value
     atom.global.exch.b64 val,   [ptr],  0;
     mov.b64             {lo, hi},       val;
@@ -402,10 +389,8 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
     cvt.rn.f32.u32      vf,     v;
     cvt.rn.f32.u32      df,     d;
 
-    // If we already hotspotted, each point is worth 64 times as much.
-    selp.f32            mult,   16.0,   1.0,   h;
-    mul.rn.ftz.f32      df,     df,     mult;
-    mul.rn.ftz.f32      mult,   mult,   (1.0/255.0);
+    mul.rn.ftz.f32      df,     df,     %7;
+    mul.rn.ftz.f32      mult,   %7,     (1.0/255.0);
     mul.rn.ftz.f32      yf,     yf,     mult;
     mul.rn.ftz.f32      uf,     uf,     mult;
     mul.rn.ftz.f32      vf,     vf,     mult;
@@ -420,13 +405,139 @@ oflow_end:
 }
         """)}}  ::  "f"(cc), "f"(color_dither), "r"(time), "r"(i),
                     "l"(atom_ptr), "f"(cosel[threadIdx.y + {{NWARPS}}]),
-                    "l"(out_ptr), "l"(hotspots), "f"(mwc_next_01(rctx)));
+                    "l"(out_ptr), "f"(hotspot_mult));
     }
 
     this_rb_idx = rb_incr(rb->tail, blockDim.x * threadIdx.y + threadIdx.x);
     points[this_rb_idx] = make_float4(x, y, color, 0.0f);
     msts[this_rb_idx] = rctx;
     return;
+}
+
+__global__ void flush_atom(uint64_t out_ptr, uint64_t atom_ptr,
+                           __restrict__ uint32_t *hotspot_ptr, int nbins) {
+    const int yi = (blockIdx.y * blockDim.y) + threadIdx.y;
+    const int xi = (blockIdx.x * blockDim.x) + threadIdx.x;
+    const int gi = yi * acc_size.astride + xi;
+
+    const int hoti = (
+        ((yi >> 4) * acc_size.astride) +
+        (xi & 0xfffffff0) + (yi & 0xf));
+    asm volatile ({{crep("""
+{
+    .reg .u32   off, hi, lo, d, y, u, v, hotflag, tidx;
+    .reg .u64   val, ptr;
+    .reg .f32   yf, uf, vf, df, yg, ug, vg, dg, mult;
+    .reg .pred  p, q;
+
+    // Load the hotflag and compute the scale factor.
+    shl.b32             off,    %1,   2;
+    cvt.u64.u32         ptr,    off;
+    add.u64             ptr,    ptr,    %4;
+    ld.global.b32       hotflag, [ptr];
+
+    mov.b32             tidx,   %tid.x;
+    shl.b32             tidx,   tidx,       1;
+    shr.b32             hotflag,  hotflag,  tidx;
+    and.b32             hotflag,  hotflag,  0x3;
+
+    shl.b32             hotflag,  hotflag,  1;
+    shl.b32             hotflag,  1,        hotflag;
+    shr.b32             hotflag,  hotflag,  1;
+    cvt.rn.f32.u32      mult,     hotflag;
+    setp.eq.f32         p,        0.0,      mult;
+@p  mov.f32             mult,     1.0;
+
+    shl.b32             off,    %0,     3;
+    cvt.u64.u32         ptr,    off;
+    add.u64             ptr,    ptr,    %2;
+    ld.cs.global.v2.u32 {lo, hi},   [ptr];
+    st.cs.global.b64    [ptr],  0;
+
+    shl.b32             off,    %0,     4;
+    cvt.u64.u32         ptr,    off;
+    add.u64             ptr,    ptr,    %3;
+    ld.cs.global.v4.f32 {yg,ug,vg,dg},  [ptr];
+    shr.u32             d,      hi,     22;
+    bfe.u32             y,      hi,     4,      18;
+    bfe.u32             u,      lo,     18,     14;
+    bfi.b32             u,      hi,     u,      14,     4;
+    and.b32             v,      lo,     ((1<<18)-1);
+    cvt.rn.f32.u32      yf,     y;
+    cvt.rn.f32.u32      uf,     u;
+    cvt.rn.f32.u32      vf,     v;
+    cvt.rn.f32.u32      df,     d;
+    fma.rn.ftz.f32      dg,     df,     mult,    dg;
+    mul.rn.ftz.f32      mult,   mult,   (1.0/255.0);
+    fma.rn.ftz.f32      yg,     yf,     mult,    yg;
+    fma.rn.ftz.f32      ug,     uf,     mult,    ug;
+    fma.rn.ftz.f32      vg,     vf,     mult,    vg;
+
+    st.cs.global.v4.f32 [ptr],  {yg,ug,vg,dg};
+
+    .reg .u32   bal1, bal2, bal3, tidy, mask, tbit, tbit2, tbit3;
+    .reg .u32   outlo, outhi;
+
+    // Vote on whether this thread's point passes the (for now, predetermined)
+    // thresholds for each mask step
+    setp.gt.f32         p,      dg,     128.0;
+    vote.ballot.b32     bal1,   p;
+    setp.gt.f32         p,      dg,     512.0;
+    vote.ballot.b32     bal2,   p;
+    setp.gt.f32         p,      dg,     2048.0;
+    vote.ballot.b32     bal3,   p;
+
+    // Set 'q' with true if we're a low bit
+    mov.b32             tidx,   %laneid;
+    and.b32             mask,   tidx,   1;
+    setp.eq.u32         q,      mask,   0;
+
+    // Set 'mask' with the bit that we're considering in the ballots:
+    // 1 << (laneid / 2)
+    shr.b32             mask,   tidx,   1;
+    shl.b32             mask,   1,      mask;
+
+    // If this is a low bit, it's set if either the hotflag should be 1 or 3
+    //   (reduces to 1 & (2 = 3), since 2 will never be unset if 3 is set)
+    // If this is a high bit, it's set if it should be 2 or 3
+    // Set lo bit on all threads, then overwrite it on just hi ones
+    // Vote to get the value we should write
+    and.b32             tbit,   mask,   bal1;
+    setp.gt.u32         p,      tbit,   0;
+    and.b32             tbit,   mask,   bal2;
+    and.b32             tbit2,  mask,   bal3;
+    setp.and.eq.u32     p,      tbit,   tbit2,  p;
+@q  setp.gt.u32         p,      tbit,   0;
+
+    vote.ballot.b32     outlo,  p;
+
+    // Repeat this process for the high half of the warp
+    shl.b32             mask,   mask,   16;
+    and.b32             tbit,   mask,   bal1;
+    setp.gt.u32         p,      tbit,   0;
+    and.b32             tbit,   mask,   bal2;
+    and.b32             tbit2,  mask,   bal3;
+    setp.and.eq.u32     p,      tbit,   tbit2,  p;
+@q  setp.gt.u32         p,      tbit,   0;
+
+    vote.ballot.b32     outhi,  p;
+
+    // Set 'p' with whether we're the low or high bit of this warp
+    mov.b32             tidy,   %tid.y;
+    and.b32             tidy,   tidy,   1;
+    setp.gt.u32         p,      tidy,   0;
+@p  mov.b32             outlo,  outhi;
+
+    shl.b32             off,    %1,     2;
+    cvt.u64.u32         ptr,    off;
+    add.u64             ptr,    ptr,    %4;
+    mov.b32             tidx,   %tid.x;
+    // Set 'p' with whether we're thread 0 of tid.x
+    setp.eq.u32         p,      tidx,   0;
+@p  st.cs.global.b32    [ptr],  outlo;
+}
+""")}}  ::  "r"(gi), "r"(hoti), "l"(atom_ptr), "l"(out_ptr), "l"(hotspot_ptr),
+"r"(xi), "r"(yi));
 }
 '''
 
@@ -458,47 +569,3 @@ def mkiterlib(gnm):
                  decls=iter_decls + interp.palintlib.decls,
                  defs='\n'.join(bodies))
     return packer, lib
-
-flushatomlib = devlib(defs=Template(r'''
-__global__ void flush_atom(uint64_t out_ptr, uint64_t atom_ptr, int nbins) {
-    int i = (blockIdx.y * gridDim.x + blockIdx.x) * blockDim.x + threadIdx.x;
-    if (i >= nbins) return;
-    asm volatile ({{crep("""
-{
-    .reg .u32   off, hi, lo, d, y, u, v;
-    .reg .u64   val, ptr;
-    .reg .f32   yf, uf, vf, df, yg, ug, vg, dg, mult;
-    .reg .pred  p;
-
-    // TODO: use explicit movs to handle this
-    shl.b32             off,    %0,     3;
-    cvt.u64.u32         ptr,    off;
-    add.u64             ptr,    ptr,    %1;
-    ld.global.v2.u32    {lo, hi},   [ptr];
-    shl.b32             off,    %0,     4;
-    cvt.u64.u32         ptr,    off;
-    add.u64             ptr,    ptr,    %2;
-    ld.global.v4.f32    {yg,ug,vg,dg},  [ptr];
-    setp.gt.f32         p,      dg,     0.0;
-    selp.f32            mult,   16.0,   1.0,    p;
-    shr.u32             d,      hi,     22;
-    bfe.u32             y,      hi,     4,      18;
-    bfe.u32             u,      lo,     18,     14;
-    bfi.b32             u,      hi,     u,      14,     4;
-    and.b32             v,      lo,     ((1<<18)-1);
-    cvt.rn.f32.u32      yf,     y;
-    cvt.rn.f32.u32      uf,     u;
-    cvt.rn.f32.u32      vf,     v;
-    cvt.rn.f32.u32      df,     d;
-    mul.rn.ftz.f32      df,     df,     mult;
-    mul.rn.ftz.f32      mult,   mult,   (1.0/255.0);
-    fma.rn.ftz.f32      yg,     yf,     mult,    yg;
-    fma.rn.ftz.f32      ug,     uf,     mult,    ug;
-    fma.rn.ftz.f32      vg,     vf,     mult,    vg;
-
-    add.rn.ftz.f32      dg,     df,     dg;
-    st.global.v4.f32    [ptr],  {yg,ug,vg,dg};
-}
-    """)}}  ::  "r"(i), "l"(atom_ptr), "l"(out_ptr));
-}
-''', 'flush_atom').substitute())

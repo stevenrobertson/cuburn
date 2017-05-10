@@ -43,8 +43,7 @@ class Framebuffers(object):
 
     ``d_front`` and ``d_back`` are separate buffers, each large enough to hold
     four float32 components per pixel (including any gutter pixels added for
-    alignment or padding). ``d_left`` is another buffer large enough to hold
-    two float32 components per pixel.
+    alignment or padding).
 
     Every user of this set of buffers may use and overwrite the buffers in
     any way, as long as the output for the next stage winds up in the front
@@ -52,6 +51,10 @@ class Framebuffers(object):
     method (which simply exchanges the pointers); while no similar method
     exists for the side buffer, you're free to do the same by taking local
     copies of the references and exchanging them yourself.
+
+    ``d_left`` and ``d_right`` and ``d_uleft`` and ``d_uright`` are similar,
+    but without strict dependencies. Each stage is free to stomp these buffers,
+    but must be done with them by the next stage.
 
     There's one spot in the stream interleaving where the behavior is
     different: the ``Output.convert`` call must store its output to the back
@@ -78,10 +81,10 @@ class Framebuffers(object):
         """
         Given a width and height, return a valid set of dimensions which
         include at least enough gutter to exceed the minimum, and where
-        (acc_width % 32) == 0 and (acc_height % 8) == 0.
+        (acc_width % 32) == 0 and (acc_height % 16) == 0.
         """
         awidth = width + 2 * cls.gutter
-        aheight = 8 * int(np.ceil((height + 2 * cls.gutter) / 8.))
+        aheight = 16 * int(np.ceil((height + 2 * cls.gutter) / 16.))
         astride = 32 * int(np.ceil(awidth / 32.))
         return Dimensions(width, height, awidth, aheight, astride)
 
@@ -102,14 +105,15 @@ class Framebuffers(object):
 
     def _clear(self):
         self.nbins = self.d_front = self.d_back = None
-        self.d_left = self.d_right = self.d_uchar = None
+        self.d_left = self.d_right = self.d_uleft = self.d_uright = None
 
     def free(self, stream=None):
         if stream is not None:
             stream.synchronize()
         else:
             cuda.Context.synchronize()
-        for p in (self.d_front, self.d_back, self.d_left, self.d_right, self.d_uchar):
+        for p in (self.d_front, self.d_back, self.d_left, self.d_right,
+                  self.d_uleft, self.d_uright):
             if p is not None:
                 p.free()
         self._clear()
@@ -126,11 +130,12 @@ class Framebuffers(object):
         if self.nbins >= nbins: return
         if self.nbins is not None: self.free()
         try:
-            self.d_front = cuda.mem_alloc(16 * nbins)
-            self.d_back  = cuda.mem_alloc(16 * nbins)
-            self.d_left  = cuda.mem_alloc(16 * nbins)
-            self.d_right = cuda.mem_alloc(16 * nbins)
-            self.d_uchar = cuda.mem_alloc(2  * nbins)
+            self.d_front  = cuda.mem_alloc(16 * nbins)
+            self.d_back   = cuda.mem_alloc(16 * nbins)
+            self.d_left   = cuda.mem_alloc(16 * nbins)
+            self.d_right  = cuda.mem_alloc(16 * nbins)
+            self.d_uleft  = cuda.mem_alloc(2  * nbins)
+            self.d_uright = cuda.mem_alloc(2  * nbins)
             self.nbins = nbins
         except cuda.MemoryError, e:
             # If a frame that's too large sneaks by the task distributor, we
@@ -160,8 +165,9 @@ class Framebuffers(object):
         self.d_front, self.d_back = self.d_back, self.d_front
 
     def flip_side(self):
-        """Flip the left and right buffers."""
+        """Flip the left and right buffers (float and uchar)."""
         self.d_left, self.d_right = self.d_right, self.d_left
+        self.d_uleft, self.d_uright = self.d_uright, self.d_uleft
 
 class DevSrc(object):
     """
@@ -245,7 +251,7 @@ class Renderer(object):
         self.out = output.get_output_for_profile(gprof)
 
 class RenderManager(ClsMod):
-    lib = devlib(deps=[interp.palintlib, filldptrlib, iter.flushatomlib])
+    lib = devlib(deps=[interp.palintlib, filldptrlib])
 
     def __init__(self):
         super(RenderManager, self).__init__()
@@ -316,32 +322,42 @@ class RenderManager(ClsMod):
                 self.mod, b, s, stream=self.stream_a, value=v)
         fill(self.fb.d_front,  4 * nbins)
         fill(self.fb.d_left,   4 * nbins)
+        fill(self.fb.d_right,  4 * nbins)
         fill(self.fb.d_points, self.fb._len_d_points / 4, f32(np.nan))
-        fill(self.fb.d_uchar,  nbins / 4)
+        fill(self.fb.d_uleft,  nbins / 2)
+        fill(self.fb.d_uright, nbins / 2)
 
         nts = self.info_a.ntemporal_samples
         nsamps = (gprof.spp(tc) * dim.w * dim.h)
         nrounds = int(nsamps / (nts * 256. * 256)) + 1
 
-        def launch_iter(n):
-            if n == 0: return
-            launch('iter', rdr.mod, self.stream_a, (32, 8, 1), (nts, n),
-                   self.fb.d_front, self.fb.d_left,
-                   self.fb.d_rb, self.fb.d_seeds, self.fb.d_points,
-                   self.fb.d_uchar, self.info_a.d_params)
+        # Split the launch into multiple rounds, to prevent a system on older
+        # GPUs from locking up and to give us a chance to flush some stuff.
+        hidden_stream = cuda.Stream()
+        iter_stream_left, iter_stream_right = self.stream_a, hidden_stream
+        BLOCK_SIZE = 4
 
-        # Split the launch into multiple rounds, possibly (slightly) reducing
-        # work overlap but avoiding stalls when working on a device with an
-        # active X session. TODO: characterize performance impact, autodetect
-        BLOCK_SIZE = 16
-        for i in range(BLOCK_SIZE-1, nrounds, BLOCK_SIZE):
-            launch_iter(BLOCK_SIZE)
-        launch_iter(nrounds%BLOCK_SIZE)
+        while nrounds:
+          n = min(nrounds, BLOCK_SIZE)
+          launch('iter', rdr.mod, iter_stream_left, (32, 8, 1), (nts, n),
+                 self.fb.d_front, self.fb.d_left,
+                 self.fb.d_rb, self.fb.d_seeds, self.fb.d_points,
+                 self.fb.d_uleft, self.info_a.d_params)
 
-        nblocks = int(np.ceil(np.sqrt(dim.ah*dim.astride/256.)))
-        launch('flush_atom', self.mod, self.stream_a,
-                256, (nblocks, nblocks),
-                u64(self.fb.d_front), u64(self.fb.d_left), i32(nbins))
+          # Make sure the other stream is done flushing before we start
+          iter_stream_left.wait_for_event(cuda.Event().record(iter_stream_right))
+
+          launch('flush_atom', rdr.mod, iter_stream_left,
+                  (16, 16, 1), (dim.astride / 16, dim.ah / 16),
+                  u64(self.fb.d_front), u64(self.fb.d_left),
+                  u64(self.fb.d_uleft), i32(nbins))
+
+          self.fb.flip_side()
+          iter_stream_left, iter_stream_right = iter_stream_right, iter_stream_left
+          nrounds -= n
+
+        # Always wait on all events in the hidden stream before continuing on A
+        self.stream_a.wait_for_event(cuda.Event().record(hidden_stream))
 
     def queue_frame(self, rdr, gnm, gprof, tc, copy=True):
         """
