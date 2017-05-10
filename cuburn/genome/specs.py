@@ -3,7 +3,7 @@ from variations import var_params
 
 affine = (
   { 'angle': spline(45, period=360)
-  , 'spread': spline(45, period=180)
+  , 'spread': spline(45, period=360)
   , 'magnitude': XYPair(scalespline())
   , 'offset': XYPair(spline())
   })
