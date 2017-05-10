@@ -150,8 +150,10 @@ def main(args, prof):
                       try:
                           buf.tofile(args.rawfn + '.tmp')
                           os.rename(args.rawfn + '.tmp', args.rawfn)
-                      except e:
-                          print 'Failed to write %s: %s' % (args.rawfn, e)
+                      except:
+                          import traceback
+                          print 'Failed to write %s: %s' % (args.rawfn,
+                                                            traceback.format_exc())
                   print '%s (%3d/%3d), %dms' % (name, idx, len(times), evt.time())
                   yield name, buf
               save(rdr.out, name, None)
