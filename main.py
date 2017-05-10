@@ -155,6 +155,7 @@ def main(args, prof):
                           print 'Failed to write %s: %s' % (args.rawfn,
                                                             traceback.format_exc())
                   print '%s (%3d/%3d), %dms' % (name, idx, len(times), evt.time())
+                  sys.stdout.flush()
                   yield name, buf
               save(rdr.out, name, None)
 
