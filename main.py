@@ -121,7 +121,7 @@ def main(args, prof):
     import pycuda.driver as cuda
     cuda.init()
     dev = cuda.Device(args.device or 0)
-    cuctx = dev.make_context()
+    cuctx = dev.make_context(flags=cuda.ctx_flags.SCHED_YIELD)
 
     try:
       rmgr = render.RenderManager()
