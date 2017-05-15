@@ -64,14 +64,6 @@ class Output(object):
         """
         raise NotImplementedError()
 
-    @property
-    def suffix(self):
-        """
-        Return the file suffix that will be used. If more than one suffix will
-        be used, the value returned is the one considered to be "primary".
-        """
-        raise NotImplementedError()
-
 
 class PILOutput(Output, ClsMod):
     lib = pixfmtlib
@@ -112,13 +104,6 @@ class PILOutput(Output, ClsMod):
             return {'.jpg': out}, {}
         return {'.'+self.type: self._convert_buf(buf)}, []
 
-    @property
-    def suffix(self):
-        if self.type == 'jpeg':
-            if self.alpha: return '_color.jpg'
-            return '.jpg'
-        return '.'+self.type
-
 class TiffOutput(Output, ClsMod):
     lib = pixfmtlib
 
@@ -148,10 +133,6 @@ class TiffOutput(Output, ClsMod):
         tifffile.imsave(out, buf)
         out.seek(0)
         return {'.tiff': out}, []
-
-    @property
-    def suffix(self):
-        return '.tiff'
 
 
 class ProResOutput(Output, ClsMod):
@@ -202,10 +183,6 @@ class ProResOutput(Output, ClsMod):
             self._spawn()
         self._subp.stdin.write(buffer(host_frame))
         return {}, []
-
-    @property
-    def suffix(self):
-        return '.mov'
 
 
 class X264Output(Output, ClsMod):
@@ -313,11 +290,6 @@ class X264Output(Output, ClsMod):
             self._write(buf[:,:,3].tostring(), self.asubp)
             self._write(buffer(self.zeros), self.asubp)
         return out
-
-    @property
-    def suffix(self):
-        if self.alpha: return '_color.h264'
-        return '.h264'
 
 class VPxOutput(Output, ClsMod):
     lib = pixfmtlib
@@ -435,10 +407,13 @@ class VPxOutput(Output, ClsMod):
             self._write(buf, self.subp)
         return out
 
-    @property
-    def suffix(self):
-        return '.webm'
-
+def get_suffix_for_profile(gprof):
+  opts = dict(gprof.output._val)
+  ext = dict(jpeg='.jpg', png='.png', tiff='.tiff', x264='.h264',
+             prores='.mov', vp8='.webm', vp9='.webm')[opts.get('type', 'jpeg')]
+  if opts.get('alpha'):
+    ext = '_color' + ext
+  return ext
 
 def get_output_for_profile(gprof):
     opts = dict(gprof.output._val)

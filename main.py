@@ -62,7 +62,7 @@ def main(args, prof):
       m = os.path.getmtime(args.flame)
       for name, times in frames:
           if args.resume:
-              fp = name + rdr.out.suffix
+              fp = name + output.get_suffix_for_profile(gprof)
               if os.path.isfile(fp) and m < os.path.getmtime(fp):
                   continue
 
