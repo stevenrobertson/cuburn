@@ -352,7 +352,7 @@ class RenderManager(ClsMod):
             # Do a blocking sync to free up resources. This may slightly reduce
             # parallelism but makes it a whole heck of a lot easier to keep
             # using the computer while things render.
-            print 'Launches became blocking, synchronizing'
+            print >> sys.stderr, 'Launches became blocking, synchronizing'
             iter_stream_right.synchronize()
 
           # Make sure the other stream is done flushing before we start

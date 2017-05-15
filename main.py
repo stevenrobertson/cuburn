@@ -74,8 +74,8 @@ def main(args, prof):
                   if getattr(file_like, 'close', None):
                       file_like.close()
               for key, val in log:
-                  print '\n=== %s ===' % key
-                  print val
+                  print >> sys.stderr, '\n=== %s ===' % key
+                  print >> sys.stderr, val
 
           evt = buf = next_evt = next_buf = None
           for idx, t in enumerate(list(times) + [None]):
@@ -98,12 +98,12 @@ def main(args, prof):
                       os.rename(args.rawfn + '.tmp', args.rawfn)
                   except:
                       import traceback
-                      print 'Failed to write %s: %s' % (
+                      print >> sys.stderr, 'Failed to write %s: %s' % (
                           args.rawfn, traceback.format_exc())
-              print '%s%s (%3d/%3d), %dms' % (
+              print >> sys.stderr, '%s%s (%3d/%3d), %dms' % (
                   ('%d: ' % args.device) if args.device >= 0 else '',
                   name, idx, len(times), last_render_time_ms)
-              sys.stdout.flush()
+              sys.stderr.flush()
 
           save(None)
 

@@ -1,5 +1,6 @@
 import io
 import os
+import sys
 import tempfile
 from cStringIO import StringIO
 from subprocess import Popen, PIPE
@@ -273,8 +274,8 @@ class X264Output(Output, ClsMod):
         try:
             subp.stdin.write(buffer(buf))
         except IOError, e:
-            print 'Exception while writing. Log:'
-            print subp.stderr.read()
+            print >> sys.stderr, 'Exception while writing. Log:'
+            print >> sys.stderr, subp.stderr.read()
             raise e
 
     def encode(self, buf):
@@ -388,8 +389,8 @@ class VPxOutput(Output, ClsMod):
         try:
             subp.stdin.write(buffer(buf))
         except IOError, e:
-            print 'Exception while writing. Log:'
-            print subp.stderr.read()
+            print >> sys.stderr, 'Exception while writing. Log:'
+            print >> sys.stderr, subp.stderr.read()
             raise e
 
     def encode(self, buf):
