@@ -335,14 +335,25 @@ class RenderManager(ClsMod):
         # GPUs from locking up and to give us a chance to flush some stuff.
         hidden_stream = cuda.Stream()
         iter_stream_left, iter_stream_right = self.stream_a, hidden_stream
-        BLOCK_SIZE = 4
+        block_size = 4
 
         while nrounds:
-          n = min(nrounds, BLOCK_SIZE)
+          n = min(nrounds, block_size)
+          now = time.time()
           launch('iter', rdr.mod, iter_stream_left, (32, 8, 1), (nts, n),
                  self.fb.d_front, self.fb.d_left,
                  self.fb.d_rb, self.fb.d_seeds, self.fb.d_points,
                  self.fb.d_uleft, self.info_a.d_params)
+          delta = time.time() - now
+          if delta > 0.1:
+            # More than 100ms passed attempting to launch. The GPU is likely
+            # out of queued execution resources on a long render, and scheduling
+            # additional work will just keep spinning the CPU at 100%.
+            # Do a blocking sync to free up resources. This may slightly reduce
+            # parallelism but makes it a whole heck of a lot easier to keep
+            # using the computer while things render.
+            print 'Launches became blocking, synchronizing'
+            iter_stream_right.synchronize()
 
           # Make sure the other stream is done flushing before we start
           iter_stream_left.wait_for_event(cuda.Event().record(iter_stream_right))
@@ -355,6 +366,7 @@ class RenderManager(ClsMod):
           self.fb.flip_side()
           iter_stream_left, iter_stream_right = iter_stream_right, iter_stream_left
           nrounds -= n
+          block_size += block_size / 2
 
         # Always wait on all events in the hidden stream before continuing on A
         self.stream_a.wait_for_event(cuda.Event().record(hidden_stream))
