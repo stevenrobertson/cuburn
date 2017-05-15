@@ -25,78 +25,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 from cuburn import render, filters, output, profile
 from cuburn.genome import convert, use, db
 
-def save(output_module, name, rendered_frame):
-    out, log = output_module.encode(rendered_frame)
-    for suffix, file_like in out.items():
-        with open(name + suffix, 'w') as fp:
-            fp.write(file_like.read())
-        if getattr(file_like, 'close', None):
-            file_like.close()
-    for key, val in log:
-        print '\n=== %s ===' % key
-        print val
-
-def pyglet_preview(args, gprof, itr):
-    import pyglet
-    import pyglet.gl as gl
-    w, h = gprof.width, gprof.height
-    window = pyglet.window.Window(w, h, vsync=False)
-    image = pyglet.image.CheckerImagePattern().create_image(w, h)
-    tex = image.texture
-    label = pyglet.text.Label('Rendering first frame', x=5, y=h-5,
-                              width=w, anchor_y='top', font_size=16,
-                              bold=True, multiline=True)
-
-    @window.event
-    def on_draw():
-        window.clear()
-        tex.blit(0, 0, 0)
-        label.draw()
-
-    @window.event
-    def on_key_press(sym, mod):
-        if sym == pyglet.window.key.Q:
-            pyglet.app.exit()
-
-    @window.event
-    def on_mouse_motion(x, y, dx, dy):
-        pass
-
-    last_time = [time.time()]
-
-    def poll(dt):
-        out = next(itr, False)
-        if out is False:
-            if args.pause:
-                label.text = "Done. ('q' to quit)"
-            else:
-                pyglet.app.exit()
-        elif out is not None:
-            name, buf = out
-            real_dt = time.time() - last_time[0]
-            last_time[0] = time.time()
-            if buf.dtype == np.uint8:
-                fmt = gl.GL_UNSIGNED_BYTE
-            elif buf.dtype == np.uint16:
-                fmt = gl.GL_UNSIGNED_SHORT
-            else:
-                label.text = 'Unsupported format: ' + buf.dtype
-                return
-
-            h, w, ch = buf.shape
-            gl.glEnable(tex.target)
-            gl.glBindTexture(tex.target, tex.id)
-            gl.glTexImage2D(tex.target, 0, gl.GL_RGB8, w, h, 0, gl.GL_RGBA,
-                            fmt, buf.tostring())
-            gl.glDisable(tex.target)
-            label.text = '%s (%g fps)' % (name, 1./real_dt)
-        else:
-            label.text += '.'
-
-    pyglet.clock.set_fps_limit(20)
-    pyglet.clock.schedule_interval(poll, 1/20.)
-    pyglet.app.run()
-
 def main(args, prof):
     gdb = db.connect(args.genomedb)
     gnm, basename = gdb.get_anim(args.flame, args.half)
@@ -121,7 +49,7 @@ def main(args, prof):
     import pycuda.driver as cuda
     cuda.init()
     dev = cuda.Device(args.device or 0)
-    cuctx = dev.make_context(flags=cuda.ctx_flags.SCHED_YIELD)
+    cuctx = dev.make_context(flags=cuda.ctx_flags.SCHED_BLOCKING_SYNC)
 
     try:
       rmgr = render.RenderManager()
@@ -129,40 +57,56 @@ def main(args, prof):
           dev.get_attribute(cuda.device_attribute.COMPUTE_CAPABILITY_MAJOR),
           dev.get_attribute(cuda.device_attribute.COMPUTE_CAPABILITY_MINOR))
       rdr = render.Renderer(gnm, gprof, keep=args.keep, arch=arch)
+      last_render_time_ms = 0
 
-      def render_iter():
-          m = os.path.getmtime(args.flame)
-          first = True
-          for name, times in frames:
-              if args.resume:
-                  fp = name + rdr.out.suffix
-                  if os.path.isfile(fp) and m < os.path.getmtime(fp):
-                      continue
+      m = os.path.getmtime(args.flame)
+      for name, times in frames:
+          if args.resume:
+              fp = name + rdr.out.suffix
+              if os.path.isfile(fp) and m < os.path.getmtime(fp):
+                  continue
 
-              for idx, t in enumerate(times):
-                  evt, buf = rmgr.queue_frame(rdr, gnm, gprof, t, first)
-                  first = False
-                  while not evt.query():
-                      time.sleep(0.01)
-                      yield None
-                  save(rdr.out, name, buf)
-                  if args.rawfn:
-                      try:
-                          buf.tofile(args.rawfn + '.tmp')
-                          os.rename(args.rawfn + '.tmp', args.rawfn)
-                      except:
-                          import traceback
-                          print 'Failed to write %s: %s' % (args.rawfn,
-                                                            traceback.format_exc())
-                  print '%s (%3d/%3d), %dms' % (name, idx, len(times), evt.time())
-                  sys.stdout.flush()
-                  yield name, buf
-              save(rdr.out, name, None)
+          def save(buf):
+              out, log = rdr.out.encode(buf)
+              for suffix, file_like in out.items():
+                  with open(name + suffix, 'w') as fp:
+                      fp.write(file_like.read())
+                  if getattr(file_like, 'close', None):
+                      file_like.close()
+              for key, val in log:
+                  print '\n=== %s ===' % key
+                  print val
 
-      if args.gfx:
-          pyglet_preview(args, gprof, render_iter())
-      else:
-          for i in render_iter(): pass
+          evt = buf = next_evt = next_buf = None
+          for idx, t in enumerate(list(times) + [None]):
+              evt, buf = next_evt, next_buf
+              if t is not None:
+                  next_evt, next_buf = rmgr.queue_frame(rdr, gnm, gprof, t)
+              if not evt: continue
+              if last_render_time_ms > 2000:
+                while not evt.query():
+                  time.sleep(0.2)
+              else:
+                evt.synchronize()
+              last_render_time_ms = evt.time()
+
+              save(buf)
+
+              if args.rawfn:
+                  try:
+                      buf.tofile(args.rawfn + '.tmp')
+                      os.rename(args.rawfn + '.tmp', args.rawfn)
+                  except:
+                      import traceback
+                      print 'Failed to write %s: %s' % (
+                          args.rawfn, traceback.format_exc())
+              print '%s%s (%3d/%3d), %dms' % (
+                  ('%d: ' % args.device) if args.device >= 0 else '',
+                  name, idx, len(times), last_render_time_ms)
+              sys.stdout.flush()
+
+          save(None)
+
     finally:
       cuda.Context.pop()
 
@@ -172,8 +116,6 @@ if __name__ == "__main__":
 
     parser.add_argument('flame', metavar='ID', type=str,
         help="Filename or flame ID of genome to render")
-    parser.add_argument('-g', action='store_true', dest='gfx',
-        help="Show output in OpenGL window")
     parser.add_argument('-n', metavar='NAME', type=str, dest='name',
         help="Prefix to use when saving files (default is basename of input)")
     parser.add_argument('--suffix', metavar='NAME', type=str, dest='suffix',
