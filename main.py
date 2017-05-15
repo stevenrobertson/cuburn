@@ -110,6 +110,18 @@ def main(args, prof):
     finally:
       cuda.Context.pop()
 
+def list_devices():
+  import pycuda.driver as cuda
+  cuda.init()
+  for i in range(cuda.Device.count()):
+    dev = cuda.Device(i)
+    attrs = dev.get_attributes()
+    print 'Device %d (%s): compute %d.%d, free mem %d, PCI %s' % (
+        i, dev.name(),
+        attrs[cuda.device_attribute.COMPUTE_CAPABILITY_MAJOR],
+        attrs[cuda.device_attribute.COMPUTE_CAPABILITY_MINOR],
+        dev.total_memory(), dev.pci_bus_id())
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Render fractal flames.')
@@ -137,12 +149,18 @@ if __name__ == "__main__":
         help='Use half-loops when converting nodes to animations')
     parser.add_argument('--print', action='store_true',
         help="Print the blended animation and exit.")
+    parser.add_argument('--list-devices', action='store_true',
+        help="List devices and exit.")
     parser.add_argument('--device', metavar='NUM', type=int,
-                        help="GPU device number to use (from nvidia-smi).")
+        help="GPU device number to use (may differ from nvidia-smi).")
     parser.add_argument('--keep', action='store_true',
-                        help="Keep compiled kernels to help with profiling")
+        help="Keep compiled kernels to help with profiling")
     profile.add_args(parser)
 
     args = parser.parse_args()
-    pname, prof = profile.get_from_args(args)
-    main(args, prof)
+
+    if args.list_devices:
+      list_devices()
+    else:
+      pname, prof = profile.get_from_args(args)
+      main(args, prof)
