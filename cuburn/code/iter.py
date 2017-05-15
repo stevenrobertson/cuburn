@@ -172,11 +172,14 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
     mwc_st rctx = msts[this_rb_idx];
 
     {{precalc_camera(cp.camera._precalc())}}
+{{if jitter_buckets}}
     if (threadIdx.y == 5 && threadIdx.x == 4) {
         float ditherwidth = {{cp.camera.dither_width}} * 0.5f;
         {{cp.camera.xo}} += ditherwidth * mwc_next_11(rctx);
         {{cp.camera.yo}} += ditherwidth * mwc_next_11(rctx);
     }
+{{endif}}
+
 
     int time = blockIdx.x >> 4;
     float color_dither = 0.49f * mwc_next_11(rctx);
@@ -547,6 +550,7 @@ def iter_body(cp):
 
     # TODO: detect this properly and use it
     chaos_used = False
+    jitter_buckets = False
 
     vars = globals()
     vars.update(locals())
