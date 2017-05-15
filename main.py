@@ -32,19 +32,8 @@ def main(args, prof):
         print convert.to_json(gnm)
         return
     gprof = profile.wrap(prof, gnm)
-
-    if args.name is not None:
-        basename = args.name
-    prefix = os.path.join(args.dir, basename)
-    if args.subdir:
-        if not os.path.isdir(prefix):
-            os.mkdir(prefix)
-        prefix_plus = prefix + '/'
-    else:
-        prefix_plus = prefix + '_'
-
-    frames = [('%s%05d%s' % (prefix_plus, i, args.suffix), t)
-              for i, t in profile.enumerate_times(gprof)]
+    frames = profile.enumerate_jobs(gprof, basename, args)
+    if not frames: return
 
     import pycuda.driver as cuda
     cuda.init()
@@ -59,13 +48,7 @@ def main(args, prof):
       rdr = render.Renderer(gnm, gprof, keep=args.keep, arch=arch)
       last_render_time_ms = 0
 
-      m = os.path.getmtime(args.flame)
       for name, times in frames:
-          if args.resume:
-              fp = name + output.get_suffix_for_profile(gprof)
-              if os.path.isfile(fp) and m < os.path.getmtime(fp):
-                  continue
-
           def save(buf):
               out, log = rdr.out.encode(buf)
               for suffix, file_like in out.items():
@@ -128,21 +111,9 @@ if __name__ == "__main__":
 
     parser.add_argument('flame', metavar='ID', type=str,
         help="Filename or flame ID of genome to render")
-    parser.add_argument('-n', metavar='NAME', type=str, dest='name',
-        help="Prefix to use when saving files (default is basename of input)")
-    parser.add_argument('--suffix', metavar='NAME', type=str, dest='suffix',
-        help="Suffix to use when saving files (default '')", default='')
-    parser.add_argument('-o', metavar='DIR', type=str, dest='dir',
-        help="Output directory", default='.')
-    parser.add_argument('--resume', action='store_true', dest='resume',
-        help="Don't overwrite output files that are newer than the input")
-    parser.add_argument('--pause', action='store_true',
-        help="Don't close the preview window after rendering is finished")
     parser.add_argument('-d', '--genomedb', metavar='PATH', type=str,
         help="Path to genome database (file or directory, default '.')",
         default='.')
-    parser.add_argument('--subdir', action='store_true',
-        help="Use basename as subdirectory of out dir, instead of prefix")
     parser.add_argument('--raw', metavar='PATH', type=str, dest='rawfn',
         help="Target file for raw buffer, to enable previews.")
     parser.add_argument('--half', action='store_true',

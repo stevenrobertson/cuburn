@@ -5,6 +5,7 @@ import numpy as np
 
 from genome.specs import toplevels
 from genome.use import RefWrapper, SplineWrapper
+import output
 
 BUILTIN={
     '1080p': dict(width=1920, height=1080),
@@ -57,7 +58,19 @@ def add_args(parser=None):
     spa.add_argument('--height', type=int, metavar='PX')
 
     out = parser.add_argument_group('Output options')
-    out.add_argument('--codec', choices=['jpeg', 'png', 'tiff', 'x264', 'vp8', 'vp9', 'prores'])
+    out.add_argument('--codec',
+        choices=['jpeg', 'png', 'tiff', 'x264', 'vp8', 'vp9', 'prores'])
+    out.add_argument('-n', metavar='NAME', type=str, dest='name',
+        help="Prefix to use when saving files (default is basename of input)")
+    out.add_argument('--suffix', metavar='NAME', type=str, dest='suffix',
+        help="Suffix to use when saving files (default '')", default='')
+    out.add_argument('-o', metavar='DIR', type=str, dest='dir',
+        help="Output directory", default='.')
+    out.add_argument('--resume', action='store_true', dest='resume',
+        help="Don't overwrite output files that are newer than the input")
+    out.add_argument('--subdir', action='store_true',
+        help="Use basename as subdirectory of out dir, instead of prefix")
+
     return parser
 
 def get_from_args(args):
@@ -112,3 +125,35 @@ def enumerate_times(gprof):
     if gprof.start is not None:
         times = times[gprof.start:]
     return times[::gprof.skip+1]
+
+def enumerate_jobs(gprof, basename, args, resume=None):
+    """
+    Like `enumerate_times`, but returns `(output_basepath, center_times)`,
+    where the output base path is the path for output without any file
+    extensions.
+
+    If `resume` is set to True, either by kwarg or (if the kwarg is None)
+    in the argparse arguments, check for the existence of a file with the
+    canonical extension for the selected output module.
+    """
+
+    if args.name is not None:
+        basename = args.name
+    prefix = os.path.join(args.dir, basename)
+    if args.subdir:
+        if not os.path.isdir(prefix):
+            os.mkdir(prefix)
+        prefix_plus = prefix + '/'
+    else:
+        prefix_plus = prefix + '_'
+
+    frames = [('%s%05d%s' % (prefix_plus, i, args.suffix), t)
+              for i, t in enumerate_times(gprof)]
+
+    resume = args.resume if resume is None else resume
+    if resume:
+      out_suffix = output.get_suffix_for_profile(gprof)
+      frames = [(n, t) for (n, t) in frames
+                if not os.path.isfile(n + out_suffix)]
+
+    return frames
