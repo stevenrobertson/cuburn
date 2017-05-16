@@ -182,7 +182,7 @@ def dispatch(args):
         except:
           traceback.print_exc()
           gevent.sleep(connect_timeout)
-          connect_timeout *= 2
+          connect_timeout = min(600, connect_timeout * 2)
     return subp
 
   exiting = False
