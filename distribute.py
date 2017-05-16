@@ -67,6 +67,7 @@ def copy_filelike(infp, dst):
     chunk = infp.read(chunk_sz)
     assert len(chunk) == chunk_sz, (
         'Incomplete chunk, expected %d (%s)got %d' % (sz, `sz_buf`, len(chunk)))
+    dst.write(chunk)
     recvd += len(chunk)
 
 def work(args):
